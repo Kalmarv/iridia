@@ -1,6 +1,6 @@
 [package]
-name = "primase-dxbc"
-description = "Bounded Shader Model 5 pixel-program evaluation"
+name = "primase-dxil"
+description = "Bounded Shader Model 6 (DXIL) pixel-program evaluation"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+primase-bytes.workspace = true
 primase-shader.workspace = true
 
 [dev-dependencies]
