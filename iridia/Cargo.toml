@@ -1,6 +1,6 @@
 [package]
-name = "primase-vertex"
-description = "Checked vertex layouts, quantization and index topology"
+name = "primase-shader"
+description = "One interface for bounded CPU evaluation of pixel shaders, whatever their bytecode"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,6 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-half.workspace = true
 
 [lints]
 workspace = true
