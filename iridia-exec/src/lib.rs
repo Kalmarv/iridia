@@ -1,49 +1,184 @@
-//! One interface for evaluating a pixel shader on the CPU, whatever its bytecode: [`PixelShader`] with the
-//! [`Interface`] a caller binds inputs, constants and textures by, and the [`Sampler`] callback that owns texture
-//! sampling. `primase-dxbc` (Shader Model 5) and `primase-dxil` (Shader Model 6) implement it; a bake written
-//! against it runs either.
+//! Executing a [`primase_shader::Program`] on the CPU: the one executor for a shader whatever bytecode it was lifted from, and the
+//! pixel-shader evaluation interface built on it ([`PixelShader`], [`Sampler`]).
 //!
-//! The interface is primase's own vocabulary ([`primase_core::shader`], re-exported here): varyings by label,
-//! resources with explicit constant layouts, D3D's registers kept in provenance. The [`d3d`] module is where D3D's
-//! enum numbers and packing rules are mapped into it, for the readers of both bytecodes.
+//! [`Executable::new`] checks a program and compiles it once into a flat form (typed operations on four-lane word
+//! registers, pointers folded to word offsets, dead operations dropped). [`Executable::bind`] flattens the buffers a
+//! material reads once for all its pixels, and a [`Runner`] executes the program for one invocation or a 2 x 2 quad in
+//! lockstep, asking its [`Backend`] for everything outside the program: texture samples, loads and queries, and the
+//! effects of writes to unordered-access views. [`ProgramShader`] puts a program behind [`PixelShader`], in
+//! the register vocabulary of the D3D bytecode it came from.
 //!
-//! The evaluation itself still runs on D3D's register model: registers are four 32-bit lanes. Inputs and outputs are indexed by signature register, constant buffers are
-//! rows of four lanes by bind slot, and textures are identified by bind slot (`t<n>`). Sampling is the caller's:
-//! a scalar evaluation has no derivatives, so the callback states its footprint, addressing, filtering and
-//! transfer policy.
+//! What a run does follows the program's [`primase_shader::D3dModes`]: a program that says its body spells out D3D's integer
+//! division, conversions and `min`/`max` runs as written, and one that expects denormals flushed to zero has every
+//! 32-bit float operation flush its operands and result (sign kept). Anything the program does that the module cannot
+//! make valid (an index past the end of a local array, an integer division by zero in the module) is an error of the
+//! run, never a silent value.
+
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
-pub mod build;
-pub mod d3d;
-pub mod emit;
-mod evaluate;
-pub mod exec;
-pub mod gate;
-mod limits;
-mod program;
-pub mod rt;
-pub use evaluate::{
-    Constants, Evaluation, Field, Grid, Image, Input, Invocation, Lane, Layout, Raw, Texture, evaluate,
-    evaluate_raw, evaluate_raw_with, evaluate_with,
-};
-pub use primase_core::shader::{
-    Access, BufferKind, BufferLayout, Constant, ConstantType, D3dBinding, D3dClass, D3dSignature,
-    DomainFacts, GeometryFacts, GsInput, GsOutput, HitGroup, HitGroupKind, HullFacts, Interface, InterpMode,
-    InterpSampling, Interpolation, Label, Majorness, Member, MeshFacts, MeshTopology, Partitioning,
-    RayTracingFacts, Resource, ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType,
-    ShaderFormat, Stage, StageFacts, StorageTarget, Subobject, SystemValue, TessDomain, TessTopology,
-    TextureDim, Value, Varying, VaryingProvenance,
-};
+pub mod evaluate;
 mod periodic;
-mod refusal;
-pub use limits::{WEBGPU_BASELINE, compute_limit_notes, interface_notes};
-pub use periodic::{evaluate_periodic, evaluate_periodic_with};
-pub use program::{
-    ClipDepth, Conventions, D3dModes, EntryIo, Error as ProgramError, FnItem, FunctionSig, IoItem, IoType,
-    Origin, Problem, Program, Provenance, VERSION as PROGRAM_VERSION, entry_io, mesh_vertex_io,
-    stage_functions,
+pub use evaluate::{
+    Evaluation, Field, Grid, Image, Input, Invocation, Lane, Layout, Raw, Texture, evaluate, evaluate_raw,
+    evaluate_raw_with, evaluate_with,
 };
-pub use refusal::{Refusal, Unit, source_hash};
+pub use periodic::{evaluate_periodic, evaluate_periodic_with};
+
+use primase_shader::Interface;
+
+mod compile;
+mod flat;
+pub mod geometry;
+mod mask;
+pub mod mesh;
+mod pipeline;
+mod pixel;
+mod rayquery;
+mod request;
+mod run;
+mod stage;
+pub mod tessellation;
+pub mod tessellator;
+
+pub use flat::Executable;
+pub use mask::{Mask, Wide};
+pub use pipeline::{DispatchStats, Pipeline, PipelineResources, ShaderTable};
+pub use pixel::ProgramShader;
+pub use rayquery::{Built, Geometry, Instance, InstanceFlags, Scene, flags as ray_flags};
+pub use request::{
+    Backend, CallShader, Dim, Element, ImageAtomic, ImageAtomicOp, ImageLoad, ImageLod, ImageQuery,
+    ImageSample, ImageStore, QueryKind, ReportHit, TraceRay,
+};
+pub use run::{Bound, Decision, Dispatched, Output, Resources, Runner, STEP_LIMIT, Scratch};
+pub use stage::Constants;
+
+use primase_shader::Program;
+
+/// An error of checking or compiling a program, in the program's own terms.
+pub(crate) fn error(detail: impl Into<String>) -> Error {
+    Error {
+        bytecode: "program",
+        at: 0,
+        detail: detail.into(),
+    }
+}
+
+impl Executable {
+    /// Check `program` (its module and its interface) and compile it. A construct the executor does not run (a
+    /// 64-bit value, an atomic other than add, an image atomic) is refused here, by name.
+    pub fn new(program: &Program) -> Result<Self, Error> {
+        if primase_shader::stage_functions(&program.interface)
+            .map_err(error)?
+            .is_some()
+        {
+            return Err(error(if program.stage.is_ray_tracing() {
+                format!(
+                    "a {:?} program does the ray tracing pipeline's work through operations only the pipeline has \
+                     ({}): run it with Executable::function inside a pipeline (Pipeline)",
+                    program.stage,
+                    primase_shader::rt::OPERATIONS.join(", ")
+                )
+            } else {
+                format!(
+                    "a {:?} program is functions, not an entry point: run one with Executable::function",
+                    program.stage
+                )
+            }));
+        }
+        let info = program.validate().map_err(|problems| {
+            error(
+                problems
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        compile::compile(program, &info, None).map_err(error)
+    }
+
+    /// Compile one function of a program made of functions (a hull program's `main` and `patch_constant`, a domain
+    /// program's or a position-less vertex program's `main`; see [`primase_shader::stage_functions`]) to run for one
+    /// invocation. The registers it takes are its arguments in order, an array argument (the control points) as one
+    /// register per element; the members of its result are the members of [`primase_shader::FunctionSig::result`].
+    pub fn function(program: &Program, name: &str) -> Result<Self, Error> {
+        let info = program.validate().map_err(|problems| {
+            error(
+                problems
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        compile::compile(program, &info, Some(name)).map_err(error)
+    }
+
+    /// Every function of a program made of functions ([`primase_shader::stage_functions`]: a hull, domain, geometry or ray tracing
+    /// program, a vertex program that feeds a tessellator), each compiled by [`Executable::function`] under its name;
+    /// `None` for a program that is an entry point, which [`Executable::new`] takes.
+    pub fn functions(program: &Program) -> Result<Option<Vec<(&'static str, Self)>>, Error> {
+        let Some(signatures) = primase_shader::stage_functions(&program.interface).map_err(error)? else {
+            return Ok(None);
+        };
+        signatures
+            .iter()
+            .map(|sig| Self::function(program, sig.name).map(|executable| (sig.name, executable)))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+
+    /// The words of pointer argument `k` (a ray tracing program's payload, attributes or parameter).
+    pub(crate) fn pointer_words(&self, k: usize) -> Option<u32> {
+        self.pointer_args.get(k).map(|a| a.2)
+    }
+
+    /// The textures and the samplers the program's compiled code samples, loads from or asks the size of (an operation
+    /// nothing reads is not in it): the resources a caller must bind for a run that may reach any path.
+    pub fn sampled(
+        &self,
+    ) -> (
+        std::collections::BTreeSet<primase_shader::ResourceId>,
+        std::collections::BTreeSet<primase_shader::ResourceId>,
+    ) {
+        let (mut textures, mut samplers) = (
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        );
+        for (_, op) in &self.ops {
+            match op {
+                flat::Op::Sample { tex, smp, .. } => {
+                    textures.insert(tex.id);
+                    samplers.insert(smp.id);
+                }
+                flat::Op::Texel {
+                    tex, storage: false, ..
+                }
+                | flat::Op::Query { tex, .. } => {
+                    textures.insert(tex.id);
+                }
+                _ => {}
+            }
+        }
+        (textures, samplers)
+    }
+
+    /// Whether the program needs the other lanes of its 2 x 2 quad: it takes a screen derivative, or samples at an
+    /// implicit level of detail (`sample`, `sample_b`), whose footprint is the quad's. A program that does not runs
+    /// the same one invocation at a time as in a quad.
+    pub fn needs_quad(&self) -> bool {
+        self.ops.iter().any(|(_, op)| {
+            matches!(
+                op,
+                flat::Op::Deriv { .. }
+                    | flat::Op::Sample {
+                        level: flat::LevelOp::Auto | flat::LevelOp::Bias(_),
+                        ..
+                    }
+            )
+        })
+    }
+}
 
 /// How a sample request picks its level of detail.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -143,8 +278,8 @@ pub trait Sampler {
 
     /// A sample of any texture: 1D, 3D or cube, with a texel offset, a gather or a comparison. A plain 2D sample
     /// (or a 2D array's layer) goes to [`Sampler::sample`]; anything else is refused unless the sampler answers it.
-    fn sample_image(&mut self, request: exec::ImageSample<u32>) -> std::result::Result<[f32; 4], String> {
-        if request.dim != exec::Dim::D2
+    fn sample_image(&mut self, request: ImageSample<u32>) -> std::result::Result<[f32; 4], String> {
+        if request.dim != Dim::D2
             || request.gather.is_some()
             || request.depth_ref.is_some()
             || request.depth
@@ -156,11 +291,11 @@ pub trait Sampler {
             ));
         }
         let lod = match request.lod {
-            exec::ImageLod::Implicit => Lod::Implicit,
-            exec::ImageLod::Bias(bias) => Lod::Bias(bias),
-            exec::ImageLod::Level(level) => Lod::Level(level),
-            exec::ImageLod::Gradients(g) => Lod::Gradients([[g[0][0], g[0][1]], [g[1][0], g[1][1]]]),
-            exec::ImageLod::GradientsBias(g, bias) => {
+            ImageLod::Implicit => Lod::Implicit,
+            ImageLod::Bias(bias) => Lod::Bias(bias),
+            ImageLod::Level(level) => Lod::Level(level),
+            ImageLod::Gradients(g) => Lod::Gradients([[g[0][0], g[0][1]], [g[1][0], g[1][1]]]),
+            ImageLod::GradientsBias(g, bias) => {
                 Lod::GradientsBias([[g[0][0], g[0][1]], [g[1][0], g[1][1]]], bias)
             }
         };
@@ -173,11 +308,8 @@ pub trait Sampler {
         })
     }
     /// A texel load of any texture. A 2D or 3D one (or a 2D array's layer) goes to [`Sampler::load`].
-    fn load_image(&mut self, request: exec::ImageLoad<u32>) -> std::result::Result<[u32; 4], String> {
-        if !matches!(request.dim, exec::Dim::D2 | exec::Dim::D3)
-            || request.storage
-            || request.sample.is_some()
-        {
+    fn load_image(&mut self, request: ImageLoad<u32>) -> std::result::Result<[u32; 4], String> {
+        if !matches!(request.dim, Dim::D2 | Dim::D3) || request.storage || request.sample.is_some() {
             return Err(format!(
                 "t{}: this sampler answers 2D, array and 3D loads of shader resources only",
                 request.texture
@@ -194,16 +326,16 @@ pub trait Sampler {
         })
     }
     /// A texture's size, level count, layer count or sample count.
-    fn query_image(&mut self, request: exec::ImageQuery<u32>) -> std::result::Result<[u32; 4], String> {
+    fn query_image(&mut self, request: ImageQuery<u32>) -> std::result::Result<[u32; 4], String> {
         Err(format!("t{}: no queries given", request.texture))
     }
     /// An atomic operation on a texel of a single-channel 32-bit unordered-access texture; its result is the word as it
     /// was before.
-    fn atomic_image(&mut self, request: exec::ImageAtomic<u32>) -> std::result::Result<u32, String> {
+    fn atomic_image(&mut self, request: ImageAtomic<u32>) -> std::result::Result<u32, String> {
         Err(format!("u{}: no image atomics given", request.view))
     }
     /// A write to an unordered-access texture; the plain form is [`Sampler::store`].
-    fn store_image(&mut self, request: exec::ImageStore<u32>) -> std::result::Result<(), String> {
+    fn store_image(&mut self, request: ImageStore<u32>) -> std::result::Result<(), String> {
         self.store(Store {
             view: request.view,
             address: [
