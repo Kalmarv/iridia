@@ -1,52 +1,136 @@
-//! What a G-buffer pixel program's output stores say about the lanes the G-buffer's roles name, read from the program
-//! lifted by [`primase_dxil::lift`]: for each colour output the interface declares (`SV_Target<n>`), the local
-//! variable the entry point's result takes it from, and the stores into that variable's lanes. Nothing here is read
-//! from a program's name or a local's name.
-//!
-//! The G-buffer the `PS_DeferredTextured*` programs write (the layout is checked against the programs by evaluating
-//! them, `tests/gbuffer_layout.rs`):
-//!
-//! | target | lanes | carries |
-//! |---|---|---|
-//! | 0 | xyz | the diffuse colour (texture times the material's colour, darkened by wetness) |
-//! | 0 | w | a byte of the draw's state, from the engine's constants |
-//! | 1 | xyz | the world normal biased to 0 to 1 (`n * 0.5 + 0.5`) |
-//! | 1 | w | the normal's sub-step bits for the lighting passes (3, 3 and 2 bits of x, y and z in one byte; the twiddle effects write them, the others `saturate(128 z - 127)`): no role, `tests/gbuffer_normal_w.rs` |
-//! | 2 | x | the specular intensity, stored as its square root |
-//! | 2 | y | the specular falloff over 512, stored as its square root (the lighting passes read `y * y * 512`) |
-//! | 2 | z | the Fresnel term |
-//! | 3 | x, y | the occlusion of the natural and of the artificial ambient: `sqrt((a + k * vertex colour) / 2)` through constants; the ambient lighting pass scales each ambient by the square of twice the stored square (`tests/gbuffer_encodings.rs`) |
-//! | 3 | z | the emission over 16 (the constant 0 where the effect has none) |
-//! | 3 | w | a flag: where above one half the ambient pass multiplies both occlusions by `deferredLightTexture2.x`: no role |
-//! | 4 | xy | the screen-space displacement to the previous frame's position, in pixels |
-//!
-//! A program need not write a lane the way its family usually does (one effect stores target 1 as `v / 256`, a program
-//! that writes no emission stores the constant 0 there), so what a lane holds is read per program, as the facts of
-//! [`GBufferWrites`].
-use std::collections::BTreeSet;
+//! What a program's entry point stores into its outputs, lane by lane, read from its lifted module: for each output the
+//! interface declares, the local variable the entry point's result takes it from, and the stores into that variable's
+//! lanes, in every branch. [`OutputStores`] gives a colour target's lanes (`SV_Target<n>`) and the constant rows an
+//! output is made of, and tests how a stored value is made (`x * 0.5 + 0.5`, `floor(x) / 256`, a square root, the
+//! constant 0), seeing through the bit casts the lifters write every output word with and the loads of a local variable
+//! assigned once. Nothing here is read from a program's name or a local's name; what the lanes of a game's G-buffer
+//! are is the game's reading (`primase-gta`'s `gbuffer`).
+use std::collections::{BTreeMap, BTreeSet};
 
 use naga::{BinaryOperator, Expression, Function, Handle, Literal, MathFunction, Statement};
-use primase_core::shader::{Interface, SystemValue};
 
-/// See the module documentation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GBufferWrites {
-    /// Target 1's x, y and z are each stored as `n * 0.5 + 0.5` (a product with a factor 0.5, plus 0.5).
-    pub normal_biased: bool,
-    /// Target 1's x, y and z are each the constant 0: the pass writes no normal.
-    pub normal_zero: bool,
-    /// Target 1's x, y and z are each stored as `floor(n * 128 + 128) / 256`, the fractional bits packed into w.
-    pub normal_floored: bool,
-    /// Target 2's x is stored as a square root, or as the constant 0 (zero in any encoding).
-    pub specular_intensity_encoded: bool,
-    /// Target 2's y is stored as a square root, or as the constant 0.
-    pub specular_exponent_encoded: bool,
-    /// Target 2's z is written.
-    pub fresnel_written: bool,
-    /// Target 3's z is stored as something other than the constant 0.
-    pub emission_written: bool,
-    /// Target 4's x and y are written.
-    pub motion_written: bool,
+use crate::{Interface, Label, Program, SystemValue};
+
+/// What a program's entry point stores into its outputs' lanes, and tests of how a stored value is made.
+#[derive(Debug)]
+pub struct OutputStores<'a> {
+    program: &'a Program,
+    function: &'a Function,
+    /// For each of the interface's outputs, the local variable the entry point's result takes it from.
+    variables: Vec<Option<Handle<naga::LocalVariable>>>,
+    /// Every store into a lane of a local variable, as (variable, lane, stored value).
+    stores: Vec<(Handle<naga::LocalVariable>, u32, Handle<Expression>)>,
+    reading: Reading<'a>,
+}
+
+impl<'a> OutputStores<'a> {
+    /// The stores of `program`'s entry point, or why they cannot be read: an error where the entry point's result is
+    /// not composed of its outputs from local variables (the lifted program is not shaped as this reading expects).
+    pub fn of(program: &'a Program) -> Result<Self, String> {
+        let function = &program
+            .module
+            .entry_points
+            .first()
+            .ok_or("a program without an entry point")?
+            .function;
+        let variables = output_variables(function, &program.interface)?;
+        let mut stores = Vec::new();
+        collect(function, &function.body, &mut stores);
+        Ok(Self {
+            program,
+            function,
+            variables,
+            stores,
+            reading: Reading::new(function),
+        })
+    }
+
+    /// The values stored into lane `lane` of colour target `target` (`SV_Target<target>`), in every branch; empty where
+    /// the program declares no such target or stores nothing there.
+    pub fn lane(&self, target: u32, lane: u32) -> Vec<Handle<Expression>> {
+        let Some(at) = self
+            .program
+            .interface
+            .outputs
+            .iter()
+            .position(|v| v.system == Some(SystemValue::Target(target)))
+        else {
+            return Vec::new();
+        };
+        let Some(Some(variable)) = self.variables.get(at) else {
+            return Vec::new();
+        };
+        self.stores
+            .iter()
+            .filter(|(v, l, _)| v == variable && *l == lane)
+            .map(|(_, _, value)| *value)
+            .collect()
+    }
+
+    /// `x * 0.5 + 0.5` (the literals on either side, `x` a product with a factor 0.5 or the `fma` of it).
+    pub fn is_biased(&self, value: Handle<Expression>) -> bool {
+        self.reading.is_biased(value)
+    }
+
+    /// `floor(x) * (1/256)`.
+    pub fn is_floored_byte(&self, value: Handle<Expression>) -> bool {
+        self.reading.is_floored_byte(value)
+    }
+
+    /// The square root of something.
+    pub fn is_sqrt(&self, value: Handle<Expression>) -> bool {
+        self.reading.is_sqrt(value)
+    }
+
+    /// The constant 0.
+    pub fn is_zero(&self, value: Handle<Expression>) -> bool {
+        self.reading.is_zero(value)
+    }
+
+    /// The constant-buffer rows (by buffer binding, then row) the output labelled `output` is computed from: every
+    /// `cb[row]` the stores into the output's variable reach. For checking what an interpolant depends on.
+    pub fn constant_rows(&self, output: &Label) -> Result<BTreeMap<u32, BTreeSet<u32>>, String> {
+        let at = self
+            .program
+            .interface
+            .outputs
+            .iter()
+            .position(|v| &v.label == output)
+            .ok_or("the program has no such output")?;
+        let Some(Some(variable)) = self.variables.get(at) else {
+            return Err("the output's variable is not found".into());
+        };
+        let mut rows: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+        let mut seen = BTreeSet::new();
+        let mut work: Vec<Handle<Expression>> = self
+            .stores
+            .iter()
+            .filter(|(v, _, _)| v == variable)
+            .map(|(_, _, value)| *value)
+            .collect();
+        while let Some(handle) = work.pop() {
+            if !seen.insert(handle.index()) {
+                continue;
+            }
+            let Ok(e) = self.function.expressions.try_get(handle) else {
+                continue;
+            };
+            if let Expression::AccessIndex { base, index } = e
+                && let Ok(Expression::GlobalVariable(g)) = self.function.expressions.try_get(*base)
+                && let Some(binding) = self
+                    .program
+                    .module
+                    .global_variables
+                    .try_get(*g)
+                    .ok()
+                    .and_then(|g| g.binding)
+            {
+                rows.entry(binding.binding).or_default().insert(*index);
+            }
+            work.extend(operands(e));
+        }
+        Ok(rows)
+    }
 }
 
 /// The stores of a block, in every branch of it, as (local variable, lane, stored value).
@@ -163,68 +247,13 @@ fn output_variables(
     result.ok_or_else(|| "the entry point returns no value".to_owned())
 }
 
-/// The writes of a DXIL container's pixel program, or why they cannot be read: an error where no output's stores are
-/// found (the lifted program is not shaped as this reading expects).
-pub fn writes(container: &[u8]) -> Result<GBufferWrites, String> {
-    let program = primase_dxil::lift(container).map_err(|e| e.to_string())?;
-    let function = &program
-        .module
-        .entry_points
-        .first()
-        .ok_or("a program without an entry point")?
-        .function;
-    let variables = output_variables(function, &program.interface)?;
-    let mut stores = Vec::new();
-    collect(function, &function.body, &mut stores);
-    // the stored values of a lane of target n
-    let lane = |target: u32, lane: u32| -> Vec<Handle<Expression>> {
-        let Some(at) = program
-            .interface
-            .outputs
-            .iter()
-            .position(|v| v.system == Some(SystemValue::Target(target)))
-        else {
-            return Vec::new();
-        };
-        let Some(Some(variable)) = variables.get(at) else {
-            return Vec::new();
-        };
-        stores
-            .iter()
-            .filter(|(v, l, _)| v == variable && *l == lane)
-            .map(|(_, _, value)| *value)
-            .collect()
-    };
-    let found: usize = (0..5u32)
-        .map(|t| (0..4u32).map(|l| lane(t, l).len()).sum::<usize>())
-        .sum();
-    if found == 0 {
-        return Err("no stores into the colour outputs' variables found".into());
-    }
-    let every = |target: u32, l: u32, test: &dyn Fn(Handle<Expression>) -> bool| {
-        let values = lane(target, l);
-        !values.is_empty() && values.iter().all(|v| test(*v))
-    };
-    let emission = lane(3, 2);
-    let r = Reading::new(function);
-    Ok(GBufferWrites {
-        normal_biased: (0..3).all(|l| every(1, l, &|v| r.is_biased(v))),
-        normal_floored: (0..3).all(|l| every(1, l, &|v| r.is_floored_byte(v))),
-        normal_zero: (0..3).all(|l| every(1, l, &|v| r.is_zero(v))),
-        specular_intensity_encoded: every(2, 0, &|v| r.is_sqrt(v) || r.is_zero(v)),
-        specular_exponent_encoded: every(2, 1, &|v| r.is_sqrt(v) || r.is_zero(v)),
-        fresnel_written: !lane(2, 2).is_empty(),
-        emission_written: !emission.is_empty() && emission.iter().any(|v| !r.is_zero(*v)),
-        motion_written: !lane(4, 0).is_empty() && !lane(4, 1).is_empty(),
-    })
-}
-
 /// A function and what is stored into its local variables as a whole (`v = value`), so that the load of a variable
 /// assigned once reads as the value assigned: the programs that compute a G-buffer lane before a conditional discard
 /// keep it in a variable.
+#[derive(Debug)]
 struct Reading<'a> {
     function: &'a Function,
-    assigned: std::collections::BTreeMap<usize, Vec<Handle<Expression>>>,
+    assigned: BTreeMap<usize, Vec<Handle<Expression>>>,
 }
 
 impl<'a> Reading<'a> {
@@ -232,7 +261,7 @@ impl<'a> Reading<'a> {
         fn whole(
             function: &Function,
             block: &naga::Block,
-            out: &mut std::collections::BTreeMap<usize, Vec<Handle<Expression>>>,
+            out: &mut BTreeMap<usize, Vec<Handle<Expression>>>,
         ) {
             for statement in block {
                 match statement {
@@ -257,7 +286,7 @@ impl<'a> Reading<'a> {
                 }
             }
         }
-        let mut assigned = std::collections::BTreeMap::new();
+        let mut assigned = BTreeMap::new();
         whole(function, &function.body, &mut assigned);
         Self { function, assigned }
     }
@@ -409,59 +438,4 @@ fn operands(e: &Expression) -> Vec<Handle<Expression>> {
         Expression::Load { pointer } => vec![*pointer],
         _ => Vec::new(),
     }
-}
-
-/// The constant-buffer rows (by buffer binding, then row) an output of a program's entry point is computed from: every
-/// `cb[row]` the stores into the output's variable reach. For checking what an interpolant depends on.
-pub fn constant_rows(
-    container: &[u8],
-    output: &primase_core::shader::Label,
-) -> Result<std::collections::BTreeMap<u32, BTreeSet<u32>>, String> {
-    let program = primase_dxil::lift(container).map_err(|e| e.to_string())?;
-    let function = &program
-        .module
-        .entry_points
-        .first()
-        .ok_or("a program without an entry point")?
-        .function;
-    let variables = output_variables(function, &program.interface)?;
-    let at = program
-        .interface
-        .outputs
-        .iter()
-        .position(|v| &v.label == output)
-        .ok_or("the program has no such output")?;
-    let Some(Some(variable)) = variables.get(at) else {
-        return Err("the output's variable is not found".into());
-    };
-    let mut stores = Vec::new();
-    collect(function, &function.body, &mut stores);
-    let mut rows: std::collections::BTreeMap<u32, BTreeSet<u32>> = std::collections::BTreeMap::new();
-    let mut seen = BTreeSet::new();
-    let mut work: Vec<Handle<Expression>> = stores
-        .iter()
-        .filter(|(v, _, _)| v == variable)
-        .map(|(_, _, value)| *value)
-        .collect();
-    while let Some(handle) = work.pop() {
-        if !seen.insert(handle.index()) {
-            continue;
-        }
-        let Ok(e) = function.expressions.try_get(handle) else {
-            continue;
-        };
-        if let Expression::AccessIndex { base, index } = e
-            && let Ok(Expression::GlobalVariable(g)) = function.expressions.try_get(*base)
-            && let Some(binding) = program
-                .module
-                .global_variables
-                .try_get(*g)
-                .ok()
-                .and_then(|g| g.binding)
-        {
-            rows.entry(binding.binding).or_default().insert(*index);
-        }
-        work.extend(operands(e));
-    }
-    Ok(rows)
 }
