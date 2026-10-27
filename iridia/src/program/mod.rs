@@ -62,7 +62,9 @@ pub enum ClipDepth {
 /// Which way a vertical axis runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Origin {
+    /// Row 0 is at the top of the window or texture (Direct3D, Vulkan, Metal, WebGPU).
     TopLeft,
+    /// Row 0 is at the bottom (OpenGL).
     BottomLeft,
 }
 
@@ -71,6 +73,7 @@ pub enum Origin {
 /// runs it on another API's rules; the body itself is never rewritten for them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Conventions {
+    /// Which way clip-space depth runs.
     pub clip_depth: ClipDepth,
     /// Where window space (and so the fragment position) puts its origin.
     pub fragment_origin: Origin,
@@ -125,6 +128,7 @@ pub struct Provenance {
     pub target: String,
     /// The lifter that built it and its version, so a cache keyed by (bytecode hash, lifter version) knows what is stale.
     pub lifter: String,
+    /// The version of the lifter that built it, bumped when its output for the same bytes changes.
     pub lifter_version: u32,
     /// The hash of the bytes the lifter was given (`sha256:` and the digits, [`crate::source_hash`]), which the lifter
     /// computes: a program a lifter made has it, one built by hand may not.
@@ -136,15 +140,21 @@ pub struct Provenance {
 /// A shader program: the module, and what the module cannot say.
 #[derive(Clone, Debug)]
 pub struct Program {
+    /// The naga module; it has exactly one entry point, or the functions of [`Program::stage`] when that stage has none.
     pub module: Module,
+    /// The stage the program runs in.
     pub stage: Stage,
     /// The entry point's name; the module has exactly one entry point, of this stage.
     pub entry: String,
+    /// The varyings, resources and stage facts the module cannot say.
     pub interface: Interface,
     /// The module global each resource of the interface is, by id.
     pub bindings: Vec<(ResourceId, Handle<naga::GlobalVariable>)>,
+    /// The pipeline rules the program was written for.
     pub conventions: Conventions,
+    /// Which of Direct3D's behaviours the body spells out.
     pub modes: D3dModes,
+    /// Where the program came from.
     pub provenance: Provenance,
     /// What the lifter approximated or could not state exactly, each once and sorted (`min-precision operands computed
     /// at 32 bits`): the program means what its body says, and a consumer shows these beside it.
@@ -193,7 +203,12 @@ pub enum Error {
     Invalid(String),
     /// A writer cannot express the program and refuses it rather than approximate.
     #[error("{writer} cannot write this program: {detail}")]
-    Unsupported { writer: &'static str, detail: String },
+    Unsupported {
+        /// The writer's name (`WGSL`).
+        writer: &'static str,
+        /// What it cannot express.
+        detail: String,
+    },
     /// The pipeline a program is written for asks what the program cannot meet ([`crate::emit::Pipeline`]).
     #[error("the pipeline cannot take this program: {0}")]
     Pipeline(String),

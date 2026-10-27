@@ -12,27 +12,45 @@ use iridia_interface::{
 pub enum Error {
     /// A number the enum has no name for.
     #[error("{what} {value} is not a known value")]
-    Unknown { what: &'static str, value: u32 },
+    Unknown {
+        /// The enum the number belongs to.
+        what: &'static str,
+        /// The number.
+        value: u32,
+    },
     /// A number the enum has, which the vocabulary does not carry.
     #[error("{what} {value} ({name}) is not mapped")]
     Unmapped {
+        /// The enum the number belongs to.
         what: &'static str,
+        /// The number.
         value: u32,
+        /// The enum member's name.
         name: &'static str,
     },
     /// A vector or matrix of a number of lanes or lines D3D does not have.
     #[error("{what} of {value} is not within 1 to 4")]
-    LaneCount { what: &'static str, value: u32 },
+    LaneCount {
+        /// What has the lanes or lines (a vector, a matrix).
+        what: &'static str,
+        /// The count D3D stored.
+        value: u32,
+    },
+    /// A D3D array of zero elements.
     #[error("an array of no elements")]
     EmptyArray,
+    /// The size of one array element overflows 32 bits.
     #[error("array element size overflow")]
     ArrayElementSize,
+    /// The size of the array overflows 32 bits.
     #[error("array size overflow")]
     ArraySize,
     /// A signature element (its semantic name and index), and what is wrong with it.
     #[error("{element}: {problem}")]
     Element {
+        /// The element's semantic name followed by its index (`TEXCOORD1`).
         element: String,
+        /// What is wrong with it.
         problem: ElementProblem,
     },
 }
@@ -40,39 +58,72 @@ pub enum Error {
 /// What is wrong with a signature element ([`Error::Element`]).
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ElementProblem {
+    /// The element's lane masks name lanes outside the register's four.
     #[error("lane masks {mask:#x} and {read_write_mask:#x} are not within the register's four lanes")]
-    LaneMasks { mask: u8, read_write_mask: u8 },
+    LaneMasks {
+        /// The element's lane mask as stored.
+        mask: u8,
+        /// The second mask as stored.
+        read_write_mask: u8,
+    },
+    /// The element's register is not one a signature has.
     #[error("register {register} is not one of the {limit} a signature has (0 to {last})", last = limit.saturating_sub(1))]
-    Register { register: u32, limit: u32 },
+    Register {
+        /// The register as stored.
+        register: u32,
+        /// How many registers a signature has.
+        limit: u32,
+    },
+    /// The element's system value is not one this stage takes in this direction.
     #[error(
         "{} as {} of the {stage:?} stage",
         describe("D3D_NAME", *value, *name),
         if *output { "an output" } else { "an input" }
     )]
     SystemValue {
+        /// The stored `D3D_NAME` number.
         value: u32,
+        /// The number's name, where it has one.
         name: Option<&'static str>,
+        /// The stage the signature is of.
         stage: Stage,
+        /// True for an output signature, false for an input one.
         output: bool,
     },
+    /// The `SV_` semantic name names another system value than the stored number.
     #[error("the semantic disagrees with its stored D3D_NAME {stored}")]
-    SemanticDisagrees { stored: u32 },
+    SemanticDisagrees {
+        /// The stored `D3D_NAME`.
+        stored: u32,
+    },
+    /// The `SV_` semantic name is no system value of the graphics pipeline.
     #[error("system-value semantic {name} is not mapped")]
-    SemanticUnmapped { name: String },
+    SemanticUnmapped {
+        /// The semantic name.
+        name: String,
+    },
+    /// The stored register component type is not 1 (uint), 2 (sint) or 3 (float).
     #[error("{}", describe("signature component type", *value, None))]
-    ComponentType { value: u32 },
+    ComponentType {
+        /// The stored `D3D_REGISTER_COMPONENT_TYPE`.
+        value: u32,
+    },
 }
 
 /// One element of a D3D signature as it is stored (`ISGN`, `OSGN`, `ISG1`, `OSG1`).
 #[derive(Clone, Copy, Debug)]
 pub struct Element<'a> {
+    /// The semantic name (`TEXCOORD`, `SV_Target`) of the stored element.
     pub name: &'a str,
+    /// The semantic index.
     pub index: u32,
     /// `D3D_NAME`.
     pub system_value: u32,
     /// `D3D_REGISTER_COMPONENT_TYPE`.
     pub component_type: u32,
+    /// The register number; `u32::MAX` for a system value that takes none.
     pub register: u32,
+    /// The lanes the element occupies: bit 0 is x, bit 3 is w.
     pub mask: u8,
     /// The signature's second mask: for an input the lanes always read, for an output the lanes never written.
     pub read_write_mask: u8,
@@ -337,7 +388,9 @@ const REGISTER: u32 = 16;
 /// The two D3D buffer layouts. Structured elements align to their scalar components, not constant registers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Packing {
+    /// Constant-buffer packing: every value aligns to a 16-byte register.
     Constant,
+    /// Structured-buffer packing: a value aligns to its scalar components.
     Structured,
 }
 

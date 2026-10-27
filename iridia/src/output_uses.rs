@@ -10,7 +10,9 @@ use crate::{Interface, ProgramGraph, SystemValue};
 /// The lanes [`bind_output_uses`] bound, for a log.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputUses {
+    /// Lanes bound as `OutputRole::Coverage`.
     pub coverage: u32,
+    /// Lanes bound as `OutputRole::Opacity`.
     pub opacity: u32,
 }
 

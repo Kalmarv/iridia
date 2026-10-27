@@ -24,6 +24,7 @@ use super::{Builder, Kind};
 pub enum Term {
     /// Leaves the program (a return, an unreachable).
     Exit,
+    /// Continues to node `.0`.
     Goto(usize),
     /// A two-way branch: `then`, `otherwise`.
     If(usize, usize),
@@ -34,6 +35,7 @@ pub enum Term {
 /// A control flow graph: node 0 is the entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cfg {
+    /// How each node ends, by node number.
     pub terms: Vec<Term>,
 }
 
@@ -45,6 +47,7 @@ pub type Label = usize;
 pub enum Code {
     /// The node's own statements (not its terminator).
     Node(usize),
+    /// The items in order.
     Seq(Vec<Code>),
     /// Code that a [`Code::Br`] to the label leaves for what follows.
     Block(Label, Box<Code>),
@@ -54,7 +57,9 @@ pub enum Code {
     If(usize, Box<Code>, Box<Code>),
     /// The multi-way branch that ends the node: the code of each target in case order, the default last.
     Switch(usize, Vec<Code>),
+    /// Leaves the block labelled `.0`.
     Br(Label),
+    /// Restarts the loop labelled `.0`.
     Continue(Label),
     /// The values the edge carries (phi copies), before the branch it belongs to.
     Edge(usize, usize),
@@ -65,16 +70,27 @@ pub enum Code {
 /// Why a graph cannot be structured.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
+    /// The graph is irreducible.
     #[error(
         "irreducible control flow: the loop entered at node {entry} has a second entry through node {other}"
     )]
-    Irreducible { entry: usize, other: usize },
+    Irreducible {
+        /// The node the loop is entered at.
+        entry: usize,
+        /// The node of a second entry.
+        other: usize,
+    },
+    /// The graph has no nodes.
     #[error("the graph has no nodes, where node 0 is its entry")]
     Empty,
+    /// A branch targets a node the graph does not have.
     #[error("node {node} branches to node {target}, where the graph has {nodes} nodes")]
     Dangling {
+        /// The node that branches.
         node: usize,
+        /// The node it branches to.
         target: usize,
+        /// The number of nodes the graph has.
         nodes: usize,
     },
 }
@@ -350,6 +366,7 @@ fn simplify(code: Code) -> Code {
 
 /// What the lowering asks of the lifter that owns the nodes' contents.
 pub trait Emit {
+    /// The error a lifter's emitters report; it is passed through unchanged.
     type Error;
     /// The node's own statements, into the builder's open block.
     fn node(&mut self, b: &mut Builder, node: usize) -> Result<(), Self::Error>;

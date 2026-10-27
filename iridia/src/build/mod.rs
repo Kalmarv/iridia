@@ -20,12 +20,17 @@ use naga::{
 /// The scalar kind of a typed value: unsigned, signed, float or bool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// Unsigned 32-bit integer.
     U,
+    /// Signed 32-bit integer.
     I,
+    /// 32-bit float.
     F,
+    /// Boolean.
     B,
 }
 impl Kind {
+    /// The naga scalar this kind is carried as (32 bits wide; a bool is a bool).
     pub fn scalar(self) -> Scalar {
         match self {
             Kind::U => Scalar::U32,
@@ -34,6 +39,7 @@ impl Kind {
             Kind::B => Scalar::BOOL,
         }
     }
+    /// The naga scalar kind of [`Kind::scalar`].
     pub fn kind(self) -> ScalarKind {
         self.scalar().kind
     }
@@ -42,8 +48,11 @@ impl Kind {
 /// An expression with its kind and width (1 for a scalar, 2 to 4 for a vector).
 #[derive(Clone, Copy, Debug)]
 pub struct Val {
+    /// The expression holding the value.
     pub expr: Handle<Expression>,
+    /// The scalar kind of every lane.
     pub kind: Kind,
+    /// Number of lanes, 1 to 4.
     pub width: u8,
 }
 
@@ -64,6 +73,8 @@ fn width_of(lanes: usize) -> u8 {
     u8::try_from(lanes).unwrap_or(u8::MAX)
 }
 
+/// The naga vector size of `width` lanes.\n\n# Panics\n\nPanics unless `width` is 2, 3 or 4: a lifter asks for vectors
+/// only of the widths a value can have.
 pub fn vector_size(width: u8) -> VectorSize {
     match width {
         2 => VectorSize::Bi,
@@ -73,6 +84,7 @@ pub fn vector_size(width: u8) -> VectorSize {
     }
 }
 
+/// The swizzle component for lane 0 (x) to 3 (w); any larger lane is w.
 pub fn component(lane: u8) -> SwizzleComponent {
     match lane {
         0 => SwizzleComponent::X,
@@ -93,7 +105,9 @@ pub fn component(lane: u8) -> SwizzleComponent {
 /// for a lifter's own bugs.
 #[derive(Debug)]
 pub struct Builder {
+    /// The module being built.
     pub module: Module,
+    /// The entry function being built (its body is assembled from [`Builder::blocks`] when the module is finished).
     pub function: Function,
     /// The blocks being filled, innermost last; statements go to the last.
     pub blocks: Vec<Block>,
@@ -110,6 +124,7 @@ impl Default for Builder {
     }
 }
 impl Builder {
+    /// A builder over an empty module with one open block.
     pub fn new() -> Self {
         Self {
             module: Module::default(),
@@ -139,11 +154,14 @@ impl Builder {
         );
     }
 
+    /// The type `inner` in the module (types equal to an earlier one are shared).
     pub fn ty(&mut self, inner: TypeInner) -> Handle<Type> {
         self.module
             .types
             .insert(Type { name: None, inner }, Span::UNDEFINED)
     }
+    /// The type of a value of `kind` and `width` lanes: a scalar for 1.\n\n# Panics\n\nPanics unless `width` is 1 to 4
+    /// (see [`vector_size`]).
     pub fn ty_of(&mut self, kind: Kind, width: u8) -> Handle<Type> {
         if width == 1 {
             self.ty(TypeInner::Scalar(kind.scalar()))
@@ -224,12 +242,14 @@ impl Builder {
             break_if: None,
         });
     }
+    /// Append `s` to the innermost open block.
     pub fn push(&mut self, s: Statement) {
         self.blocks
             .last_mut()
             .expect("a block is always open")
             .push(s, Span::UNDEFINED);
     }
+    /// A new local variable of the function, named `name` and uninitialised.
     pub fn local(&mut self, name: &str, ty: Handle<Type>) -> Handle<LocalVariable> {
         self.function.local_variables.append(
             LocalVariable {
@@ -240,12 +260,15 @@ impl Builder {
             Span::UNDEFINED,
         )
     }
+    /// A pointer expression to the local variable `l`.
     pub fn local_ptr(&mut self, l: Handle<LocalVariable>) -> Handle<Expression> {
         self.app(Expression::LocalVariable(l))
     }
+    /// A pointer expression to the global variable `g`.
     pub fn global_ptr(&mut self, g: Handle<GlobalVariable>) -> Handle<Expression> {
         self.app(Expression::GlobalVariable(g))
     }
+    /// A load through `ptr`, typed by the `kind` and `width` the caller states the pointee has.
     pub fn load(&mut self, ptr: Handle<Expression>, kind: Kind, width: u8) -> Val {
         Val {
             expr: self.app(Expression::Load { pointer: ptr }),
@@ -253,12 +276,14 @@ impl Builder {
             width,
         }
     }
+    /// Store `v` through `ptr`.
     pub fn store(&mut self, ptr: Handle<Expression>, v: Val) {
         self.push(Statement::Store {
             pointer: ptr,
             value: v.expr,
         });
     }
+    /// Add the global variable `g` to the module.
     pub fn global(&mut self, g: GlobalVariable) -> Handle<GlobalVariable> {
         self.module.global_variables.append(g, Span::UNDEFINED)
     }
@@ -268,9 +293,11 @@ impl Builder {
     }
 
     // literals
+    /// An unsigned integer literal.
     pub fn lit_u(&mut self, x: u32) -> Val {
         self.lit(Literal::U32(x), Kind::U)
     }
+    /// A signed integer literal.
     pub fn lit_i(&mut self, x: i32) -> Val {
         self.lit(Literal::I32(x), Kind::I)
     }
@@ -282,6 +309,7 @@ impl Builder {
         let bits = self.lit_u(x.to_bits());
         self.bitcast(bits, Kind::F)
     }
+    /// A boolean literal.
     pub fn lit_b(&mut self, x: bool) -> Val {
         self.lit(Literal::Bool(x), Kind::B)
     }
@@ -302,6 +330,8 @@ impl Builder {
         }
     }
 
+    /// `v` repeated across `width` lanes; `v` itself when it already has that many. A `v` that is not a scalar, or a
+    /// `width` outside 2 to 4, records a fault ([`Builder::check`]) and gives `v` back.
     pub fn splat(&mut self, v: Val, width: u8) -> Val {
         if v.width == width {
             return v;
@@ -438,6 +468,7 @@ impl Builder {
             width: v.width,
         }
     }
+    /// A unary operation; the result has `v`'s kind and width.
     pub fn unary(&mut self, op: UnaryOperator, v: Val) -> Val {
         Val {
             expr: self.app(Expression::Unary { op, expr: v.expr }),
@@ -468,6 +499,9 @@ impl Builder {
             width,
         }
     }
+    /// A math function of `args` (a scalar among vectors is splat to their width). The result is a scalar for `Dot`, a
+    /// `u32` for `Pack2x16float`, two floats for `Unpack2x16float` and otherwise has the first argument's kind and the
+    /// widest width. No arguments records a fault ([`Builder::check`]).
     pub fn math(&mut self, fun: MathFunction, args: &[Val]) -> Val {
         let Some(width) = args.iter().map(|a| a.width).max() else {
             self.fail("a math function of no arguments");
@@ -569,6 +603,10 @@ impl Builder {
         self.module
     }
 
+    /// Finish a module whose one entry point `name` runs in `stage` with these `arguments` and `result`;
+    /// `early_depth_test` forces early depth testing. The entry's workgroup size is [`Builder::workgroup_size`].\n\n#
+    /// Panics\n\nPanics on a fault nobody checked ([`Builder::check`]) or on control flow left open: both are a lifter's
+    /// own bugs.
     pub fn finish(
         mut self,
         name: &str,

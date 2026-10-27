@@ -13,7 +13,9 @@ use crate::{ProgramGraph, SystemValue};
 /// neutral 0.5 texture answer when freezing the test off: the recognized perturbation is then exactly zero.
 #[derive(Clone, Copy, Debug)]
 pub struct AlphaDither {
+    /// The interface resource of the dither texture.
     pub texture: ResourceId,
+    /// Word offset of the dither scale in the reference's own buffer.
     pub scale_word: u32,
 }
 
@@ -283,22 +285,32 @@ fn has_signal(v: &Values, id: NodeId) -> bool {
 /// [`AlphaExpr::Other`], named, never guessed at.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AlphaExpr {
+    /// A constant.
     Literal(f64),
     /// A word of a constant buffer: the buffer's resource and the word's index.
     Word {
+        /// The constant buffer's resource.
         buffer: ResourceId,
+        /// The word's index in the buffer (a 32-bit word).
         word: u32,
     },
     /// A lane of a texture sample. `sample` identifies the read (two samples of one texture at different coordinates are
     /// two values).
     Texel {
+        /// The node of the texture read.
         sample: NodeId,
+        /// The texture's resource.
         resource: ResourceId,
+        /// The lane of the texel, 0 for x.
         lane: u8,
     },
+    /// The negation of the operand.
     Negate(Box<AlphaExpr>),
+    /// The sum of the operands.
     Add(Box<AlphaExpr>, Box<AlphaExpr>),
+    /// The first operand minus the second.
     Subtract(Box<AlphaExpr>, Box<AlphaExpr>),
+    /// The product of the operands.
     Multiply(Box<AlphaExpr>, Box<AlphaExpr>),
     /// What the expression is made of that this does not follow, as the graph names it.
     Other(String),
@@ -417,8 +429,11 @@ impl std::fmt::Display for AlphaExpr {
 /// One discard of a program: it discards where `tested` is below the constant-buffer word `word` of `buffer`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AlphaTest {
+    /// The constant buffer resource.
     pub buffer: ResourceId,
+    /// The index of the 32-bit word compared against.
     pub word: u32,
+    /// The value below the word at which the program discards.
     pub tested: AlphaExpr,
 }
 
@@ -463,7 +478,9 @@ pub enum Known {
 pub struct Linear {
     /// The varying sample (its read, texture and lane); `None` where the value is a constant.
     pub sample: Option<(NodeId, ResourceId, u8)>,
+    /// The factor of the sample.
     pub scale: f64,
+    /// The term added to the scaled sample.
     pub offset: f64,
 }
 

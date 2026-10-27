@@ -13,13 +13,19 @@ use crate::{IoItem, IoType, MeshFacts, MeshTopology};
 /// The output variable and where its parts are.
 #[derive(Clone, Debug)]
 pub struct MeshOutput {
+    /// The workgroup variable that holds the whole output.
     pub global: Handle<GlobalVariable>,
+    /// The structure type of one output vertex.
     pub vertex_type: Handle<Type>,
+    /// The structure type of one output primitive.
     pub primitive_type: Handle<Type>,
     /// The output variable's member indices.
     pub vertex_count: u32,
+    /// Member index of the primitive count the program writes.
     pub primitive_count: u32,
+    /// Member index of the array of vertices.
     pub vertices: u32,
+    /// Member index of the array of primitives.
     pub primitives: u32,
     /// The primitive type's one member: the vertex indices.
     pub indices_member: u32,

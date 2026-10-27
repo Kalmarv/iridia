@@ -19,7 +19,9 @@ use crate::{
 /// perspective-correct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClipVaryings {
+    /// The location of the first clip distance varying.
     pub first: u32,
+    /// How many clip distances there are.
     pub count: u32,
 }
 
@@ -52,6 +54,7 @@ pub struct Pipeline<'a> {
 /// A program's WGSL for a [`Pipeline`], and where the pipeline finds what the text holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
+    /// The WGSL source.
     pub text: String,
     /// The group and binding of every resource of the program in the text.
     pub bindings: BTreeMap<ResourceId, (u32, u32)>,

@@ -49,6 +49,7 @@
 //! Running a program on the CPU is the `iridia-exec` crate.
 //!
 //! The vocabulary types are those of [`iridia_interface`], re-exported here.
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),

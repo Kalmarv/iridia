@@ -69,18 +69,28 @@ pub enum At {
     /// The component's place in the global's lanes, in order (a constant buffer's row `r`, lane `l` is `4r + l`).
     Component(u32),
     /// A lane of an element the program indexes at run time, by these index values.
-    Indexed { lane: u32, index: Vec<NodeId> },
+    Indexed {
+        /// The lane of the element.
+        lane: u32,
+        /// The values of the indices, outermost first.
+        index: Vec<NodeId>,
+    },
 }
 
 /// An operation of the module ([`Node::Op`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Op {
+    /// A unary operator.
     Unary(UnaryOperator),
+    /// A binary operator.
     Binary(BinaryOperator),
+    /// A math function.
     Math(MathFunction),
+    /// A relational function.
     Relational(RelationalFunction),
     /// `select(reject, accept, condition)`: the operands are the condition, the accepted value and the rejected one.
     Select,
+    /// A derivative along an axis, with the control it asks for.
     Derivative(DerivativeAxis, DerivativeControl),
     /// A conversion to another scalar kind (not a bitcast, which leaves a value as it is).
     Convert(ScalarKind),
@@ -109,49 +119,69 @@ pub enum Supplied {
 pub enum Node {
     /// A lane of an input varying: its index in `Interface::inputs`.
     Input {
+        /// Index into `Interface::inputs`.
         input: usize,
+        /// The lane of the input, 0 for x.
         lane: u8,
     },
     /// A lane of a value the pipeline supplies ([`Supplied`]): a source of its own, not an input lane.
     Supplied {
+        /// Which supplied value.
         value: Supplied,
+        /// The lane of the value, 0 for x.
         lane: u8,
     },
     /// A component of a module global that is not a texture: a constant buffer's word, a buffer's, constant data the
     /// module carries. `resource` is the interface's resource it is bound as, `None` for a global no binding names.
     Global {
+        /// The interface resource it is bound as; `None` for a global no binding names.
         resource: Option<ResourceId>,
+        /// Where in the global the component is.
         at: At,
     },
     /// A lane of a texel a texture read returns. `coordinate` is the coordinate's (or address's) lanes in order;
     /// `controls` the rest that decides which texel: array layer, level, bias, gradients, offset, compare value.
     Texel {
+        /// The texture's interface resource; `None` for a global no binding names.
         resource: Option<ResourceId>,
+        /// Which lane (0 for x) of the returned texel.
         lane: u8,
+        /// How the texel is read.
         read: Read,
+        /// The coordinate's (or address's) lanes in order.
         coordinate: Vec<NodeId>,
+        /// The values that decide the texel besides the coordinate.
         controls: Vec<NodeId>,
     },
     /// What the program asks of a resource that is not its contents: an image's size, levels or samples, a buffer's
     /// length.
     Query {
+        /// The resource the query is about; `None` for a global no binding names.
         resource: Option<ResourceId>,
     },
+    /// A constant.
     Literal(Literal),
+    /// An operation on other nodes.
     Op {
+        /// The operation.
         op: Op,
+        /// Its operands in the order the operation takes them.
         operands: Vec<NodeId>,
     },
     /// After a branch whose arms leave different values here: one of `arms`, as `condition` (the branch's condition
     /// or switch selector, and those of the branches it is in) decides.
     Merge {
+        /// The nodes the branch is decided by.
         condition: Vec<NodeId>,
+        /// The value each branch arm leaves.
         arms: Vec<NodeId>,
     },
     /// A value a loop carries: one of `arms` (its value entering the loop and after each way an iteration ends),
     /// for as many iterations as `exit` (the conditions the loop is left by) decides.
     Loop {
+        /// The loop's value entering it and after each way an iteration ends.
         arms: Vec<NodeId>,
+        /// The conditions the loop is left by.
         exit: Vec<NodeId>,
     },
 }
@@ -253,6 +283,7 @@ impl Values {
         &self.patch_constants
     }
 
+    /// The node `id` names.\n\n# Panics\n\nPanics if `id` came from another `Values` graph with more nodes than this one.
     #[allow(clippy::indexing_slicing)] // a NodeId is made only by the graph it indexes
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
@@ -342,7 +373,9 @@ pub enum Via {
 /// One input lane: its index in `Interface::inputs` and the lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Lane {
+    /// Index into `Interface::inputs`.
     pub input: usize,
+    /// The lane of the input, 0 for x.
     pub lane: u8,
 }
 
@@ -350,15 +383,20 @@ pub struct Lane {
 /// program's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TexelLane {
+    /// The stage whose program reads the texture.
     pub stage: Stage,
+    /// The texture's interface resource in that program.
     pub resource: ResourceId,
+    /// The lane of the texel, 0 for x.
     pub lane: u8,
 }
 
 /// What may reach one output lane or the discard, each source with the strongest [`Via`] of its paths.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reach {
+    /// The input lanes that may reach it, each with the strongest way.
     pub inputs: BTreeMap<Lane, Via>,
+    /// The texel lanes that may reach it, each with the strongest way.
     pub texels: BTreeMap<TexelLane, Via>,
     /// After [`link`]: lanes of the pixel program's inputs no vertex output feeds (a front-face flag, a sample
     /// index), by the pixel interface.

@@ -10,7 +10,10 @@ use std::collections::BTreeMap;
 /// and texture coordinates count as dependencies, and runtime constants are not specialised.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VertexDemand {
+    /// Lanes of each vertex input that can affect the draw: the vertex program's `Interface::inputs` index to a lane mask
+    /// (bit 0 is x). An input with no entry is not needed.
     pub vertex: BTreeMap<usize, u8>,
+    /// Lanes of each pixel input the pixel program reads, by the same indexing, over the pixel program's inputs.
     pub pixel: BTreeMap<usize, u8>,
 }
 

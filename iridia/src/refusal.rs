@@ -33,13 +33,16 @@ impl fmt::Display for Unit {
 pub struct Refusal {
     /// The bytecode's name (`DXBC`, `DXIL`, `MojoShader GLSL`).
     pub bytecode: &'static str,
+    /// Which unit `at` counts.
     pub unit: Unit,
     /// Where, counted in `unit`.
     pub at: usize,
+    /// The reason, with the numbers it concerns.
     pub detail: String,
 }
 
 impl Refusal {
+    /// A refusal of `bytecode` at offset `at` (counted in `unit`) for `detail`.
     pub fn new(bytecode: &'static str, unit: Unit, at: usize, detail: impl Into<String>) -> Self {
         Self {
             bytecode,

@@ -21,6 +21,7 @@ impl Kind {
 /// The entry point's declared arguments and result structure.
 #[derive(Debug)]
 pub struct EntryDecl {
+    /// The arguments in interface order, one per input varying the module carries.
     pub arguments: Vec<FunctionArgument>,
     /// The structure `Out`, none when the program has no outputs.
     pub result: Option<Handle<Type>>,
@@ -29,7 +30,9 @@ pub struct EntryDecl {
 /// A stage function's declared arguments and result structure.
 #[derive(Debug)]
 pub struct FunctionDecl {
+    /// The arguments of the function, in the order of its signature.
     pub arguments: Vec<FunctionArgument>,
+    /// The structure `Out` holding the results; `None` when the function has none.
     pub result: Option<Handle<Type>>,
 }
 

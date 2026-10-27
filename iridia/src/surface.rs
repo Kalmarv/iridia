@@ -24,8 +24,11 @@ pub const BASE: usize = 0;
 pub const NORMAL: usize = 1;
 /// The roughness ([`Roughness`]): kind 1 stored, 2 a gloss, 3 a specular exponent.
 pub const ROUGHNESS: usize = 2;
+/// Row of the metallic term (a scalar, 0 to 1).
 pub const METALLIC: usize = 3;
+/// Row of the specular reflectance at normal incidence (a colour in three lanes).
 pub const REFLECTANCE: usize = 4;
+/// Row of the specular strength term (a scalar, 0 to 1).
 pub const SPECULAR: usize = 5;
 /// The emission ([`Emission`]): kind 1 a colour, 2 a scale of the albedo.
 pub const EMISSION: usize = 6;

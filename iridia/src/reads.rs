@@ -135,8 +135,11 @@ impl WordsRead {
 /// lifted again may number them otherwise than a stored interface), and the constant words its results are made of.
 #[derive(Clone, Debug)]
 pub struct ProgramGraph {
+    /// The program's value graph.
     pub values: Values,
+    /// The interface the graph's resource ids refer to.
     pub interface: Interface,
+    /// The constant-buffer words the results are made of.
     pub reads: WordsRead,
 }
 
