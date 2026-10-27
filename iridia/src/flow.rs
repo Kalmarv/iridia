@@ -226,10 +226,10 @@ impl Values {
             }
             for item in &sig.result {
                 let (width, count) = carried_shape(&item.ty)?;
-                for k in 0..width * count {
+                for k in 0..width.saturating_mul(count) {
                     walker
                         .result_lanes
-                        .push(item_lane(interface, item, k % width.max(1))?);
+                        .push(item_lane(interface, item, k.checked_rem(width).unwrap_or(0))?);
                 }
             }
             let walked = walker.run()?;
@@ -253,6 +253,7 @@ impl Values {
         &self.patch_constants
     }
 
+    #[allow(clippy::indexing_slicing)] // a NodeId is made only by the graph it indexes
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
     }
@@ -591,6 +592,15 @@ struct Place {
     /// The pointee's element lanes when a run-time index into a runtime-sized array chose it: no fixed place.
     runtime_sized: bool,
 }
+impl Place {
+    /// The place's first candidate.
+    fn first_start(&self) -> Result<usize, String> {
+        self.starts
+            .first()
+            .copied()
+            .ok_or_else(|| "a pointer to no place".to_owned())
+    }
+}
 
 /// The value an atomic exchange compares with, if it has one.
 fn compared(fun: &naga::AtomicFunction) -> Option<&Handle<Expression>> {
@@ -671,7 +681,7 @@ impl<'a> Walker<'a> {
         self.interned = nodes
             .iter()
             .enumerate()
-            .map(|(i, n)| (n.clone(), NodeId(i as u32)))
+            .map(|(i, n)| (n.clone(), node_id(i)))
             .collect();
         self.nodes = nodes;
     }
@@ -685,10 +695,12 @@ impl<'a> Walker<'a> {
         outputs: Option<&BTreeMap<(usize, u8), NodeId>>,
     ) -> Result<Vec<NodeId>, String> {
         let (width, count) = carried_shape(&item.ty)?;
-        let mut lanes = Vec::with_capacity(width * count);
+        // the capacity is a hint: an array of a hundred thousand elements is grown into, not reserved
+        let mut lanes = Vec::with_capacity(width.saturating_mul(count).min(1 << 16));
         for _ in 0..count {
             for k in 0..width {
-                let lane = k as u8;
+                let lane = u8::try_from(k)
+                    .map_err(|_| format!("lane {k} of a stage function's item is past 255"))?;
                 let node = match (item.list, item.varying) {
                     (ItemList::Inputs, Some(input)) => self.intern(Node::Input { input, lane }),
                     (ItemList::Outputs, Some(output)) => match outputs.and_then(|o| o.get(&(output, lane))) {
@@ -830,7 +842,7 @@ impl<'a> Walker<'a> {
         if let Some(&id) = self.interned.get(&node) {
             return id;
         }
-        let id = NodeId(self.nodes.len() as u32);
+        let id = node_id(self.nodes.len());
         self.nodes.push(node.clone());
         self.interned.insert(node, id);
         id
@@ -848,8 +860,8 @@ impl<'a> Walker<'a> {
     fn merge(&mut self, condition: Vec<NodeId>, mut arms: Vec<NodeId>) -> NodeId {
         let mut seen = BTreeSet::new();
         arms.retain(|a| seen.insert(*a));
-        if arms.len() == 1 {
-            return arms[0];
+        if let [only] = arms[..] {
+            return only;
         }
         self.intern(Node::Merge { condition, arms })
     }
@@ -865,15 +877,17 @@ impl<'a> Walker<'a> {
         match ty {
             TypeInner::Scalar(_) | TypeInner::Atomic(_) => 1,
             TypeInner::Vector { size, .. } => *size as usize,
-            TypeInner::Matrix { columns, rows, .. } => *columns as usize * *rows as usize,
+            TypeInner::Matrix { columns, rows, .. } => (*columns as usize).saturating_mul(*rows as usize),
             TypeInner::Array { base, size, .. } | TypeInner::BindingArray { base, size } => {
                 let element = self.width(&types[*base].inner);
                 match size {
-                    ArraySize::Constant(n) => element * n.get() as usize,
+                    ArraySize::Constant(n) => element.saturating_mul(n.get() as usize),
                     _ => element,
                 }
             }
-            TypeInner::Struct { members, .. } => members.iter().map(|m| self.width(&types[m.ty].inner)).sum(),
+            TypeInner::Struct { members, .. } => members.iter().fold(0usize, |total, m| {
+                total.saturating_add(self.width(&types[m.ty].inner))
+            }),
             TypeInner::Pointer { base, .. } => self.width(&types[*base].inner),
             TypeInner::ValuePointer { size, .. } => size.map_or(1, |s| s as usize),
             _ => 0,
@@ -885,10 +899,10 @@ impl<'a> Walker<'a> {
         let types = &self.module.types;
         let i = index as usize;
         Ok(match ty {
-            TypeInner::Vector { scalar, .. } => (i..i + 1, TypeInner::Scalar(*scalar)),
-            TypeInner::ValuePointer { scalar, .. } => (i..i + 1, TypeInner::Scalar(*scalar)),
+            TypeInner::Vector { scalar, .. } => (i..i.saturating_add(1), TypeInner::Scalar(*scalar)),
+            TypeInner::ValuePointer { scalar, .. } => (i..i.saturating_add(1), TypeInner::Scalar(*scalar)),
             TypeInner::Matrix { rows, scalar, .. } => (
-                i * *rows as usize..(i + 1) * *rows as usize,
+                i.saturating_mul(*rows as usize)..i.saturating_add(1).saturating_mul(*rows as usize),
                 TypeInner::Vector {
                     size: *rows,
                     scalar: *scalar,
@@ -897,7 +911,7 @@ impl<'a> Walker<'a> {
             TypeInner::Array { base, .. } | TypeInner::BindingArray { base, .. } => {
                 let inner = types[*base].inner.clone();
                 let w = self.width(&inner);
-                (i * w..(i + 1) * w, inner)
+                (i.saturating_mul(w)..i.saturating_add(1).saturating_mul(w), inner)
             }
             TypeInner::Struct { members, .. } => {
                 let mut at = 0;
@@ -905,9 +919,9 @@ impl<'a> Walker<'a> {
                     let inner = types[m.ty].inner.clone();
                     let w = self.width(&inner);
                     if k == i {
-                        return Ok((at..at + w, inner));
+                        return Ok((at..at.saturating_add(w), inner));
                     }
-                    at += w;
+                    at = at.saturating_add(w);
                 }
                 return Err(format!("member {index} of a struct of {} members", members.len()));
             }
@@ -998,11 +1012,11 @@ impl<'a> Walker<'a> {
 
     /// The value of `h` in `state`: an emitted expression's as its emit left it, any other evaluated now.
     fn value(&mut self, h: Handle<Expression>, state: &State) -> Result<Val, String> {
-        if let Some(v) = &self.cache[h.index()] {
+        if let Some(Some(v)) = self.cache.get(h.index()) {
             return Ok(v.clone());
         }
         let v = self.evaluate(h, state)?;
-        self.cache[h.index()] = Some(v.clone());
+        self.remember(h, v.clone());
         Ok(v)
     }
 
@@ -1014,10 +1028,9 @@ impl<'a> Walker<'a> {
         state: &State,
     ) -> Result<Vec<NodeId>, String> {
         let l = self.lanes(h, state)?;
-        Ok(if l.len() == 1 && width > 1 {
-            vec![l[0]; width]
-        } else {
-            l
+        Ok(match l[..] {
+            [only] if width > 1 => vec![only; width],
+            _ => l,
         })
     }
 
@@ -1047,7 +1060,10 @@ impl<'a> Walker<'a> {
             }
             Expression::Splat { size, value } => {
                 let v = self.lanes(value, state)?;
-                lanes(vec![v[0]; size as usize])
+                let &[first, ..] = v.as_slice() else {
+                    return Err("a splat of a value with no lanes".into());
+                };
+                lanes(vec![first; size as usize])
             }
             Expression::Swizzle {
                 size,
@@ -1055,7 +1071,9 @@ impl<'a> Walker<'a> {
                 pattern,
             } => {
                 let v = self.lanes(vector, state)?;
-                let out = pattern[..size as usize]
+                let out = pattern
+                    .get(..size as usize)
+                    .unwrap_or_default()
                     .iter()
                     .map(|c| v.get(*c as usize).copied().ok_or("a swizzle past the vector"))
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1086,8 +1104,9 @@ impl<'a> Walker<'a> {
                 let idx = self.lanes(index, state)?;
                 let mut out = Vec::new();
                 for k in 0..w {
-                    let mut operands: Vec<NodeId> =
-                        (0..count).filter_map(|e| v.get(e * w + k).copied()).collect();
+                    let mut operands: Vec<NodeId> = (0..count)
+                        .filter_map(|e| v.get(e.saturating_mul(w).saturating_add(k)).copied())
+                        .collect();
                     operands.extend(&idx);
                     out.push(self.op(Op::Index, operands));
                 }
@@ -1200,11 +1219,14 @@ impl<'a> Walker<'a> {
                 let c = self.broadcast(condition, width, state)?;
                 let a = self.broadcast(accept, width, state)?;
                 let r = self.broadcast(reject, width, state)?;
-                lanes(
-                    (0..width)
-                        .map(|k| self.op(Op::Select, vec![c[k], a[k], r[k]]))
-                        .collect(),
-                )
+                let mut out = Vec::new();
+                for k in 0..width {
+                    let (Some(&c), Some(&a), Some(&r)) = (c.get(k), a.get(k), r.get(k)) else {
+                        return Err(format!("a select of {width} lanes with a shorter operand"));
+                    };
+                    out.push(self.op(Op::Select, vec![c, a, r]));
+                }
+                lanes(out)
             }
             Expression::Derivative { axis, ctrl, expr } => {
                 let v = self.lanes(expr, state)?;
@@ -1243,7 +1265,10 @@ impl<'a> Walker<'a> {
                     }
                     let mut out = Vec::new();
                     for k in 0..width {
-                        let operands = per.iter().map(|p| p.get(k).copied().unwrap_or(p[0])).collect();
+                        let operands = per
+                            .iter()
+                            .filter_map(|p| p.get(k).or(p.first()).copied())
+                            .collect();
                         out.push(self.op(Op::Math(fun), operands));
                     }
                     lanes(out)
@@ -1297,7 +1322,7 @@ impl<'a> Walker<'a> {
             .map(|lane| {
                 self.intern(Node::Texel {
                     resource,
-                    lane: lane as u8,
+                    lane: u8::try_from(lane).unwrap_or(u8::MAX),
                     read,
                     coordinate: coordinate.clone(),
                     controls: controls.clone(),
@@ -1351,7 +1376,11 @@ impl<'a> Walker<'a> {
                 let ty = self.ty(base)?;
                 let mut place = self.place(base, state)?;
                 let (range, _) = self.member(&ty, index)?;
-                place.starts = place.starts.iter().map(|s| s + range.start).collect();
+                place.starts = place
+                    .starts
+                    .iter()
+                    .map(|s| s.saturating_add(range.start))
+                    .collect();
                 place.width = range.len();
                 Ok(place)
             }
@@ -1360,7 +1389,11 @@ impl<'a> Walker<'a> {
                 let mut place = self.place(base, state)?;
                 if let Some(i) = self.literal_index(index) {
                     let (range, _) = self.member(&ty, i)?;
-                    place.starts = place.starts.iter().map(|s| s + range.start).collect();
+                    place.starts = place
+                        .starts
+                        .iter()
+                        .map(|s| s.saturating_add(range.start))
+                        .collect();
                     place.width = range.len();
                     return Ok(place);
                 }
@@ -1372,7 +1405,7 @@ impl<'a> Walker<'a> {
                         place.starts = place
                             .starts
                             .iter()
-                            .flat_map(|s| (0..n).map(move |e| s + e * w))
+                            .flat_map(|s| (0..n).map(move |e| s.saturating_add(e.saturating_mul(w))))
                             .collect();
                     }
                     None => place.runtime_sized = true,
@@ -1381,6 +1414,13 @@ impl<'a> Walker<'a> {
                 Ok(place)
             }
             other => Err(format!("a pointer that is {}", expression_kind(&other))),
+        }
+    }
+
+    /// Keep the value of the expression `h`, which a statement (an atomic, a ballot) filled in.
+    fn remember(&mut self, h: Handle<Expression>, v: Val) {
+        if let Some(slot) = self.cache.get_mut(h.index()) {
+            *slot = Some(v);
         }
     }
 
@@ -1404,7 +1444,7 @@ impl<'a> Walker<'a> {
             .map(|k| {
                 self.intern(Node::Global {
                     resource,
-                    at: At::Component(k as u32),
+                    at: At::Component(lane_u32(k)),
                 })
             })
             .collect())
@@ -1433,15 +1473,20 @@ impl<'a> Walker<'a> {
             };
             if self.module.global_variables[g].init.is_some() && place.index.is_empty() {
                 let all = self.global_lanes(g)?;
-                return Ok(all[place.starts[0]..place.starts[0] + place.width].to_vec());
+                let start = place.first_start()?;
+                return all
+                    .get(start..start.saturating_add(place.width))
+                    .map(<[NodeId]>::to_vec)
+                    .ok_or_else(|| "a load past its variable".to_owned());
             }
             let resource = self.resources.get(&g).copied();
             if place.starts.len() == 1 && !place.runtime_sized && place.index.is_empty() {
+                let start = place.first_start()?;
                 return Ok((0..place.width)
                     .map(|k| {
                         self.intern(Node::Global {
                             resource,
-                            at: At::Component((place.starts[0] + k) as u32),
+                            at: At::Component(lane_u32(start.saturating_add(k))),
                         })
                     })
                     .collect());
@@ -1451,7 +1496,7 @@ impl<'a> Walker<'a> {
                     self.intern(Node::Global {
                         resource,
                         at: At::Indexed {
-                            lane: k as u32,
+                            lane: lane_u32(k),
                             index: place.index.clone(),
                         },
                     })
@@ -1466,10 +1511,15 @@ impl<'a> Walker<'a> {
             let candidates: Vec<NodeId> = place
                 .starts
                 .iter()
-                .map(|s| memory.get(s + k).copied().ok_or("a load past its variable"))
+                .map(|s| {
+                    memory
+                        .get(s.saturating_add(k))
+                        .copied()
+                        .ok_or("a load past its variable")
+                })
                 .collect::<Result<_, _>>()?;
-            out.push(if candidates.len() == 1 {
-                candidates[0]
+            out.push(if let [only] = candidates[..] {
+                only
             } else {
                 let mut operands = candidates;
                 operands.extend(&place.index);
@@ -1550,9 +1600,9 @@ impl<'a> Walker<'a> {
         let exact = place.starts.len() == 1;
         for (k, &lane) in value.iter().enumerate().take(place.width) {
             for s in &place.starts {
-                let at = s + k;
+                let at = s.saturating_add(k);
                 let old = *memory.get(at).ok_or("a store past its variable")?;
-                memory[at] = if exact {
+                let stored = if exact {
                     lane
                 } else {
                     // a store through a run-time index may leave this element as it was
@@ -1560,6 +1610,9 @@ impl<'a> Walker<'a> {
                     operands.extend(&place.index);
                     self.op(Op::Index, operands)
                 };
+                if let Some(slot) = memory.get_mut(at) {
+                    *slot = stored;
+                }
             }
         }
         match place.root {
@@ -1594,7 +1647,10 @@ impl<'a> Walker<'a> {
             }
             Expression::Splat { size, value } => {
                 let v = self.global_expression(value)?;
-                Ok(vec![v[0]; size as usize])
+                let &[first, ..] = v.as_slice() else {
+                    return Err("a splat of a value with no lanes".into());
+                };
+                Ok(vec![first; size as usize])
             }
             other => Err(format!("a constant that is {}", expression_kind(&other))),
         }
@@ -1612,7 +1668,10 @@ impl<'a> Walker<'a> {
         for (l, lanes) in first.locals {
             let joined = (0..lanes.len())
                 .map(|k| {
-                    let arms: Vec<NodeId> = std::iter::once(lanes[k])
+                    let arms: Vec<NodeId> = lanes
+                        .get(k)
+                        .copied()
+                        .into_iter()
                         .chain(
                             rest.iter()
                                 .filter_map(|s| s.locals.get(&l).and_then(|v| v.get(k).copied())),
@@ -1655,7 +1714,7 @@ impl<'a> Walker<'a> {
                 Statement::Emit(range) => {
                     for h in range.clone() {
                         let v = self.evaluate(h, &state)?;
-                        self.cache[h.index()] = Some(v);
+                        self.remember(h, v);
                     }
                 }
                 Statement::Block(inner) => match self.block(inner, state)? {
@@ -1671,7 +1730,7 @@ impl<'a> Walker<'a> {
                     self.control.extend(&c);
                     let a = self.block(accept, state.clone())?;
                     let r = self.block(reject, state)?;
-                    self.control.truncate(self.control.len() - c.len());
+                    self.control.truncate(self.control.len().saturating_sub(c.len()));
                     match self.join(&c, a.into_iter().chain(r).collect()) {
                         Some(s) => state = s,
                         None => return Ok(None),
@@ -1698,7 +1757,7 @@ impl<'a> Walker<'a> {
                         unreachable!("the switch's own target")
                     };
                     ends.extend(breaks);
-                    self.control.truncate(self.control.len() - c.len());
+                    self.control.truncate(self.control.len().saturating_sub(c.len()));
                     match self.join(&c, ends) {
                         Some(s) => state = s,
                         None => return Ok(None),
@@ -1793,7 +1852,7 @@ impl<'a> Walker<'a> {
                     self.write(made);
                     let old = self.load(*pointer, &state)?;
                     if let Some(result) = result {
-                        self.cache[result.index()] = Some(Val::Lanes(old.clone()));
+                        self.remember(*result, Val::Lanes(old.clone()));
                     }
                     // memory the walk follows (thread-group memory) holds what the atomic leaves there for a later load
                     if let Root::Global(g) = place.root
@@ -1813,7 +1872,7 @@ impl<'a> Walker<'a> {
                 }
                 Statement::WorkGroupUniformLoad { pointer, result } => {
                     let lanes = self.load(*pointer, &state)?;
-                    self.cache[result.index()] = Some(Val::Lanes(lanes));
+                    self.remember(*result, Val::Lanes(lanes));
                 }
                 Statement::SubgroupBallot { result, predicate } => {
                     let operands = match predicate {
@@ -1821,13 +1880,13 @@ impl<'a> Walker<'a> {
                         None => Vec::new(),
                     };
                     let n = self.op(Op::Subgroup, operands);
-                    self.cache[result.index()] = Some(Val::Lanes(vec![n; 4]));
+                    self.remember(*result, Val::Lanes(vec![n; 4]));
                 }
                 Statement::SubgroupCollectiveOperation { argument, result, .. }
                 | Statement::SubgroupGather { argument, result, .. } => {
                     let v = self.lanes(*argument, &state)?;
                     let out = v.into_iter().map(|x| self.op(Op::Subgroup, vec![x])).collect();
-                    self.cache[result.index()] = Some(Val::Lanes(out));
+                    self.remember(*result, Val::Lanes(out));
                 }
                 Statement::Call { function, .. } => {
                     return Err(format!(
@@ -1866,7 +1925,7 @@ impl<'a> Walker<'a> {
             let mut phis: BTreeMap<(Root, usize), NodeId> = BTreeMap::new();
             let mut start = entry.clone();
             for &(root, k) in &carried {
-                let id = NodeId(self.nodes.len() as u32);
+                let id = node_id(self.nodes.len());
                 self.nodes.push(Node::Loop {
                     arms: Vec::new(),
                     exit: Vec::new(),
@@ -1924,10 +1983,12 @@ impl<'a> Walker<'a> {
                 arms.extend(back.iter().filter_map(|b| lane_of(b, root, k)));
                 let mut seen = BTreeSet::new();
                 arms.retain(|a| seen.insert(*a));
-                self.nodes[id.0 as usize] = Node::Loop {
-                    arms,
-                    exit: exit_conditions.clone(),
-                };
+                if let Some(node) = self.nodes.get_mut(id.0 as usize) {
+                    *node = Node::Loop {
+                        arms,
+                        exit: exit_conditions.clone(),
+                    };
+                }
             }
             return Ok(self.join(&exit_conditions, leaving));
         }
@@ -1965,16 +2026,16 @@ fn varying_lane(
         Ok(list.get(v).ok_or("a varying past the interface")?.value.width as usize)
     };
     match (&item.ty, item.varyings.as_slice()) {
-        (crate::IoType::Array(..), [v]) => Ok(Some((*v, (k % width(*v)?.max(1)) as u8))),
-        (_, [v]) => Ok((!output || k < width(*v)?).then_some((*v, k as u8))),
+        (crate::IoType::Array(..), [v]) => Ok(Some((*v, lane_u8(k.checked_rem(width(*v)?).unwrap_or(0))))),
+        (_, [v]) => Ok((!output || k < width(*v)?).then_some((*v, lane_u8(k)))),
         (_, varyings) => {
             let mut at = k;
             for &v in varyings {
                 let w = width(v)?;
                 if at < w {
-                    return Ok(Some((v, at as u8)));
+                    return Ok(Some((v, lane_u8(at))));
                 }
-                at -= w;
+                at = at.saturating_sub(w);
             }
             Err(format!("lane {k} past the item's varyings"))
         }
@@ -2006,7 +2067,22 @@ fn item_lane(interface: &Interface, item: &FnItem, k: usize) -> Result<Option<(u
         return Ok(None);
     };
     let width = usize::from(list.get(v).ok_or("a result past the interface")?.value.width);
-    Ok((k < width).then_some((v, k as u8)))
+    Ok((k < width).then_some((v, lane_u8(k))))
+}
+
+/// A graph's node number: a graph of 2^32 nodes is more memory than a machine has, so the number saturates there.
+fn node_id(index: usize) -> NodeId {
+    NodeId(u32::try_from(index).unwrap_or(u32::MAX))
+}
+
+/// A lane or component number as the graph states it (a lane is at most the 4096 of a local array).
+fn lane_u32(k: usize) -> u32 {
+    u32::try_from(k).unwrap_or(u32::MAX)
+}
+
+/// A lane of a varying, which has at most four.
+fn lane_u8(k: usize) -> u8 {
+    u8::try_from(k).unwrap_or(u8::MAX)
 }
 
 fn is_pointer(ty: &TypeInner) -> bool {

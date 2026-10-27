@@ -7,7 +7,7 @@ use naga::{
     StructMember, Type, TypeInner,
 };
 
-use super::{Builder, Kind};
+use super::{Builder, Kind, align_up, fits};
 use crate::{IoItem, IoType, MeshFacts, MeshTopology};
 
 /// The output variable and where its parts are.
@@ -64,16 +64,16 @@ impl Builder {
                 2 => 8,
                 _ => 16,
             };
-            offset = offset.div_ceil(align) * align;
+            offset = align_up(offset, align)?;
             members.push(StructMember {
                 name: Some(item.name.clone()),
                 ty,
                 binding: Some(item.binding.clone()),
                 offset,
             });
-            offset += u32::from(v.width) * 4;
+            offset = fits(offset.checked_add(u32::from(v.width).saturating_mul(4)))?;
         }
-        let span = offset.div_ceil(16) * 16;
+        let span = align_up(offset, 16)?;
         let vertex_type = self.module.types.insert(
             Type {
                 name: Some("MeshVertex".into()),
@@ -104,10 +104,11 @@ impl Builder {
         let array = |b: &mut Self, element: Handle<Type>, count: u32| -> Result<Handle<Type>, String> {
             let count = std::num::NonZeroU32::new(count).ok_or("a mesh program that writes nothing")?;
             let (size, align) = b.type_layout(element);
+            let stride = align_up(size, align)?;
             Ok(b.ty(TypeInner::Array {
                 base: element,
                 size: ArraySize::Constant(count),
-                stride: size.div_ceil(align) * align,
+                stride,
             }))
         };
         let vertices = array(self, vertex_type, facts.max_vertices)?;
@@ -115,8 +116,11 @@ impl Builder {
         let u = self.ty_of(Kind::U, 1);
         // the counts, then the two arrays, each at the next multiple of 16
         let vertices_at = 16;
-        let primitives_at = vertices_at + self.type_layout(vertices).0.div_ceil(16) * 16;
-        let span = (primitives_at + self.type_layout(primitives).0).div_ceil(16) * 16;
+        let primitives_at = fits(align_up(self.type_layout(vertices).0, 16)?.checked_add(vertices_at))?;
+        let span = align_up(
+            fits(primitives_at.checked_add(self.type_layout(primitives).0))?,
+            16,
+        )?;
         let member = |name: &str, ty, built_in, offset| StructMember {
             name: Some(name.into()),
             ty,

@@ -139,11 +139,16 @@ fn scalar_word(scalar: ScalarType) -> &'static str {
     }
 }
 
+/// An arena position as the u32 naga numbers them by (an arena of 2^32 expressions is more memory than a machine has).
+fn arena_index(position: usize) -> u32 {
+    u32::try_from(position).unwrap_or(u32::MAX)
+}
+
 /// The first location after the ones `bindings` use (0 when they use none).
 fn next_after<'b>(bindings: impl Iterator<Item = &'b Binding>) -> u32 {
     bindings
         .filter_map(|b| match b {
-            Binding::Location { location, .. } => Some(location + 1),
+            Binding::Location { location, .. } => Some(location.saturating_add(1)),
             Binding::BuiltIn(_) => None,
         })
         .max()
@@ -235,7 +240,7 @@ fn single_samplers(module: &mut naga::Module) -> usize {
 
 /// `block` with the `removed` expressions left out of its emit ranges, in nested blocks too.
 fn unemit(block: Block, removed: &BTreeSet<Handle<Expression>>, arena: &naga::Arena<Expression>) -> Block {
-    let removed_index: BTreeSet<u32> = removed.iter().map(|h| h.index() as u32).collect();
+    let removed_index: BTreeSet<u32> = removed.iter().map(|h| arena_index(h.index())).collect();
     let nested = |b: Block| unemit(b, removed, arena);
     let mut out = Block::with_capacity(block.len());
     for (statement, span) in block.span_into_iter() {
@@ -349,7 +354,8 @@ fn outputs(
     let mut kinds: BTreeMap<(ScalarType, ScalarType), usize> = BTreeMap::new();
     for (from, to) in retyped.iter().flatten() {
         if from.scalar != to.scalar {
-            *kinds.entry((from.scalar, to.scalar)).or_default() += 1;
+            let count = kinds.entry((from.scalar, to.scalar)).or_default();
+            *count = count.saturating_add(1);
         }
     }
     for ((from, to), n) in kinds {
@@ -367,11 +373,12 @@ fn outputs(
         .position(|r| matches!(r.ty, IoType::ClipDistances(_)))
         .filter(|_| pipeline.clip_varyings);
     let clip = clip_member.map(|k| {
-        let IoType::ClipDistances(count) = io.results[k].ty else {
-            unreachable!("the clip member")
+        let count = match io.results.get(k).map(|r| r.ty) {
+            Some(IoType::ClipDistances(count)) => count,
+            _ => 0,
         };
         let clips = ClipVaryings { first: next, count };
-        next += count;
+        next = next.saturating_add(count);
         clips
     });
     let unchanged = clip.is_none()
@@ -463,19 +470,22 @@ fn outputs(
                         name: Some(format!("clip_distance{j}")),
                         ty: f32_ty,
                         binding: Some(Binding::Location {
-                            location: clips.first + j,
+                            location: clips.first.saturating_add(j),
                             interpolation: Some(Interpolation::Perspective),
                             sampling: None,
                             blend_src: None,
                             per_primitive: false,
                         }),
-                        offset: member.offset + 4 * j,
+                        offset: member.offset.saturating_add(j.saturating_mul(4)),
                     });
                 }
             }
             _ => new_members.push(StructMember {
                 binding: Some(binding),
-                ty: conversions[k].as_ref().map_or(member.ty, |c| c.ty),
+                ty: conversions
+                    .get(k)
+                    .and_then(Option::as_ref)
+                    .map_or(member.ty, |c| c.ty),
                 ..member
             }),
         }
@@ -533,7 +543,7 @@ fn outputs(
             let part = expressions.append(
                 Expression::AccessIndex {
                     base: value,
-                    index: k as u32,
+                    index: arena_index(k),
                 },
                 Span::UNDEFINED,
             );
@@ -553,7 +563,8 @@ fn outputs(
             }
         }
         let compose = expressions.append(Expression::Compose { ty: new, components }, Span::UNDEFINED);
-        let emitted = naga::Range::from_index_range(start as u32..expressions.len() as u32, expressions);
+        let emitted =
+            naga::Range::from_index_range(arena_index(start)..arena_index(expressions.len()), expressions);
         (vec![Statement::Emit(emitted)], Some(compose))
     });
     Ok((clip, next))
@@ -675,19 +686,29 @@ fn link(
     let mut retyped = vec![None; bindings.len()];
     let wanted = entry_io(consumer).map_err(|e| Error::Pipeline(format!("the consumer: {e}")))?;
     let mut consumed = vec![false; bindings.len()];
-    let mut next = 0;
+    let mut next = 0u32;
     for argument in &wanted.arguments {
         let Binding::Location { location, .. } = argument.binding else {
             continue;
         };
-        next = next.max(location + 1);
-        let label = &consumer.inputs[argument.varyings[0]].label;
+        next = next.max(location.saturating_add(1));
+        let label = &argument
+            .varyings
+            .first()
+            .and_then(|&v| consumer.inputs.get(v))
+            .ok_or_else(|| {
+                Error::Pipeline(format!("the consumer's input {} names no varying", argument.name))
+            })?
+            .label;
         let k = io
             .results
             .iter()
             .position(|r| {
                 matches!(r.binding, Binding::Location { .. })
-                    && same_label(&program.interface.outputs[r.varyings[0]].label, label)
+                    && r.varyings
+                        .first()
+                        .and_then(|&v| program.interface.outputs.get(v))
+                        .is_some_and(|output| same_label(&output.label, label))
             })
             .ok_or_else(|| {
                 let written: Vec<String> = io
@@ -703,22 +724,28 @@ fn link(
                     written.join(", ")
                 ))
             })?;
-        bindings[k] = argument.binding.clone();
-        consumed[k] = true;
-        if let (IoType::Value(from), IoType::Value(to)) = (io.results[k].ty, argument.ty)
+        if let Some(binding) = bindings.get_mut(k) {
+            *binding = argument.binding.clone();
+        }
+        if let Some(taken) = consumed.get_mut(k) {
+            *taken = true;
+        }
+        if let (Some(IoType::Value(from)), IoType::Value(to)) = (io.results.get(k).map(|r| r.ty), argument.ty)
             && from != to
         {
             if from.scalar != to.scalar {
                 naga_scalar(from.scalar)?;
                 naga_scalar(to.scalar)?;
             }
-            retyped[k] = Some((from, to));
+            if let Some(slot) = retyped.get_mut(k) {
+                *slot = Some((from, to));
+            }
         }
     }
     for (binding, consumed) in bindings.iter_mut().zip(consumed) {
         if let (Binding::Location { location, .. }, false) = (binding, consumed) {
             *location = next;
-            next += 1;
+            next = next.saturating_add(1);
         }
     }
     Ok(retyped)
@@ -752,14 +779,14 @@ fn discard_clipped(
         .ok_or_else(|| Error::Invalid("no entry point".into()))?;
     let function = &mut entry.function;
     debug_assert_eq!(function.arguments.len(), io.arguments.len());
-    let mut distances = Vec::with_capacity(clips.count as usize);
+    let mut distances = Vec::with_capacity(clips.count.min(64) as usize);
     for j in 0..clips.count {
-        let index = function.arguments.len() as u32;
+        let index = arena_index(function.arguments.len());
         function.arguments.push(naga::FunctionArgument {
             name: Some(format!("clip_distance{j}")),
             ty: f32_ty,
             binding: Some(Binding::Location {
-                location: clips.first + j,
+                location: clips.first.saturating_add(j),
                 interpolation: Some(Interpolation::Perspective),
                 sampling: None,
                 blend_src: None,
@@ -803,7 +830,8 @@ fn discard_clipped(
         let Some(condition) = condition else {
             return Vec::new();
         };
-        let emitted = naga::Range::from_index_range(start as u32..expressions.len() as u32, expressions);
+        let emitted =
+            naga::Range::from_index_range(arena_index(start)..arena_index(expressions.len()), expressions);
         vec![
             Statement::Emit(emitted),
             Statement::If {
@@ -824,7 +852,7 @@ fn discard_clipped(
         }
     }
     function.body = body;
-    Ok(clips.first + clips.count)
+    Ok(clips.first.saturating_add(clips.count))
 }
 
 /// `block` with each return (in nested blocks too) preceded by the statements `at` makes and returning the value it

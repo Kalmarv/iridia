@@ -35,11 +35,18 @@ pub enum Words {
 /// A word of the matrix: its line (a row of the buffer, or the line of the element the index adds) and its lane.
 type Word = (i64, u32);
 
+/// `v` as an integer, where it is a whole number an i64 holds.
+#[allow(clippy::cast_possible_truncation)] // a whole number within the range of an i64, checked by the comparison
+fn whole_number(v: f64) -> Option<i64> {
+    ((-9.223_372_036_854_776e18..9.223_372_036_854_776e18).contains(&v) && v.fract() == 0.0)
+        .then_some(v as i64)
+}
+
 /// An index's line in its element: the whole number it adds to the rest (`base + 2` is line 2), 0 for an index that
 /// adds none.
 fn line_of(values: &Values, index: &[NodeId]) -> i64 {
     let literal = |id: NodeId| match values.node(id) {
-        Node::Literal(Literal(v)) if v.fract() == 0.0 => Some(*v as i64),
+        Node::Literal(Literal(v)) if v.fract() == 0.0 => whole_number(*v),
         _ => None,
     };
     match *index {
@@ -75,9 +82,10 @@ pub fn lines(values: &Values, resource: ResourceId, words: &Words) -> Result<Maj
         }
         match (words, at) {
             (Words::At(range), At::Component(c)) if range.contains(c) => Some((i64::from(c / 4), c % 4)),
-            (Words::Indexed, At::Indexed { lane, index }) => {
-                Some((line_of(values, index) + i64::from(lane / 4), lane % 4))
-            }
+            (Words::Indexed, At::Indexed { lane, index }) => Some((
+                line_of(values, index).saturating_add(i64::from(lane / 4)),
+                lane % 4,
+            )),
             _ => None,
         }
     };
@@ -172,9 +180,9 @@ pub fn lines(values: &Values, resource: ResourceId, words: &Words) -> Result<Maj
             let first_line = lines.next();
             let first_lane = lanes.next();
             if lines.all(|l| Some(l) == first_line) {
-                along += 1;
+                along = along.saturating_add(1);
             } else if lanes.all(|l| Some(l) == first_lane) {
-                across += 1;
+                across = across.saturating_add(1);
             }
         }
         terms.insert(id, sum);
@@ -201,7 +209,7 @@ pub fn state_lines(
     interface: &Interface,
     constants: &mut [ConstantBinding],
 ) -> usize {
-    let mut unshown = 0;
+    let mut unshown = 0usize;
     for c in constants.iter_mut().filter(|c| c.role.is_matrix()) {
         let unexamined = |why: String| Unshown::Unexamined { why };
         let found = graph
@@ -230,17 +238,18 @@ pub fn state_lines(
                     .ok_or_else(|| {
                         unexamined("the program has no constant buffer at its D3D binding".into())
                     })?;
-                let at = Words::At(c.offset / 4..(c.offset + c.size).div_ceil(4));
+                let at = Words::At(c.offset / 4..c.offset.saturating_add(c.size).div_ceil(4));
                 match lines(&graph.values, buffer, &at) {
                     Err(Unshown::NotRead) => {
-                        let end = c.offset + c.size;
+                        let end = c.offset.saturating_add(c.size);
                         let mut arrays = layout
                             .constants
                             .iter()
                             .filter(|k| matches!(k.ty, ConstantType::Array { .. }));
                         let alone = arrays.clone().next().is_some()
                             && arrays.all(|k| {
-                                k.offset >= c.offset && k.ty.size().is_some_and(|n| k.offset + n <= end)
+                                k.offset >= c.offset
+                                    && k.ty.size().is_some_and(|n| k.offset.saturating_add(n) <= end)
                             });
                         if !alone {
                             // the buffer's indexed reads, if any, may be another array's
@@ -255,7 +264,7 @@ pub fn state_lines(
             Ok(Majorness::Row) => MatrixLines::Rows,
             Ok(Majorness::Column) => MatrixLines::Columns,
             Err(why) => {
-                unshown += 1;
+                unshown = unshown.saturating_add(1);
                 MatrixLines::Unshown(why)
             }
         });

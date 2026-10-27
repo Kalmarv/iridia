@@ -170,7 +170,7 @@ fn functions(p: &Program, sigs: &[FunctionSig], problems: &mut Vec<Problem>) {
             ));
         }
     }
-    if p.module.functions.len() != sigs.len() + operations {
+    if p.module.functions.len() != sigs.len().saturating_add(operations) {
         fail(format!(
             "a {:?} program is {} functions and {operations} operations, the module has {}",
             p.stage,
@@ -319,7 +319,10 @@ fn interface(p: &Program, problems: &mut Vec<Problem>) {
             || x > 1024
             || y > 1024
             || z > 64
-            || u64::from(x) * u64::from(y) * u64::from(z) > 1024
+            || u64::from(x)
+                .saturating_mul(u64::from(y))
+                .saturating_mul(u64::from(z))
+                > 1024
         {
             fail(format!("a thread group of {x} by {y} by {z}"));
         }
@@ -487,7 +490,9 @@ fn resources(p: &Program, problems: &mut Vec<Problem>) {
                     if buffer {
                         match inner {
                             TypeInner::Struct { members, .. } if members.len() == 1 => {
-                                inner = &p.module.types[members[0].ty].inner;
+                                if let Some(only) = members.first() {
+                                    inner = &p.module.types[only.ty].inner;
+                                }
                             }
                             _ => fail(format!(
                                 "resource {id}: an element of a buffer array is not a structure of its words"
@@ -682,7 +687,7 @@ fn buffer_fits(module: &naga::Module, inner: &TypeInner, kind: BufferKind) -> bo
                     || matches!(base, TypeInner::Struct { members, span: 16 }
                         if members.len() == 4
                             && members.iter().enumerate().all(|(k, m)| {
-                                m.offset == 4 * k as u32
+                                u32::try_from(k).ok().and_then(|k| k.checked_mul(4)) == Some(m.offset)
                                     && matches!(
                                         module.types[m.ty].inner,
                                         TypeInner::Atomic(naga::Scalar::U32 | naga::Scalar::I32)

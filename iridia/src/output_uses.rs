@@ -84,8 +84,8 @@ pub fn bind_output_uses(
                 });
             }
         }
-        uses.coverage += coverage.count_ones();
-        uses.opacity += opacity.count_ones();
+        uses.coverage = uses.coverage.saturating_add(coverage.count_ones());
+        uses.opacity = uses.opacity.saturating_add(opacity.count_ones());
     }
     *outputs = bound;
     uses

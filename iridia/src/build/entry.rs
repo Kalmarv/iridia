@@ -3,7 +3,7 @@
 
 use naga::{FunctionArgument, Handle, StructMember, Type, TypeInner};
 
-use super::{Builder, Kind};
+use super::{Builder, Kind, align_up, fits};
 use crate::{EntryIo, FunctionSig, IoType, ScalarType};
 
 impl Kind {
@@ -44,7 +44,7 @@ impl Builder {
         Ok(match ty {
             IoType::Value(v) => (
                 self.ty_of(Kind::of(v.scalar), v.width),
-                u32::from(v.width) * 4,
+                u32::from(v.width).saturating_mul(4),
                 align_of(v.width),
             ),
             IoType::ClipDistances(n) => {
@@ -56,7 +56,7 @@ impl Builder {
                         size: naga::ArraySize::Constant(len),
                         stride: 4,
                     }),
-                    n * 4,
+                    fits(n.checked_mul(4))?,
                     4,
                 )
             }
@@ -65,14 +65,14 @@ impl Builder {
                     std::num::NonZeroU32::new(n).ok_or_else(|| format!("{name}: an array of no elements"))?;
                 let base = self.ty_of(Kind::of(v.scalar), v.width);
                 // a 3-lane element takes 16 bytes in an array, as in uniform memory
-                let stride = (u32::from(v.width) * 4).next_multiple_of(align_of(v.width));
+                let stride = align_up(u32::from(v.width).saturating_mul(4), align_of(v.width))?;
                 (
                     self.ty(TypeInner::Array {
                         base,
                         size: naga::ArraySize::Constant(len),
                         stride,
                     }),
-                    stride * n,
+                    fits(stride.checked_mul(n))?,
                     align_of(v.width),
                 )
             }
@@ -94,16 +94,16 @@ impl Builder {
         let mut offset = 0u32;
         for (name, ty, binding) in members {
             let (t, size, align) = self.io_type(*ty, name)?;
-            offset = offset.div_ceil(align) * align;
+            offset = align_up(offset, align)?;
             out.push(StructMember {
                 name: Some(name.clone()),
                 ty: t,
                 binding: binding.clone(),
                 offset,
             });
-            offset += size;
+            offset = fits(offset.checked_add(size))?;
         }
-        let span = offset.div_ceil(16) * 16;
+        let span = align_up(offset, 16)?;
         Ok(self.module.types.insert(
             Type {
                 name: Some("Out".into()),

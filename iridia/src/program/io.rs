@@ -401,7 +401,7 @@ pub fn entry_io(interface: &Interface) -> Result<EntryIo, String> {
         } else {
             &mut io.arguments
         };
-        let mut next_location = 0;
+        let mut next_location = 0u32;
         let mut clip: Option<usize> = None;
         for (i, v) in list.iter().enumerate() {
             let name = varying_name(&v.label);
@@ -420,12 +420,14 @@ pub fn entry_io(interface: &Interface) -> Result<EntryIo, String> {
                 let width = u32::from(v.value.width);
                 match clip {
                     Some(at) => {
-                        let item = &mut items[at];
+                        let Some(item) = items.get_mut(at) else {
+                            return Err(format!("{name}: the clip distances item is missing"));
+                        };
                         item.varyings.push(i);
                         let IoType::ClipDistances(n) = &mut item.ty else {
-                            unreachable!("the clip item")
+                            return Err(format!("{name}: the clip distances item is not clip distances"));
                         };
-                        *n += width;
+                        *n = n.saturating_add(width);
                     }
                     None => {
                         clip = Some(items.len());
@@ -450,14 +452,16 @@ pub fn entry_io(interface: &Interface) -> Result<EntryIo, String> {
                 // WebGPU has no layer or viewport index to read or write: the value travels as a flat varying, and
                 // routing a primitive to the layer it names is the pipeline's
                 Some(SystemValue::RenderTargetArrayIndex | SystemValue::ViewportArrayIndex) => {
-                    next_location += 1;
-                    location(stage, output, v, next_location - 1)
+                    let at = next_location;
+                    next_location = at.saturating_add(1);
+                    location(stage, output, v, at)
                 }
                 // WebGPU has no cull distance either: a vertex program's value travels as a varying, and culling the
                 // primitive whose vertices are all negative is the pipeline's
                 Some(SystemValue::CullDistance) if stage == Stage::Vertex && output => {
-                    next_location += 1;
-                    location(stage, output, v, next_location - 1)
+                    let at = next_location;
+                    next_location = at.saturating_add(1);
+                    location(stage, output, v, at)
                 }
                 Some(system) => match builtin(stage, output, system) {
                     Some(built_in) => Binding::BuiltIn(built_in),
@@ -470,8 +474,9 @@ pub fn entry_io(interface: &Interface) -> Result<EntryIo, String> {
                     }
                 },
                 None => {
-                    next_location += 1;
-                    location(stage, output, v, next_location - 1)
+                    let at = next_location;
+                    next_location = at.saturating_add(1);
+                    location(stage, output, v, at)
                 }
             };
             items.push(IoItem {

@@ -50,6 +50,14 @@
 //!
 //! The vocabulary types are those of [`iridia_interface`], re-exported here.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
 
 // Run the examples in the README as doc tests.
 #[cfg(doctest)]

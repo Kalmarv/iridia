@@ -114,12 +114,12 @@ fn comparison(v: &Values, id: NodeId) -> Option<(NodeId, NodeId)> {
     else {
         return None;
     };
-    if operands.len() != 2 {
+    let &[first, second] = operands.as_slice() else {
         return None;
-    }
+    };
     let (a, b) = match op {
-        B::Less | B::LessEqual => (operands[0], operands[1]),
-        B::Greater | B::GreaterEqual => (operands[1], operands[0]),
+        B::Less | B::LessEqual => (first, second),
+        B::Greater | B::GreaterEqual => (second, first),
         _ => return None,
     };
     if buffer_word(v, b).is_some() {
@@ -150,7 +150,10 @@ fn binary(v: &Values, id: NodeId, wanted: B) -> Option<(NodeId, NodeId)> {
         Node::Op {
             op: Op::Binary(op),
             operands,
-        } if *op == wanted && operands.len() == 2 => Some((operands[0], operands[1])),
+        } if *op == wanted => match operands[..] {
+            [a, b] => Some((a, b)),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -173,9 +176,9 @@ fn difference(v: &Values, id: NodeId) -> Option<(NodeId, NodeId)> {
             op: Op::Unary(U::Negate),
             operands,
         } = v.node(negative)
-            && operands.len() == 1
+            && let [only] = operands[..]
         {
-            return Some((positive, operands[0]));
+            return Some((positive, only));
         }
     }
     None
@@ -244,8 +247,11 @@ fn alpha_data(v: &Values, id: NodeId, transformed: bool, out: &mut BTreeMap<Node
         Node::Op {
             op: Op::Math(M::Clamp),
             operands,
-        } if operands.len() == 3 && literal(v, operands[1], 0.) && literal(v, operands[2], 1.) => {
-            alpha_data(v, operands[0], true, out);
+        } if let [signal, low, high] = operands[..]
+            && literal(v, low, 0.)
+            && literal(v, high, 1.) =>
+        {
+            alpha_data(v, signal, true, out);
         }
         _ => {}
     }
@@ -308,7 +314,7 @@ impl AlphaExpr {
                 "an expression more than {MAX_EXPR_DEPTH} operations deep"
             ));
         }
-        let below = |n: NodeId| Box::new(AlphaExpr::of(v, n, depth + 1));
+        let below = |n: NodeId| Box::new(AlphaExpr::of(v, n, depth.saturating_add(1)));
         match v.node(id) {
             Node::Literal(n) => AlphaExpr::Literal(n.0),
             Node::Global {
@@ -331,12 +337,12 @@ impl AlphaExpr {
             Node::Op {
                 op: Op::Unary(U::Negate),
                 operands,
-            } if operands.len() == 1 => AlphaExpr::Negate(below(operands[0])),
+            } if let [only] = operands[..] => AlphaExpr::Negate(below(only)),
             Node::Op {
                 op: Op::Binary(op @ (B::Add | B::Subtract | B::Multiply)),
                 operands,
-            } if operands.len() == 2 => {
-                let (a, b) = (below(operands[0]), below(operands[1]));
+            } if let [first, second] = operands[..] => {
+                let (a, b) = (below(first), below(second));
                 match op {
                     B::Add => AlphaExpr::Add(a, b),
                     B::Subtract => AlphaExpr::Subtract(a, b),
@@ -394,7 +400,10 @@ impl std::fmt::Display for AlphaExpr {
                 f,
                 "tex{}.{}",
                 resource.0,
-                ["x", "y", "z", "w"][usize::from(*lane & 3)]
+                ["x", "y", "z", "w"]
+                    .get(usize::from(*lane & 3))
+                    .copied()
+                    .unwrap_or("w")
             ),
             AlphaExpr::Negate(a) => write!(f, "-({a})"),
             AlphaExpr::Add(a, b) => write!(f, "({a} + {b})"),

@@ -37,13 +37,21 @@ impl VertexDemand {
         let mut roots: Vec<_> = vg
             .outputs()
             .iter()
-            .filter(|((output, _), _)| vertex.interface.outputs[*output].system.is_some())
+            .filter(|((output, _), _)| {
+                vertex
+                    .interface
+                    .outputs
+                    .get(*output)
+                    .is_some_and(|o| o.system.is_some())
+            })
             .map(|(_, &node)| node)
             .chain(vg.discards().iter().flatten().copied())
             .chain(vg.writes().iter().flatten().copied())
             .collect();
         for (&input, &mask) in &pixel_inputs {
-            let varying = &pixel.interface.inputs[input];
+            let varying = pixel.interface.inputs.get(input).ok_or_else(|| {
+                format!("the pixel program reads input {input}, which its interface does not have")
+            })?;
             // System inputs come from the rasterizer. Vertex system outputs are roots independently of these reads.
             if varying.system.is_some() {
                 continue;

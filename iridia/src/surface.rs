@@ -51,7 +51,7 @@ pub fn normal_kind(encoding: NormalEncoding) -> (u32, [u32; 2]) {
 
 /// The second word of a row: the place's first lane and width, the kind and the scalar encoding's power and root.
 fn layout(place: Place, kind: u32, encoding: ScalarEncoding) -> u32 {
-    (place.first() as u32 & 0x3)
+    (u32::try_from(place.first()).unwrap_or(3) & 0x3)
         | (place.width() & 0xf) << 4
         | (kind & 0xff) << 8
         | u32::from(encoding.power) << 16
@@ -64,7 +64,7 @@ fn layout(place: Place, kind: u32, encoding: ScalarEncoding) -> u32 {
 /// zeros, which the composite takes as no output having its role.
 pub fn rows(surface: &Surface, target: impl Fn(usize) -> Option<u32>) -> [[u32; 4]; ROWS] {
     let mut rows = [[0u32; 4]; ROWS];
-    let at = |output: usize| target(output).map(|t| t + 1);
+    let at = |output: usize| target(output).map(|t| t.saturating_add(1));
     let term_row = |t: &Term, kind: u32| -> [u32; 4] {
         at(t.place.output).map_or([0; 4], |x| {
             [x, layout(t.place, kind, t.encoding), t.encoding.scale_bits, 0]
@@ -100,8 +100,10 @@ pub fn rows(surface: &Surface, target: impl Fn(usize) -> Option<u32>) -> [[u32; 
         (OCCLUSION, &surface.occlusion),
         (AMBIENT_OCCLUSION, &surface.ambient_occlusion),
     ] {
-        if let Some(t) = term {
-            rows[row] = term_row(t, 1);
+        if let Some(t) = term
+            && let Some(slot) = rows.get_mut(row)
+        {
+            *slot = term_row(t, 1);
         }
     }
     if let Some(e) = &surface.emission {

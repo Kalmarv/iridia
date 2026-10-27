@@ -14,7 +14,8 @@ pub fn compute_limit_notes(module: &naga::Module) -> Vec<String> {
             continue;
         }
         let size = entry.workgroup_size;
-        let total = u64::from(size[0]) * u64::from(size[1]) * u64::from(size[2]);
+        let [x, y, z] = size.map(u64::from);
+        let total = x.saturating_mul(y).saturating_mul(z);
         if total > u64::from(invocations) || size.iter().zip(axes).any(|(s, a)| *s > a) {
             notes.push(format!(
                 "the thread group is {} by {} by {} ({total} invocations): WebGPU's default limits are \

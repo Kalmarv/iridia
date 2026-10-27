@@ -121,7 +121,10 @@ impl WordsRead {
         if self.indexed(buffer) {
             return true;
         }
-        let (first, last) = (offset / 4, offset.saturating_add(bytes.max(1) - 1) / 4);
+        let (first, last) = (
+            offset / 4,
+            offset.saturating_add(bytes.max(1).saturating_sub(1)) / 4,
+        );
         self.words
             .get(&buffer)
             .is_some_and(|words| words.range(first..=last).next().is_some())

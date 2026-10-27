@@ -157,6 +157,9 @@ fn component(value: u32) -> Result<ScalarType, String> {
     }
 }
 
+/// The registers a stage's signature has in Direct3D 10 and later.
+const MAX_SIGNATURE_REGISTERS: u32 = 32;
+
 /// One signature element of `stage`, unpacked from its register: the label, the system value (the stored
 /// `D3D_NAME`, or the `SV_` name when the compiler states it by name), the value type from the component type and the
 /// lanes it occupies, and the register and lanes kept in provenance. `interp` is left for the caller, who has the
@@ -169,7 +172,20 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, S
             e.mask, e.read_write_mask
         )));
     }
-    let named = e.name.len() > 3 && e.name.as_bytes()[..3].eq_ignore_ascii_case(b"SV_");
+    // a stage has 32 registers to pass values between stages (`D3D11_VS_OUTPUT_REGISTER_COUNT` and its kin); a system value
+    // that takes none states `u32::MAX`
+    if e.register != u32::MAX && e.register >= MAX_SIGNATURE_REGISTERS {
+        return Err(at(format!(
+            "register {} is not one of the {MAX_SIGNATURE_REGISTERS} a signature has (0 to {})",
+            e.register,
+            MAX_SIGNATURE_REGISTERS - 1
+        )));
+    }
+    let named = e.name.len() > 3
+        && e.name
+            .as_bytes()
+            .get(..3)
+            .is_some_and(|p| p.eq_ignore_ascii_case(b"SV_"));
     let system = match system_from_number(stage, output, e.system_value, e.index).map_err(at)? {
         Some(s) => {
             if named && number_of_name(e.name) != Some(e.system_value) {
@@ -204,7 +220,7 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, S
         system,
         value: Value {
             scalar: component(e.component_type).map_err(at)?,
-            width: e.mask.count_ones() as u8,
+            width: u8::try_from(e.mask.count_ones()).unwrap_or(4),
         },
         interp: None,
         used: if output { written } else { e.read_write_mask } != 0,
@@ -283,11 +299,10 @@ impl Packing {
         if self == Self::Structured
             && let ConstantType::Matrix { stride, .. } = &mut ty
         {
-            *stride = scalar.bytes()
-                * match major {
-                    Majorness::Row => columns,
-                    Majorness::Column => rows,
-                };
+            *stride = scalar.bytes().saturating_mul(match major {
+                Majorness::Row => columns,
+                Majorness::Column => rows,
+            });
         }
         Ok(ty)
     }

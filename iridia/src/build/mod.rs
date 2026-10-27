@@ -47,6 +47,23 @@ pub struct Val {
     pub width: u8,
 }
 
+/// `offset` rounded up to a multiple of `align`, or the reason it does not fit in 32 bits.
+pub(crate) fn align_up(offset: u32, align: u32) -> Result<u32, String> {
+    offset.checked_next_multiple_of(align).ok_or_else(|| {
+        format!("a layout offset of {offset} bytes aligned to {align} is over 4294967295 bytes")
+    })
+}
+
+/// `value`, or the reason a layout size does not fit in 32 bits.
+pub(crate) fn fits(value: Option<u32>) -> Result<u32, String> {
+    value.ok_or_else(|| "a layout of over 4294967295 bytes".to_owned())
+}
+
+/// A count of lanes as a width (a vector has at most 4; a larger count is a width that [`vector_size`] refuses).
+fn width_of(lanes: usize) -> u8 {
+    u8::try_from(lanes).unwrap_or(u8::MAX)
+}
+
 pub fn vector_size(width: u8) -> VectorSize {
     match width {
         2 => VectorSize::Bi,
@@ -158,7 +175,7 @@ impl Builder {
                 name: Some(format!("w{k}")),
                 ty: atomic,
                 binding: None,
-                offset: 4 * k,
+                offset: k.saturating_mul(4),
             })
             .collect();
         self.ty(TypeInner::Struct { members, span: 16 })
@@ -319,7 +336,7 @@ impl Builder {
             return *first;
         }
         let kind = first.kind;
-        let width = parts.len() as u8;
+        let width = width_of(parts.len());
         let ty = self.ty_of(kind, width);
         Val {
             expr: self.app(Expression::Compose {
@@ -358,7 +375,7 @@ impl Builder {
             return v;
         }
         if v.width == 1 {
-            return self.splat(v, lanes.len() as u8);
+            return self.splat(v, width_of(lanes.len()));
         }
         let mut pattern = [SwizzleComponent::X; 4];
         for (slot, lane) in pattern.iter_mut().zip(lanes) {
@@ -366,12 +383,12 @@ impl Builder {
         }
         Val {
             expr: self.app(Expression::Swizzle {
-                size: vector_size(lanes.len() as u8),
+                size: vector_size(width_of(lanes.len())),
                 vector: v.expr,
                 pattern,
             }),
             kind: v.kind,
-            width: lanes.len() as u8,
+            width: width_of(lanes.len()),
         }
     }
     /// Reinterpret the bits as another kind (u32, i32 or f32), width unchanged.
@@ -457,7 +474,11 @@ impl Builder {
             return self.lit_u(0);
         };
         let args: Vec<Val> = args.iter().map(|a| self.splat(*a, width)).collect();
-        let kind = args[0].kind;
+        let Some(first) = args.first().copied() else {
+            self.fail("a math function of no arguments");
+            return self.lit_u(0);
+        };
+        let kind = first.kind;
         let arg = |i: usize| args.get(i).map(|a| a.expr);
         let (width, kind) = match fun {
             MathFunction::Dot => (1, kind),
@@ -468,7 +489,7 @@ impl Builder {
         Val {
             expr: self.app(Expression::Math {
                 fun,
-                arg: args[0].expr,
+                arg: first.expr,
                 arg1: arg(1),
                 arg2: arg(2),
                 arg3: arg(3),
@@ -511,7 +532,7 @@ impl Builder {
         function.name = Some(name.to_owned());
         function.arguments = decl.arguments;
         function.result = decl.result.map(|ty| naga::FunctionResult { ty, binding: None });
-        function.body = std::mem::replace(&mut self.blocks[0], Block::new());
+        function.body = self.blocks.first_mut().map(std::mem::take).unwrap_or_default();
         self.module.functions.append(function, Span::UNDEFINED)
     }
 

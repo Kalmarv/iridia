@@ -69,6 +69,28 @@ pub enum Error {
         "irreducible control flow: the loop entered at node {entry} has a second entry through node {other}"
     )]
     Irreducible { entry: usize, other: usize },
+    #[error("the graph has no nodes, where node 0 is its entry")]
+    Empty,
+    #[error("node {node} branches to node {target}, where the graph has {nodes} nodes")]
+    Dangling {
+        node: usize,
+        target: usize,
+        nodes: usize,
+    },
+}
+
+/// Refuse a graph with no entry or with a branch to a node it does not have, which the analysis indexes by.
+fn check(cfg: &Cfg) -> Result<(), Error> {
+    let nodes = cfg.terms.len();
+    if nodes == 0 {
+        return Err(Error::Empty);
+    }
+    for (node, term) in cfg.terms.iter().enumerate() {
+        if let Some(target) = successors(term).into_iter().find(|&target| target >= nodes) {
+            return Err(Error::Dangling { node, target, nodes });
+        }
+    }
+    Ok(())
 }
 
 fn successors(term: &Term) -> Vec<usize> {
@@ -93,6 +115,8 @@ struct Analysis<'a> {
     loop_header: Vec<bool>,
 }
 
+// every index below is a node of `cfg`, whose branches `structure` checked (`check`) before the first
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 fn analyse(cfg: &Cfg) -> Result<Analysis<'_>, Error> {
     let n = cfg.terms.len();
     // depth-first postorder from the entry, iteratively
@@ -204,6 +228,8 @@ fn analyse(cfg: &Cfg) -> Result<Analysis<'_>, Error> {
     })
 }
 
+// the indices are the nodes of the checked graph (see `analyse`)
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 impl Analysis<'_> {
     fn is_merge(&self, node: usize) -> bool {
         self.forward_in[node] >= 2
@@ -279,6 +305,7 @@ impl Analysis<'_> {
 /// The structured form of `cfg`; every node reachable from the entry appears once (a merge node or loop header
 /// appears as the code after its block, the rest at their only forward edge).
 pub fn structure(cfg: &Cfg) -> Result<Code, Error> {
+    check(cfg)?;
     let analysis = analyse(cfg)?;
     let _ = &analysis.idom;
     Ok(simplify(analysis.do_tree(0, &mut Vec::new())))
@@ -385,7 +412,9 @@ fn uses(code: &Code, out: &mut std::collections::BTreeSet<Label>) {
 
 impl<E: Emit> Lowering<'_, E> {
     fn id(&mut self, action: Action) -> u32 {
-        let next = self.ids.len() as u32 + 1;
+        let next = u32::try_from(self.ids.len())
+            .unwrap_or(u32::MAX)
+            .saturating_add(1);
         *self.ids.entry(action).or_insert(next)
     }
 
@@ -421,6 +450,8 @@ impl<E: Emit> Lowering<'_, E> {
         Ok(())
     }
 
+    // `destination` is a position of the stack, found by `rposition`, and `top` is the last
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
     fn action(&mut self, b: &mut Builder, action: Action) {
         let destination = self
             .stack
@@ -681,6 +712,23 @@ mod tests {
 
     fn cfg(terms: Vec<Term>) -> Cfg {
         Cfg { terms }
+    }
+
+    #[test]
+    fn a_graph_without_an_entry_or_with_a_branch_to_no_node_is_refused() {
+        use Term::*;
+        assert_eq!(structure(&cfg(vec![])), Err(Error::Empty));
+        for (terms, node, target) in [
+            (vec![Goto(1)], 0, 1),
+            (vec![If(1, 7), Exit], 0, 7),
+            (vec![Goto(1), Switch(vec![0, 1, 9]), Exit], 1, 9),
+        ] {
+            let nodes = terms.len();
+            assert_eq!(
+                structure(&cfg(terms)),
+                Err(Error::Dangling { node, target, nodes })
+            );
+        }
     }
 
     #[test]
