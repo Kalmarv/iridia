@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 Two more examples take a container and write the result: `to_wgsl` (DXBC or DXIL, WGSL on standard output, the lifter's notes on standard error) and `to_spirv` (DXBC or DXIL to a SPIR-V file through naga's SPIR-V writer). The crate READMEs have a smaller example each.
 
-The crates are not on crates.io yet; depend on them by git. Rust 1.99 or newer (edition 2024).
+Add the crates you need from crates.io: `cargo add iridia iridia-dxbc` for the example above. Rust 1.99 or newer (edition 2024).
 
 ## What it guarantees
 
