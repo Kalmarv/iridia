@@ -3,9 +3,9 @@
 //! patch-constant function), the domain program that reads its patches, and a vertex program that feeds them. They
 //! validate against the functions the interface says, are shown as text, and are refused by the WGSL writer by name.
 use naga::{Expression, Statement};
-use primase_shader::build::{Builder, Kind};
-use primase_shader::emit;
-use primase_shader::{
+use iridia::build::{Builder, Kind};
+use iridia::emit;
+use iridia::{
     Conventions, D3dModes, DomainFacts, HullFacts, Interface, Label, Partitioning, Program, Provenance,
     ScalarType, ShaderFormat, Stage, StageFacts, SystemValue, TessDomain, TessTopology, Value, Varying,
     VaryingProvenance,
@@ -68,7 +68,7 @@ fn hull_interface() -> Interface {
 /// inside factor of 2.
 fn hull() -> Program {
     let interface = hull_interface();
-    let sigs = primase_shader::stage_functions(&interface).unwrap().unwrap();
+    let sigs = iridia::stage_functions(&interface).unwrap().unwrap();
     let mut b = Builder::new();
     // main(POSITION0: array<vec3<f32>, 3>, SV_OutputControlPointID: u32) -> Out { POSITION0 }
     let decl = b.declare_function(&sigs[0]).unwrap();
@@ -127,7 +127,7 @@ fn domain_interface() -> Interface {
 /// `main`: the clip position is the domain location with a w of 1.
 fn domain() -> Program {
     let interface = domain_interface();
-    let sigs = primase_shader::stage_functions(&interface).unwrap().unwrap();
+    let sigs = iridia::stage_functions(&interface).unwrap().unwrap();
     let mut b = Builder::new();
     let decl = b.declare_function(&sigs[0]).unwrap();
     let out = decl.result.unwrap();
@@ -228,14 +228,14 @@ fn geometry() -> Program {
         inputs: vec![varying("COLOR", 0, 4, None)],
         outputs: vec![varying("SV_Position", 0, 4, Some(SystemValue::ClipPosition))],
         resources: Vec::new(),
-        facts: StageFacts::Geometry(primase_shader::GeometryFacts {
-            input: primase_shader::GsInput::Triangle,
-            output: primase_shader::GsOutput::TriangleStrip,
+        facts: StageFacts::Geometry(iridia::GeometryFacts {
+            input: iridia::GsInput::Triangle,
+            output: iridia::GsOutput::TriangleStrip,
             max_vertices: 3,
             instances: 1,
         }),
     };
-    let sigs = primase_shader::stage_functions(&interface).unwrap().unwrap();
+    let sigs = iridia::stage_functions(&interface).unwrap().unwrap();
     let mut b = Builder::new();
     let decl = b.declare_function(&sigs[0]).unwrap();
     let out = decl.result.unwrap();
@@ -305,7 +305,7 @@ fn a_geometry_program_is_a_function_of_a_primitive_returning_its_vertices() {
 /// vertex count (3) and the strip starts (1, 0, 0); each array element is an entry of its own.
 #[test]
 fn the_geometry_function_returns_its_vertices_count_and_strip_starts() {
-    use primase_shader_exec::{Executable, Resources, Runner};
+    use iridia_exec::{Executable, Resources, Runner};
     let p = geometry();
     let exe = Executable::function(&p, "main").unwrap();
     let bits = |x: [f32; 4]| x.map(f32::to_bits);
@@ -319,10 +319,10 @@ fn the_geometry_function_returns_its_vertices_count_and_strip_starts() {
     let resources = Resources::default();
     let bound = exe.bind_resources(&resources).unwrap();
     struct None_;
-    impl primase_shader_exec::Backend for None_ {
+    impl iridia_exec::Backend for None_ {
         fn sample(
             &mut self,
-            _: primase_shader_exec::ImageSample<primase_shader_exec::Element>,
+            _: iridia_exec::ImageSample<iridia_exec::Element>,
         ) -> Result<[f32; 4], String> {
             Err("none".into())
         }

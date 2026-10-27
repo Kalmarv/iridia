@@ -2,7 +2,7 @@
 //! them.
 
 use super::request::{Dim, ImageAtomicOp, QueryKind};
-use primase_shader::ResourceId;
+use iridia::ResourceId;
 
 pub(super) type Reg = [u32; 4];
 

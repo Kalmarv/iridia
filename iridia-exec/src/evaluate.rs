@@ -3,7 +3,7 @@
 //! registers it wants; the evaluator has no game names and no policy, and refuses what it is not given.
 
 use crate::{Absent, Error, PixelShader, Views};
-use primase_shader::{ConstantType, D3dClass, Interface, Member, ResourceKind};
+use iridia::{ConstantType, D3dClass, Interface, Member, ResourceKind};
 use std::collections::BTreeMap;
 
 use primase_core::parallel::Threads;

@@ -3,13 +3,13 @@
 //! the vertex its group index names and the indices of the first triangle. It validates, is written as WGSL with the mesh
 //! stage's attributes, and the executor runs it to the meshlets its thread groups wrote.
 use naga::{Expression, Statement};
-use primase_shader::build::Builder;
-use primase_shader::{
+use iridia::build::Builder;
+use iridia::{
     Conventions, D3dModes, Interface, Label, MeshFacts, MeshTopology, Program, Provenance, ScalarType,
     ShaderFormat, Stage, StageFacts, SystemValue, Value, Varying, VaryingProvenance, emit, entry_io,
     mesh_vertex_io,
 };
-use primase_shader_exec::mesh::MeshShader;
+use iridia_exec::mesh::MeshShader;
 
 fn varying(name: &str, system: Option<SystemValue>, scalar: ScalarType, width: u8) -> Varying {
     Varying {
@@ -171,7 +171,7 @@ fn a_mesh_program_validates_and_is_written_with_the_mesh_stage() {
     );
 }
 
-fn nothing(_: primase_shader_exec::Sample) -> Result<[f32; 4], String> {
+fn nothing(_: iridia_exec::Sample) -> Result<[f32; 4], String> {
     Err("no sampling in this program".into())
 }
 

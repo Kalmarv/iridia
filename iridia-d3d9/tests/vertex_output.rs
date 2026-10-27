@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 //! Independent hand-worked answers for lane slicing; full-program comparisons are regressions, not an oracle.
-use primase_d3d9::{lift, project_vertex_output};
-use primase_shader::flow::{At, Node, Values};
-use primase_shader_exec::{PixelShader, ProgramShader, Sample};
+use iridia_d3d9::{lift, project_vertex_output};
+use iridia::flow::{At, Node, Values};
+use iridia_exec::{PixelShader, ProgramShader, Sample};
 
 fn op(code: u32, args: &[u32]) -> Vec<u32> {
     [vec![code | (args.len() as u32) << 24], args.to_vec()].concat()
@@ -46,11 +46,11 @@ fn output_slice_keeps_original_hash_and_arithmetic_without_other_outputs() {
     let raw = fixture();
     let full = lift(&raw).unwrap();
     let sliced = project_vertex_output(&raw, 3, 3).unwrap();
-    assert_eq!(sliced.stage, primase_shader::Stage::Pixel);
+    assert_eq!(sliced.stage, iridia::Stage::Pixel);
     assert_eq!(sliced.provenance.source_hash, full.provenance.source_hash);
     assert_ne!(sliced.provenance.lifter, full.provenance.lifter);
     assert!(sliced.notes.iter().any(|n| n.contains("placeholders")));
-    primase_shader::emit::wgsl(&sliced).unwrap();
+    iridia::emit::wgsl(&sliced).unwrap();
     let graph = Values::of_program(&sliced).unwrap();
     let mut input_lanes = Vec::new();
     let mut words = Vec::new();
@@ -181,12 +181,12 @@ fn projected_vertex_output_has_a_versioned_ir_baseline() {
         .unwrap()
         .text()
         .map_err(|e| e.to_string());
-    let table = primase_shader::gate::table(
+    let table = iridia::gate::table(
         "primase-d3d9 vertex output",
-        primase_d3d9::LIFTER_VERSION,
+        iridia_d3d9::LIFTER_VERSION,
         &[("uv".into(), outcome)],
     );
-    primase_shader::gate::check(include_str!("vertex-output-versions.tsv"), &table)
+    iridia::gate::check(include_str!("vertex-output-versions.tsv"), &table)
         .unwrap_or_else(|e| panic!("{e}\n{table}"));
 }
 

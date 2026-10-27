@@ -15,8 +15,8 @@ use super::flat::{
 };
 use super::request::{Dim, ImageAtomicOp, QueryKind};
 use super::run::Decision;
-use primase_shader::rt as primase_rt;
-use primase_shader::{Program, ResourceId};
+use iridia::rt as primase_rt;
+use iridia::{Program, ResourceId};
 
 /// The scalar kind of a typed value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1696,7 +1696,7 @@ pub(super) fn compile(
             .filter(|_| {
                 matches!(
                     p.stage,
-                    primase_shader::Stage::Compute | primase_shader::Stage::Mesh
+                    iridia::Stage::Compute | iridia::Stage::Mesh
                 )
             })
             .map(|e| e.workgroup_size),

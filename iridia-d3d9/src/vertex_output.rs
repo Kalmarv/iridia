@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 
 use crate::{Register, Result, error, read};
-use primase_shader::{Program, Stage};
+use iridia::{Program, Stage};
 
 pub(crate) fn project(bytes: &[u8], register: u32, mask: u8) -> Result<Program> {
     let mut source = read(bytes)?;

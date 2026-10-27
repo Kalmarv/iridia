@@ -2,9 +2,9 @@
 //! Hand-worked SM3 tokens and arithmetic. Expected numbers come from the SDK instruction definitions, not
 //! a second bytecode decoder. The common executor only observes the lifted IR's answer.
 use primase_core::gate::{GateReport, Tolerance};
-use primase_d3d9::{lift, read};
-use primase_shader::{ResourceKind, ShaderFormat};
-use primase_shader_exec::{PixelShader, ProgramShader, Sample};
+use iridia_d3d9::{lift, read};
+use iridia::{ResourceKind, ShaderFormat};
+use iridia_exec::{PixelShader, ProgramShader, Sample};
 
 fn program(body: &[u32]) -> Vec<u8> {
     [&[0xffff_0300][..], body, &[0xffff][..]]
@@ -155,9 +155,9 @@ fn sampling_projection_bias_and_discard_keep_their_meaning() {
                 assert_eq!(
                     s.lod,
                     if mode == 2 {
-                        primase_shader_exec::Lod::Bias(2.)
+                        iridia_exec::Lod::Bias(2.)
                     } else {
-                        primase_shader_exec::Lod::Implicit
+                        iridia_exec::Lod::Implicit
                     }
                 );
                 Ok([0.2, 0.4, 0.6, 0.8])
@@ -183,8 +183,8 @@ fn sampling_projection_bias_and_discard_keep_their_meaning() {
     }
     // Cube and volume declarations retain their dimensionality and lift valid modules.
     for (declaration, dim) in [
-        (0x9800_0000, primase_shader::TextureDim::Cube),
-        (0xa000_0000, primase_shader::TextureDim::D3),
+        (0x9800_0000, iridia::TextureDim::Cube),
+        (0xa000_0000, iridia::TextureDim::D3),
     ] {
         let body = [
             def(0, [0.5; 4]),
@@ -194,7 +194,7 @@ fn sampling_projection_bias_and_discard_keep_their_meaning() {
         .concat();
         let p = lift(&program(&body)).unwrap();
         assert!(matches!(p.interface.resources[0].kind,ResourceKind::Texture{dim:d,..} if d==dim));
-        primase_shader::emit::wgsl(&p).unwrap();
+        iridia::emit::wgsl(&p).unwrap();
     }
 }
 
@@ -299,7 +299,7 @@ fn malformed_and_unsupported_programs_are_refused_without_panics() {
     }
     assert_eq!(
         read(&[0x00, 0x03, 0xfe, 0xff, 0xff, 0xff, 0, 0]).unwrap().stage,
-        primase_shader::Stage::Vertex
+        iridia::Stage::Vertex
     );
     let mut trailing = bytes;
     trailing.extend([0; 4]);
@@ -342,7 +342,7 @@ fn lifted_fixture_changes_require_a_version_bump() {
             (name.to_owned(), outcome)
         })
         .collect::<Vec<_>>();
-    let table = primase_shader::gate::table("primase-d3d9", primase_d3d9::LIFTER_VERSION, &outcomes);
-    primase_shader::gate::check(include_str!("versions.tsv"), &table)
+    let table = iridia::gate::table("primase-d3d9", iridia_d3d9::LIFTER_VERSION, &outcomes);
+    iridia::gate::check(include_str!("versions.tsv"), &table)
         .unwrap_or_else(|e| panic!("{e}\n{table}"));
 }

@@ -5,15 +5,15 @@ use naga::{
     AddressSpace, Binding, DerivativeAxis, DerivativeControl, FunctionArgument, GlobalVariable, ImageClass,
     ImageDimension, ResourceBinding, SampleLevel, ScalarKind, StructMember, TypeInner,
 };
-use primase_shader::build::{Builder, Kind, Val};
-use primase_shader::{
+use iridia::build::{Builder, Kind, Val};
+use iridia::{
     BufferLayout, Conventions, D3dBinding, D3dClass, D3dModes, D3dSignature, Interface, Label, Program,
     Provenance, Resource, ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType, ShaderFormat,
     Stage, TextureDim, Value, Varying, VaryingProvenance,
 };
-use primase_shader_exec::probe::AnsweredReads;
-use primase_shader_exec::{Dim, ImageLod, ImageSample, ProgramShader};
-use primase_shader_exec::{PixelShader, Sampler};
+use iridia_exec::probe::AnsweredReads;
+use iridia_exec::{Dim, ImageLod, ImageSample, ProgramShader};
+use iridia_exec::{PixelShader, Sampler};
 
 fn val(expr: naga::Handle<naga::Expression>, kind: Kind, width: u8) -> Val {
     Val { expr, kind, width }
@@ -30,9 +30,9 @@ fn varying(name: &str, width: u8, mask: u8) -> Varying {
             scalar: ScalarType::Float,
             width,
         },
-        interp: Some(primase_shader::Interpolation {
-            mode: primase_shader::InterpMode::Perspective,
-            sampling: primase_shader::InterpSampling::Center,
+        interp: Some(iridia::Interpolation {
+            mode: iridia::InterpMode::Perspective,
+            sampling: iridia::InterpSampling::Center,
         }),
         used: true,
         provenance: VaryingProvenance {
@@ -47,7 +47,7 @@ fn varying(name: &str, width: u8, mask: u8) -> Varying {
 
 fn target() -> Varying {
     let mut v = varying("SV_Target", 4, 0xf);
-    v.system = Some(primase_shader::SystemValue::Target(0));
+    v.system = Some(iridia::SystemValue::Target(0));
     v.interp = None;
     v
 }
@@ -306,7 +306,7 @@ fn volume_program() -> Program {
 
 struct Unused;
 impl Sampler for Unused {
-    fn sample(&mut self, _: primase_shader_exec::Sample) -> Result<[f32; 4], String> {
+    fn sample(&mut self, _: iridia_exec::Sample) -> Result<[f32; 4], String> {
         Err("no samples expected".into())
     }
 }
@@ -659,8 +659,8 @@ fn array_program() -> Program {
 
 /// Answers a sample with the elements it names: (texture element, sampler element, 0, 1).
 struct Elements;
-impl primase_shader_exec::Backend for Elements {
-    fn sample(&mut self, r: ImageSample<primase_shader_exec::Element>) -> Result<[f32; 4], String> {
+impl iridia_exec::Backend for Elements {
+    fn sample(&mut self, r: ImageSample<iridia_exec::Element>) -> Result<[f32; 4], String> {
         assert_eq!((r.texture.id, r.sampler.id), (ResourceId(0), ResourceId(1)));
         Ok([r.texture.index as f32, r.sampler.index as f32, 0.0, 1.0])
     }
@@ -671,7 +671,7 @@ impl primase_shader_exec::Backend for Elements {
 /// to check here (the caller's to check): sampler 5 is asked for by texture 4.
 #[test]
 fn an_index_the_program_computes_picks_an_element_of_a_resource_array() {
-    use primase_shader_exec::{Executable, Resources, Runner};
+    use iridia_exec::{Executable, Resources, Runner};
     let program = array_program();
     program.validate().unwrap();
     let exe = Executable::new(&program).unwrap();
@@ -705,7 +705,7 @@ fn an_index_the_program_computes_picks_an_element_of_a_resource_array() {
 #[test]
 fn a_resource_array_is_written_and_its_count_is_checked() {
     let mut program = array_program();
-    let wgsl = primase_shader::emit::wgsl(&program).unwrap();
+    let wgsl = iridia::emit::wgsl(&program).unwrap();
     assert!(wgsl.contains("binding_array<texture_2d<f32>, 4>"), "{wgsl}");
     assert!(wgsl.contains("binding_array<sampler>"), "{wgsl}");
     program.interface.resources[0].count = 3;

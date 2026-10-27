@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 mod buffers;
 pub use buffers::{AnsweredBuffers, BufferExtent, BufferRead};
 
-use primase_shader::{Program, ResourceId, Stage, SystemValue};
+use iridia::{Program, ResourceId, Stage, SystemValue};
 
 use crate::{
     Backend, Dim, Element, Executable, ImageLoad, ImageQuery, ImageSample, Resources, Runner, Sample, Sampler,
@@ -373,7 +373,7 @@ impl VertexProbe {
             ..Resources::default()
         };
         for r in &self.program.interface.resources {
-            if let primase_shader::ResourceKind::ConstantBuffer { layout } = &r.kind {
+            if let iridia::ResourceKind::ConstantBuffer { layout } = &r.kind {
                 resources
                     .constants
                     .entry(r.id)

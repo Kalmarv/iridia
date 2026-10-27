@@ -6,8 +6,8 @@ use naga::{
     AddressSpace, BinaryOperator, Binding, FunctionArgument, GlobalVariable, ResourceBinding, StructMember,
     TypeInner,
 };
-use primase_shader::build::{Builder, Kind};
-use primase_shader::{
+use iridia::build::{Builder, Kind};
+use iridia::{
     BufferLayout, Conventions, D3dModes, Interface, Label, Problem, Program, Provenance, Resource,
     ResourceId, ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, SystemValue, Value,
     Varying, VaryingProvenance,
@@ -48,13 +48,13 @@ fn program() -> Program {
     let boolean = b.ty_of(Kind::B, 1);
     let f4 = b.ty_of(Kind::F, 4);
     let uv = b.app(naga::Expression::FunctionArgument(0));
-    let uv = primase_shader::build::Val {
+    let uv = iridia::build::Val {
         expr: uv,
         kind: Kind::F,
         width: 2,
     };
     let face = b.app(naga::Expression::FunctionArgument(1));
-    let face = primase_shader::build::Val {
+    let face = iridia::build::Val {
         expr: face,
         kind: Kind::B,
         width: 1,
@@ -120,9 +120,9 @@ fn program() -> Program {
         false,
     );
     let mut texcoord = varying("TEXCOORD", 0, None, ScalarType::Float, 2);
-    texcoord.interp = Some(primase_shader::Interpolation {
-        mode: primase_shader::InterpMode::Perspective,
-        sampling: primase_shader::InterpSampling::Center,
+    texcoord.interp = Some(iridia::Interpolation {
+        mode: iridia::InterpMode::Perspective,
+        sampling: iridia::InterpSampling::Center,
     });
     let cb_global = module.global_variables.iter().next().unwrap().0;
     Program {
@@ -195,7 +195,7 @@ fn a_consistent_program_validates_and_writes() {
     let p = program();
     assert_eq!(problems(&p), Vec::<String>::new());
     // SV_Target0 is a float3 element in the interface but a four-lane colour in the module
-    let wgsl = primase_shader::emit::wgsl(&p).unwrap();
+    let wgsl = iridia::emit::wgsl(&p).unwrap();
     assert!(wgsl.contains("@location(0) SV_Target0_: vec4<f32>"), "{wgsl}");
     assert!(
         wgsl.contains("@builtin(front_facing) SV_IsFrontFace0_: bool"),
@@ -209,7 +209,7 @@ fn the_text_form_is_stable_and_states_what_the_module_cannot() {
     let p = program();
     let text = p.text().unwrap();
     assert_eq!(text, p.text().unwrap());
-    let header = format!("// primase shader program v{}", primase_shader::PROGRAM_VERSION);
+    let header = format!("// primase shader program v{}", iridia::PROGRAM_VERSION);
     for line in [
         header.as_str(),
         "// stage pixel entry main",
@@ -335,9 +335,9 @@ fn a_vertex_programs_cull_distance_travels_as_a_varying_with_a_note() {
             ),
         ],
         resources: Vec::new(),
-        facts: primase_shader::StageFacts::None,
+        facts: iridia::StageFacts::None,
     };
-    let io = primase_shader::entry_io(&interface).unwrap();
+    let io = iridia::entry_io(&interface).unwrap();
     assert_eq!(io.results.len(), 2);
     assert!(matches!(
         io.results[0].binding,
@@ -347,7 +347,7 @@ fn a_vertex_programs_cull_distance_travels_as_a_varying_with_a_note() {
         io.results[1].binding,
         Binding::Location { location: 0, .. }
     ));
-    let notes = primase_shader::interface_notes(&interface);
+    let notes = iridia::interface_notes(&interface);
     assert!(notes.iter().any(|n| n.contains("cull distance")), "{notes:?}");
     // a pixel program has no cull distance to read
     let mut pixel = interface.clone();
@@ -360,15 +360,15 @@ fn a_vertex_programs_cull_distance_travels_as_a_varying_with_a_note() {
         1,
     )];
     pixel.outputs = Vec::new();
-    let refused = primase_shader::entry_io(&pixel).unwrap_err();
+    let refused = iridia::entry_io(&pixel).unwrap_err();
     assert!(refused.contains("no built-in binding"), "{refused}");
     // ... unless nothing reads it: the interface lists the container's whole signature, the entry point carries the
     // elements it can bind
     pixel.inputs[0].used = false;
-    assert!(primase_shader::entry_io(&pixel).unwrap().arguments.is_empty());
+    assert!(iridia::entry_io(&pixel).unwrap().arguments.is_empty());
     pixel.inputs[0].system = Some(SystemValue::ClipDistance);
-    assert!(primase_shader::entry_io(&pixel).unwrap().arguments.is_empty());
+    assert!(iridia::entry_io(&pixel).unwrap().arguments.is_empty());
     pixel.inputs[0].used = true;
-    let refused = primase_shader::entry_io(&pixel).unwrap_err();
+    let refused = iridia::entry_io(&pixel).unwrap_err();
     assert!(refused.contains("clip distances"), "{refused}");
 }

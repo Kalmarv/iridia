@@ -1,5 +1,5 @@
 use primase_core::shader::AlphaComparison;
-use primase_shader::output_uses::{AlphaDither, AlphaExpr, Known, alpha_tests, discard_compares};
+use iridia::output_uses::{AlphaDither, AlphaExpr, Known, alpha_tests, discard_compares};
 
 #[test]
 fn alpha_reference_requires_structural_data_and_a_disjoint_dither_source() {
@@ -73,7 +73,7 @@ fn alpha_reference_requires_structural_data_and_a_disjoint_dither_source() {
 
 /// A fixture compiled from `fixtures/alpha_reference.hlsl` (the header says how), read at run time: these two entry
 /// points were added with `alpha_tests` and are compiled by the same commands.
-fn compiled(entry: &str) -> Vec<(&'static str, primase_shader::Program)> {
+fn compiled(entry: &str) -> Vec<(&'static str, iridia::Program)> {
     let read = |extension: &str| {
         let path = format!(
             "{}/tests/fixtures/alpha_reference_{entry}.{extension}",

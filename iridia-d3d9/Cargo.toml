@@ -1,5 +1,5 @@
 [package]
-name = "primase-d3d9"
+name = "iridia-d3d9"
 description = "Raw Direct3D 9 shader reflection and lifting"
 version.workspace = true
 edition.workspace = true
@@ -10,11 +10,11 @@ publish.workspace = true
 
 [dependencies]
 primase-core.workspace = true
-primase-shader.workspace = true
+iridia.workspace = true
 naga.workspace = true
 
 [dev-dependencies]
-primase-shader-exec.workspace = true
+iridia-exec.workspace = true
 primase-testdata.workspace = true
 
 [lints]

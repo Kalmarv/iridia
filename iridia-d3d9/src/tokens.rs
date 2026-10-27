@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use primase_shader::{Stage, TextureDim};
+use iridia::{Stage, TextureDim};
 
 use crate::{ConstantTable, Result, error};
 

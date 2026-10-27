@@ -1,27 +1,27 @@
-//! The value graph ([`primase_shader::flow::Values`]) of the programs naga has no entry point for, walked through their
+//! The value graph ([`iridia::flow::Values`]) of the programs naga has no entry point for, walked through their
 //! stage functions, on the tessellated triangle of the lifters' fixtures (`tessellation.hlsl`, each stage compiled to
 //! both bytecodes): the vertex program feeding the tessellator, the hull program's control-point phase and its
 //! patch-constant phase, and the domain program. What each output and patch constant is made of is followed to the
 //! inputs, the constants and the values the pipeline supplies.
-use primase_shader::flow::{At, Node, NodeId, Supplied, Values};
-use primase_shader::{Label, Program, ResourceKind, StageFacts, WordsRead};
+use iridia::flow::{At, Node, NodeId, Supplied, Values};
+use iridia::{Label, Program, ResourceKind, StageFacts, WordsRead};
 
 /// Each stage of the fixture, as fxc and dxc compile it.
 const FIXTURES: [(&str, &[u8], &[u8]); 3] = [
     (
         "vs",
-        include_bytes!("../../dxbc/tests/fixtures/tessellation.vs.dxbc"),
-        include_bytes!("../../dxil/tests/fixtures/tessellation.vs.dxil"),
+        include_bytes!("fixtures/tessellation.vs.dxbc"),
+        include_bytes!("fixtures/tessellation.vs.dxil"),
     ),
     (
         "hs",
-        include_bytes!("../../dxbc/tests/fixtures/tessellation.hs.dxbc"),
-        include_bytes!("../../dxil/tests/fixtures/tessellation.hs.dxil"),
+        include_bytes!("fixtures/tessellation.hs.dxbc"),
+        include_bytes!("fixtures/tessellation.hs.dxil"),
     ),
     (
         "ds",
-        include_bytes!("../../dxbc/tests/fixtures/tessellation.ds.dxbc"),
-        include_bytes!("../../dxil/tests/fixtures/tessellation.ds.dxil"),
+        include_bytes!("fixtures/tessellation.ds.dxbc"),
+        include_bytes!("fixtures/tessellation.ds.dxil"),
     ),
 ];
 

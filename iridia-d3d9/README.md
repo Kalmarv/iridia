@@ -1,7 +1,7 @@
-# primase-d3d9
+# iridia-d3d9
 
 Reads complete raw `ps_3_0` and `vs_3_0` streams and lifts their supported operations directly into
-`primase_shader::Program`. The caller keeps the original bytes as `ShaderFormat::D3d9`;
+`iridia::Program`. The caller keeps the original bytes as `ShaderFormat::D3d9`;
 no existing bytecode format or consumer is changed. This crate does no file I/O.
 
 `read` returns declarations, instructions, immediate definitions, every comment and CTAB's

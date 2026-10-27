@@ -1,4 +1,4 @@
-//! How a program holds a matrix constant ([`primase_shader::matrix::lines`]), on the lifters' fixtures: a domain program
+//! How a program holds a matrix constant ([`iridia::matrix::lines`]), on the lifters' fixtures: a domain program
 //! that applies a `column_major` matrix as `mul(M, v)` (its lines are the columns of the matrix it applies) as fxc and dxc
 //! compile it, optimized and not, and a vertex program that applies one as `mul(v, M)` (the lines are the rows of the
 //! matrix it applies to column vectors, the transpose) as dxc compiles it for two shader models and unoptimized. The
@@ -6,9 +6,9 @@
 //! by the value graph (it has no entry point a WebGPU module can hold), so the column form is held on fxc's vertex
 //! programs of FromSoftware's fixtures, which also hold two palettes chosen by an index, one blended across joints, and
 //! a cloth program's blend chosen by a flag, as dxc and fxc compile it.
-use primase_shader::flow::Values;
-use primase_shader::matrix::{Unshown, Words, lines};
-use primase_shader::{Majorness, Program, ResourceKind};
+use iridia::flow::Values;
+use iridia::matrix::{Unshown, Words, lines};
+use iridia::{Majorness, Program, ResourceKind};
 
 /// The arrangement `lines` reads for the constant `name`, by its place in the program's own layout, or, for a palette,
 /// by the indexed reads of its buffer.
@@ -47,8 +47,8 @@ fn dxil(bytes: &[u8]) -> Program {
     primase_dxil::lift(bytes).expect("dxc's program lifts")
 }
 
-const SINGLE_UV_VS: &[u8] = include_bytes!("../../../worlds/fromsoft/tests/fixtures/single_uv_vs.dxbc");
-const SKIN_VS: &[u8] = include_bytes!("../../../worlds/fromsoft/tests/fixtures/layered_skin_vs.dxbc");
+const SINGLE_UV_VS: &[u8] = include_bytes!("fixtures/single_uv_vs.dxbc");
+const SKIN_VS: &[u8] = include_bytes!("fixtures/layered_skin_vs.dxbc");
 
 /// `mul(M, v)` of a `column_major` matrix scales each line by a lane of the vector: its lines are columns.
 #[test]
@@ -82,13 +82,13 @@ fn a_palette_blended_then_chosen_by_a_flag_is_read_by_rows() {
         (
             "dxc",
             dxil(include_bytes!(
-                "../../../worlds/fromsoft/tests/fixtures/layered_cloth_blend_vs.dxil"
+                "fixtures/layered_cloth_blend_vs.dxil"
             )),
         ),
         (
             "fxc",
             dxbc(include_bytes!(
-                "../../../worlds/fromsoft/tests/fixtures/layered_cloth_blend_vs.dxbc"
+                "fixtures/layered_cloth_blend_vs.dxbc"
             )),
         ),
     ] {
@@ -105,7 +105,7 @@ fn a_palette_blended_then_chosen_by_a_flag_is_read_by_rows() {
 #[test]
 fn a_palette_read_only_for_its_translations_shows_no_arrangement() {
     let billboard = dxbc(include_bytes!(
-        "../../../worlds/fromsoft/tests/fixtures/layered_billboard_vs.dxbc"
+        "fixtures/layered_billboard_vs.dxbc"
     ));
     assert_eq!(
         palette_lines_of(&billboard, "VC_aObjMatrix"),
@@ -120,15 +120,15 @@ fn a_matrix_applied_to_a_row_vector_is_read_by_rows() {
     for (fixture, program) in [
         (
             "vertex.dxil",
-            dxil(include_bytes!("../../dxil/tests/fixtures/vertex.dxil")),
+            dxil(include_bytes!("fixtures/vertex.dxil")),
         ),
         (
             "vertex.66.dxil",
-            dxil(include_bytes!("../../dxil/tests/fixtures/vertex.66.dxil")),
+            dxil(include_bytes!("fixtures/vertex.66.dxil")),
         ),
         (
             "vertex.od.dxil",
-            dxil(include_bytes!("../../dxil/tests/fixtures/vertex.od.dxil")),
+            dxil(include_bytes!("fixtures/vertex.od.dxil")),
         ),
     ] {
         assert_eq!(
@@ -142,7 +142,7 @@ fn a_matrix_applied_to_a_row_vector_is_read_by_rows() {
 /// A constant the program reads but never multiplies by another value shows no arrangement, and is refused with that.
 #[test]
 fn a_constant_never_applied_shows_no_arrangement() {
-    let program = dxil(include_bytes!("../../dxil/tests/fixtures/vertex.dxil"));
+    let program = dxil(include_bytes!("fixtures/vertex.dxil"));
     assert_eq!(lines_of(&program, "tint"), Err(Unshown::NotApplied));
 }
 
@@ -152,7 +152,7 @@ fn a_constant_never_applied_shows_no_arrangement() {
 #[test]
 fn a_stage_states_the_lines_of_its_matrices() {
     use primase_core::shader::{ConstantBinding, ConstantRole, MatrixLines, ObjectParameter, ViewParameter};
-    use primase_shader::matrix::state_lines;
+    use iridia::matrix::state_lines;
     let skin = dxbc(SKIN_VS);
     let graph = skin.graph().expect("the value graph");
     let constant = |name: &str, role: ConstantRole| {

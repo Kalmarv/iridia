@@ -7,8 +7,8 @@
 //! past the step limit must stop [`PixelShader::execute_lanes`] as it stops alone, the first such pixel named; and a
 //! grid evaluation must be the one made one pixel after another.
 use primase_core::parallel::Threads;
-use primase_shader_exec::evaluate::Constants;
-use primase_shader_exec::{
+use iridia_exec::evaluate::Constants;
+use iridia_exec::{
     Error, Execution, Grid, Image, Input, Invocation, Layout, PixelShader, ProgramShader, Raw, Sampler, View,
     Views, evaluate_raw_with,
 };
@@ -22,7 +22,7 @@ type Registers = Vec<[u32; 4]>;
 type Derivatives = Vec<[[u32; 4]; 2]>;
 
 fn shaders() -> Vec<(&'static str, ProgramShader)> {
-    let executor = |program: primase_shader::Program| {
+    let executor = |program: iridia::Program| {
         program.validate().unwrap_or_else(|p| panic!("{p:?}"));
         ProgramShader::new(program).unwrap()
     };
@@ -42,7 +42,7 @@ fn shaders() -> Vec<(&'static str, ProgramShader)> {
 #[derive(Debug)]
 struct Coordinates;
 impl Image for Coordinates {
-    fn sample(&self, uv: [f32; 2], _lod: primase_shader_exec::Lod) -> Result<[f32; 4], String> {
+    fn sample(&self, uv: [f32; 2], _lod: iridia_exec::Lod) -> Result<[f32; 4], String> {
         Ok([uv[0], uv[1], 0.5, 1.])
     }
 }
@@ -108,7 +108,7 @@ fn invocations_in_lockstep_run_as_each_runs_alone() {
     for (name, shader) in shaders() {
         let c = constants(&shader, 2.);
         let buffers: Vec<(u32, &[[u32; 4]])> = c.buffers().iter().map(|(s, v)| (*s, v.as_slice())).collect();
-        let mut sampler = |s: primase_shader_exec::Sample| textures_sample(&textures, s);
+        let mut sampler = |s: iridia_exec::Sample| textures_sample(&textures, s);
         let (mut sampled, mut discards, mut steps) = (0, 0, std::collections::BTreeSet::new());
         for y in 0..ROW {
             let (inputs, derivatives) = row(&shader, (y as f32 + 0.5) / ROW as f32);
@@ -145,7 +145,7 @@ fn invocations_in_lockstep_run_as_each_runs_alone() {
 }
 
 /// The [`Views`] as a [`Sampler`]: the fixture samples t0 only.
-fn textures_sample(textures: &Views, s: primase_shader_exec::Sample) -> Result<[f32; 4], String> {
+fn textures_sample(textures: &Views, s: iridia_exec::Sample) -> Result<[f32; 4], String> {
     match textures.views.get(&s.texture) {
         Some(View::Image(image)) => image.sample(s.uv, s.lod),
         _ => Err(format!("t{} has no texture", s.texture)),
@@ -159,7 +159,7 @@ fn a_pixel_past_the_step_limit_stops_the_run_as_it_stops_alone() {
         // pixels 12 and on loop without end: four of them in the first run of 16
         let c = constants(&shader, 0.6);
         let buffers: Vec<(u32, &[[u32; 4]])> = c.buffers().iter().map(|(s, v)| (*s, v.as_slice())).collect();
-        let mut sampler = |s: primase_shader_exec::Sample| textures_sample(&textures, s);
+        let mut sampler = |s: iridia_exec::Sample| textures_sample(&textures, s);
         // a row whose loops never leave early (z stays above V)
         let (inputs, derivatives) = row(&shader, 0.025);
         let lanes: Vec<&[[u32; 4]]> = inputs.iter().map(Vec::as_slice).collect();
@@ -192,7 +192,7 @@ fn a_pixel_past_the_step_limit_stops_the_run_as_it_stops_alone() {
 #[derive(Debug)]
 struct OneByOne<'a>(&'a ProgramShader);
 impl PixelShader for OneByOne<'_> {
-    fn interface(&self) -> &primase_shader::Interface {
+    fn interface(&self) -> &iridia::Interface {
         self.0.interface()
     }
     fn input_count(&self) -> usize {

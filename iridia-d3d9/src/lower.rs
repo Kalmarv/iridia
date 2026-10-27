@@ -5,7 +5,7 @@ use naga::{
     ImageDimension, LocalVariable, MathFunction as Mf, RelationalFunction, ResourceBinding, SampleLevel,
     ScalarKind, Statement, TypeInner, UnaryOperator,
 };
-use primase_shader::{
+use iridia::{
     BufferLayout, Constant as Field, ConstantType, Conventions, D3dBinding, D3dClass, D3dModes, D3dSignature,
     Interface, InterpMode, InterpSampling, Interpolation, Label, Majorness, Program, Provenance, Resource,
     ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType, ShaderFormat, Stage, StageFacts,
@@ -870,7 +870,7 @@ impl Lower<'_> {
             false,
         );
         self.notes
-            .extend(primase_shader::interface_notes(&self.interface));
+            .extend(iridia::interface_notes(&self.interface));
         self.notes.sort();
         self.notes.dedup();
         let program = Program {
@@ -895,7 +895,7 @@ impl Lower<'_> {
                 .into(),
                 lifter: "primase-d3d9".into(),
                 lifter_version: LIFTER_VERSION,
-                source_hash: Some(primase_shader::source_hash(bytes)),
+                source_hash: Some(iridia::source_hash(bytes)),
                 instruction_count: None,
             },
             notes: self.notes,

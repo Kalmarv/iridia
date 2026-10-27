@@ -9,8 +9,8 @@ use naga::{
     GlobalVariable, Handle, ImageClass, ImageDimension, LocalVariable, MathFunction as Mf,
     RelationalFunction, ResourceBinding, SampleLevel, ScalarKind, Statement, TypeInner, UnaryOperator as Uo,
 };
-use primase_shader::build::{Builder, Kind, Val};
-use primase_shader::{
+use iridia::build::{Builder, Kind, Val};
+use iridia::{
     BufferLayout, Constant as LayoutConstant, ConstantType, Conventions, D3dBinding, D3dClass, D3dModes,
     D3dSignature, Interface, InterpMode, InterpSampling, Interpolation, Label, Program, Provenance, Resource,
     ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType, ShaderFormat, Stage, StageFacts,
@@ -1413,7 +1413,7 @@ impl Lower<'_> {
         );
         let mut notes = notes;
         notes.extend(constant_notes);
-        notes.extend(primase_shader::interface_notes(&interface));
+        notes.extend(iridia::interface_notes(&interface));
         notes.sort();
         notes.dedup();
         Ok(Program {

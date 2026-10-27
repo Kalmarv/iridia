@@ -1,5 +1,5 @@
 [package]
-name = "primase-mojoshader"
+name = "iridia-mojo"
 description = "Lifts the GLSL dialect MojoShader writes from Shader Model 2 and 3 programs to primase's shader representation"
 version.workspace = true
 edition.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-primase-shader.workspace = true
+iridia.workspace = true
 naga.workspace = true
 
 [dev-dependencies]

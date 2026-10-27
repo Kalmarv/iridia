@@ -5,8 +5,8 @@
 //! digest of them (`tests/fixtures/tessellator_reference.txt`, made by the reference program of `dumps/tess-ref` in
 //! primase-oracles); the port must agree on all three. The point positions are 16.16 fixed-point numbers, so the
 //! digest is of the float bits: there is no tolerance.
-use primase_shader::Partitioning;
-use primase_shader_exec::tessellator::{
+use iridia::Partitioning;
+use iridia_exec::tessellator::{
     Factors, OutputPrimitive, Tessellation, tessellate_isolines, tessellate_quad, tessellate_triangle,
 };
 

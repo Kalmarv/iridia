@@ -4,8 +4,8 @@
 //! then pointers to the payload and the attributes), the pipeline's operations are functions without a body, and the
 //! WGSL writer and the executor refuse them by name.
 use naga::{AddressSpace, Expression, FunctionArgument, Handle, Statement, StructMember, Type, TypeInner};
-use primase_shader::build::{Builder, Kind};
-use primase_shader::{
+use iridia::build::{Builder, Kind};
+use iridia::{
     Conventions, D3dBinding, D3dClass, D3dModes, Interface, Label, Program, Provenance, Resource, ResourceId,
     ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, StageFacts, SystemValue, Value,
     Varying, VaryingProvenance, emit, rt,
@@ -79,7 +79,7 @@ fn closest_hit() -> Program {
         resources: Vec::new(),
         facts: StageFacts::None,
     };
-    let sigs = primase_shader::stage_functions(&interface).unwrap().unwrap();
+    let sigs = iridia::stage_functions(&interface).unwrap().unwrap();
     let names: Vec<_> = sigs[0].arguments.iter().map(|a| a.name.as_str()).collect();
     assert_eq!(names, ["SV_RayTCurrent0", "payload", "attributes"]);
     let mut b = Builder::new();
@@ -134,7 +134,7 @@ fn ray_generation() -> Program {
         }],
         facts: StageFacts::None,
     };
-    let sigs = primase_shader::stage_functions(&interface).unwrap().unwrap();
+    let sigs = iridia::stage_functions(&interface).unwrap().unwrap();
     assert!(sigs[0].arguments.is_empty());
     let mut b = Builder::new();
     let payload = payload(&mut b);
@@ -280,12 +280,12 @@ fn a_ray_tracing_program_is_refused_by_name_by_the_writer_and_as_an_entry_point_
         assert!(wgsl.contains("no WGSL stage"), "{wgsl}");
         let functions = emit::wgsl_functions(&p).unwrap_err().to_string();
         assert!(functions.contains("ray tracing pipeline"), "{functions}");
-        let exec = primase_shader_exec::Executable::new(&p)
+        let exec = iridia_exec::Executable::new(&p)
             .err()
             .unwrap()
             .to_string();
         assert!(exec.contains("ray tracing pipeline"), "{exec}");
         // its function compiles: the pipeline runs it (the hand-built programs here have no real body to run)
-        let _ = primase_shader_exec::Executable::function(&p, "main");
+        let _ = iridia_exec::Executable::function(&p, "main");
     }
 }

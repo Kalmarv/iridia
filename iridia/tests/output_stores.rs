@@ -1,9 +1,9 @@
-//! What a pixel program stores into its colour targets ([`primase_shader::output_stores`]), on
+//! What a pixel program stores into its colour targets ([`iridia::output_stores`]), on
 //! `fixtures/output_stores.hlsl` lifted by the DXIL lifter: each target lane's stores are found through the entry
 //! point's result, each stored value's make is told apart (biased, a square root, the constant 0, a floored byte),
 //! a target the program does not declare has no stores, and an output's constant rows are those its stores reach.
-use primase_shader::Label;
-use primase_shader::output_stores::OutputStores;
+use iridia::Label;
+use iridia::output_stores::OutputStores;
 
 #[test]
 fn a_pixel_programs_output_stores_and_their_makes() {

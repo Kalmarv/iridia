@@ -3,7 +3,7 @@
 //! All executable operands, input/sampler declarations, immediate values and CTAB allocations are compared;
 //! validation and WGSL emission check the resulting IR. This is reflection/token evidence, not a rendered-pixel oracle.
 use primase_core::gate::{GateReport, Tolerance};
-use primase_d3d9::{Destination, Opcode, Register, Source, lift, read};
+use iridia_d3d9::{Destination, Opcode, Register, Source, lift, read};
 use primase_testdata::{Game, OracleSet, oracle};
 
 fn register(r: Register) -> String {
@@ -54,10 +54,10 @@ fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn check(bytes: &[u8], asm: &str) -> primase_d3d9::Shader {
+fn check(bytes: &[u8], asm: &str) -> iridia_d3d9::Shader {
     let shader = read(bytes).unwrap();
     let p = lift(bytes).unwrap();
-    primase_shader::emit::wgsl(&p).unwrap();
+    iridia::emit::wgsl(&p).unwrap();
     let mut gate = GateReport::new("raw SM3 vs Microsoft disassembly", Tolerance::Exact);
     let actual: Vec<_> = shader
         .instructions
@@ -156,8 +156,8 @@ fn check(bytes: &[u8], asm: &str) -> primase_d3d9::Shader {
         let decl = format!(
             "dcl_{} s{slot}",
             match dim {
-                primase_shader::TextureDim::D2 => "2d",
-                primase_shader::TextureDim::D3 => "volume",
+                iridia::TextureDim::D2 => "2d",
+                iridia::TextureDim::D3 => "volume",
                 _ => "cube",
             }
         );
@@ -225,7 +225,7 @@ fn shipped_pixel_shader_matches_microsofts_disassembly() {
     let bytes = std::fs::read(folder.join("pixel.bin")).unwrap();
     let asm = std::fs::read_to_string(folder.join("pixel.asm")).unwrap();
     assert_eq!(
-        primase_shader::source_hash(&bytes),
+        iridia::source_hash(&bytes),
         "sha256:82ffb69b8dced07b67e74ed481349f1c68ede096add5379c7b5749ea9b809c0e"
     );
     let shader = check(&bytes, &asm);
@@ -249,7 +249,7 @@ fn shipped_vertex_shaders_match_microsofts_disassembly() {
         let bytes = std::fs::read(folder.join(format!("{name}.bin"))).unwrap();
         let asm = std::fs::read_to_string(folder.join(format!("{name}.asm"))).unwrap();
         let shader = check(&bytes, &asm);
-        assert_eq!(shader.stage, primase_shader::Stage::Vertex);
+        assert_eq!(shader.stage, iridia::Stage::Vertex);
         assert_eq!(
             (
                 shader.inputs.len(),

@@ -1,10 +1,10 @@
-//! The vertex probe ([`primase_shader_exec::probe`]) on a vertex program that reads a texture of its own, as fxc and dxc
+//! The vertex probe ([`iridia_exec::probe`]) on a vertex program that reads a texture of its own, as fxc and dxc
 //! compile it (fixtures/probe_vs.hlsl): the texture's reads are answered with the stated stand-ins and counted, a check
 //! that fails names them, and a program that is not a vertex program is refused.
 use std::collections::BTreeMap;
 
-use primase_shader::{Program, ResourceKind};
-use primase_shader_exec::probe::{
+use iridia::{Program, ResourceKind};
+use iridia_exec::probe::{
     LOAD_STAND_IN, QUERY_STAND_IN, SAMPLE_STAND_IN, TextureUse, VertexProbe, Zeros,
 };
 
@@ -30,7 +30,7 @@ fn bits(v: [f32; 4]) -> [u32; 4] {
 }
 
 /// One run of the probe with `lift`: the constant buffer `Probe` as the fixture lays it out, the position and a UV.
-fn run(probe: &VertexProbe, lift: f32) -> primase_shader_exec::probe::ProbeRun<Zeros> {
+fn run(probe: &VertexProbe, lift: f32) -> iridia_exec::probe::ProbeRun<Zeros> {
     let program = probe.program();
     let buffer = program
         .interface

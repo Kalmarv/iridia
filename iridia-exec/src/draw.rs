@@ -40,7 +40,7 @@
 //!   nothing); a pixel that passes writes every target lane the program writes and, when the state writes depth, its
 //!   depth. Triangles are drawn in index order, so a later one overwrites an earlier one where both pass.
 use crate::{Error, Execution, PixelShader, ProgramShader, Sampler};
-use primase_shader::{InterpMode, SystemValue, Varying};
+use iridia::{InterpMode, SystemValue, Varying};
 
 fn error(detail: impl Into<String>) -> Error {
     Error {
@@ -266,7 +266,7 @@ impl<'a> DrawShader<'a> {
             })?;
             let mode = match v.interp {
                 Some(i) => i.mode,
-                None if v.value.scalar == primase_shader::ScalarType::Float => InterpMode::Perspective,
+                None if v.value.scalar == iridia::ScalarType::Float => InterpMode::Perspective,
                 None => InterpMode::Flat,
             };
             sources.push(Source::Varying {

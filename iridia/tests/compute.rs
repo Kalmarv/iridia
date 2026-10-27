@@ -8,8 +8,8 @@ use naga::{
     AddressSpace, AtomicFunction, Barrier, Expression, GlobalVariable, ResourceBinding, Scalar, Statement,
     StorageAccess, TypeInner,
 };
-use primase_shader::build::{Builder, Kind, Val};
-use primase_shader::{
+use iridia::build::{Builder, Kind, Val};
+use iridia::{
     Access, BufferKind, Conventions, D3dBinding, D3dClass, D3dModes, Interface, Label, Program, Provenance,
     Resource, ResourceId, ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, StorageTarget,
     SystemValue, Value, Varying, VaryingProvenance,
@@ -167,7 +167,7 @@ fn program(size: [u32; 3]) -> Program {
 fn a_compute_program_validates_and_is_written_as_wgsl() {
     let p = program([4, 1, 1]);
     p.validate().unwrap_or_else(|e| panic!("{e:?}"));
-    let wgsl = primase_shader::emit::wgsl(&p).unwrap();
+    let wgsl = iridia::emit::wgsl(&p).unwrap();
     for needle in [
         "@compute @workgroup_size(4, 1, 1)",
         "var<workgroup> counter: array<atomic<u32>, 1>",
@@ -196,11 +196,11 @@ fn a_thread_group_d3d_cannot_have_is_refused() {
 
 #[test]
 fn a_thread_group_beyond_webgpus_defaults_says_so() {
-    let notes = primase_shader::compute_limit_notes(&program([4, 1, 1]).module);
+    let notes = iridia::compute_limit_notes(&program([4, 1, 1]).module);
     assert!(notes.is_empty(), "{notes:?}");
-    let notes = primase_shader::compute_limit_notes(&program([64, 8, 1]).module);
+    let notes = iridia::compute_limit_notes(&program([64, 8, 1]).module);
     assert_eq!(notes.len(), 1);
     assert!(notes[0].contains("64 by 8 by 1 (512 invocations)"), "{notes:?}");
-    let notes = primase_shader::compute_limit_notes(&program([512, 1, 1]).module);
+    let notes = iridia::compute_limit_notes(&program([512, 1, 1]).module);
     assert!(notes[0].contains("512 by 1 by 1"), "{notes:?}");
 }

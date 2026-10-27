@@ -1,7 +1,7 @@
 //! Hand-worked prefix and replacement-tail evidence; no source-specific matching.
 #![allow(clippy::unwrap_used, reason = "hand-worked assertions")]
-use primase_d3d9::{Projection, project, reencode};
-use primase_shader_exec::{PixelShader, ProgramShader, Sample};
+use iridia_d3d9::{Projection, project, reencode};
+use iridia_exec::{PixelShader, ProgramShader, Sample};
 fn bytes() -> Vec<u8> {
     // mov r0,c0; mul r0,r0,c1; add oC0,r0,c2
     [
@@ -34,7 +34,7 @@ fn projection_keeps_original_hash_and_runs_original_tail_with_replaced_lanes() {
     let prefix = project(&b, cut).unwrap();
     assert_eq!(
         prefix.provenance.source_hash,
-        Some(primase_shader::source_hash(&b))
+        Some(iridia::source_hash(&b))
     );
     assert!(prefix.provenance.lifter.contains("projection:word=4"));
     let constants = [[2., 3., 4., 5.], [3.; 4], [1.; 4]].map(|v| v.map(f32::to_bits));

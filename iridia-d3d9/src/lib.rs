@@ -27,17 +27,17 @@ pub use ctab::{Constant, ConstantTable, Type, TypeMember};
 pub use tokens::{Comment, Destination, Input, Instruction, Opcode, Output, Register, Shader, Source, read};
 
 /// A refusal states the word offset in the raw token stream and the unsupported or malformed feature.
-pub type Error = primase_shader::Refusal;
+pub type Error = iridia::Refusal;
 pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn error(at: usize, detail: impl Into<String>) -> Error {
-    Error::new("D3D9", primase_shader::Unit::Word, at, detail)
+    Error::new("D3D9", iridia::Unit::Word, at, detail)
 }
 
 /// Increment when the same tokens lift differently. Hand-worked fixtures gate this version.
 pub const LIFTER_VERSION: u32 = 1;
 
 /// Lift one complete `ps_3_0` or `vs_3_0` program; trailing bytes and unknown features are errors.
-pub fn lift(bytes: &[u8]) -> Result<primase_shader::Program> {
+pub fn lift(bytes: &[u8]) -> Result<iridia::Program> {
     lower::lift(&read(bytes)?, bytes)
 }
 
@@ -54,7 +54,7 @@ pub struct Projection {
 /// Prior discards remain; subsequent operations/discards are excluded. This is a derived program, whose notes
 /// name the cut, whose lifter identity includes the projection, and whose source hash still identifies the complete original bytecode. No meaning is assigned
 /// to the chosen value: recognizing a useful cut is the caller's responsibility.
-pub fn project(bytes: &[u8], cut: Projection) -> Result<primase_shader::Program> {
+pub fn project(bytes: &[u8], cut: Projection) -> Result<iridia::Program> {
     lower::project(&read(bytes)?, bytes, cut, false)
 }
 
@@ -62,7 +62,7 @@ pub fn project(bytes: &[u8], cut: Projection) -> Result<primase_shader::Program>
 /// input `DERIVED_RGB0` (signature register 31). This runs the original downstream operations, including
 /// normalization and discards, rather than a rewritten equation. Other register lanes and the prefix remain.
 /// An original input v31 is refused. The caller supplies projected RGB in that new input's xyz lanes.
-pub fn reencode(bytes: &[u8], cut: Projection) -> Result<primase_shader::Program> {
+pub fn reencode(bytes: &[u8], cut: Projection) -> Result<iridia::Program> {
     lower::project(&read(bytes)?, bytes, cut, true)
 }
 
@@ -70,8 +70,8 @@ pub fn reencode(bytes: &[u8], cut: Projection) -> Result<primase_shader::Program
 /// Returns its stage and exact bytes through END; subsequent container metadata is not consumed.
 /// This checks token/comment spans, not instruction semantics: an unsupported operation is retained as
 /// bytecode for a later lifter to refuse. It never searches for END inside operands or comments.
-pub fn frame(bytes: &[u8]) -> Result<(primase_shader::Stage, &[u8])> {
-    use primase_shader::Stage;
+pub fn frame(bytes: &[u8]) -> Result<(iridia::Stage, &[u8])> {
+    use iridia::Stage;
     let word = |at: usize| -> Result<u32> {
         let b = bytes
             .get(at..at.saturating_add(4))
@@ -124,6 +124,6 @@ pub fn frame(bytes: &[u8]) -> Result<(primase_shader::Stage, &[u8])> {
 /// RGBA positions; other lanes are explicitly placeholder (0,0,0,1). Other original outputs are excluded.
 /// Full original source hash, a distinct lifter identity and a derivation note keep this separate from the VS.
 /// Its original declarations remain in the interface; `used` and graph dependencies describe actual reads.
-pub fn project_vertex_output(bytes: &[u8], register: u32, mask: u8) -> Result<primase_shader::Program> {
+pub fn project_vertex_output(bytes: &[u8], register: u32, mask: u8) -> Result<iridia::Program> {
     vertex_output::project(bytes, register, mask)
 }

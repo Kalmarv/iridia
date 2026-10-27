@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 //! Programs in MojoShader's dialect, written as it writes them, lifted: they validate and are written as WGSL; what the
 //! dialect does not have is refused by name.
-use primase_mojoshader::{Attribute, Constant, Hints, Sampler, lift};
-use primase_shader::{Stage, emit};
+use iridia_mojo::{Attribute, Constant, Hints, Sampler, lift};
+use iridia::{Stage, emit};
 
 const GAMMA: &str = "#ifdef GL_ES
 precision mediump float;
@@ -290,7 +290,7 @@ fn constants_the_program_cannot_hold_are_said_in_its_notes() {
     assert_eq!(p.notes, sorted);
 }
 
-/// The version gate (`primase_shader::gate`): what the lifter makes of these programs is hashed under `LIFTER_VERSION` and
+/// The version gate (`iridia::gate`): what the lifter makes of these programs is hashed under `LIFTER_VERSION` and
 /// `PROGRAM_VERSION` in `tests/lifted.hashes`. A change to the output without a bump of the version that names it fails here,
 /// and so does a bump without the table of that version; the current table is written to the scratch root's `mojoshader-lifted.hashes`.
 #[test]
@@ -309,14 +309,14 @@ fn what_the_lifter_makes_of_its_programs_is_the_versions() {
             (name.to_owned(), outcome)
         })
         .collect();
-    let current = primase_shader::gate::table(
+    let current = iridia::gate::table(
         "primase-mojoshader",
-        primase_mojoshader::LIFTER_VERSION,
+        iridia_mojo::LIFTER_VERSION,
         &outcomes,
     );
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let committed = std::fs::read_to_string(dir.join("lifted.hashes")).unwrap_or_default();
-    if let Err(what) = primase_shader::gate::check(&committed, &current) {
+    if let Err(what) = iridia::gate::check(&committed, &current) {
         let new = primase_testdata::scratch().join("mojoshader-lifted.hashes");
         std::fs::write(&new, &current).unwrap();
         panic!("{what}; the current table is {}", new.display());

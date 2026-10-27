@@ -3,7 +3,7 @@
 //! two independent compilers (fxc for SM5, dxc for SM6): the resources, the constant layouts and the varyings are
 //! worked out from the HLSL and fxc's own listing of the buffer layouts (the Buffer Definitions of its `/Fc`
 //! output), and must be the same from either.
-use primase_shader::{
+use iridia::{
     Access, BufferKind, ConstantType, D3dClass, Interface, InterpMode, InterpSampling, Majorness, Member,
     ResourceKind, SampleType, ScalarType, StorageTarget, SystemValue, TextureDim, Value,
 };

@@ -10,7 +10,7 @@ use super::{
     Scratch, error,
 };
 use crate::{AtomicAdd, Error, Execution, PixelShader, Sampler, Store};
-use primase_shader::{
+use iridia::{
     BufferKind, D3dClass, Interface, Program, ResourceId, ResourceKind, Stage, StorageTarget, SystemValue,
     TextureDim,
 };
@@ -77,7 +77,7 @@ fn lanes_of(mask: u8) -> Vec<u8> {
 }
 
 /// The lanes the module carries for an input: the pipeline fixes some, the interface states the rest.
-fn width_of(v: &primase_shader::Varying) -> usize {
+fn width_of(v: &iridia::Varying) -> usize {
     match v.system {
         Some(SystemValue::FragCoord) => 4,
         Some(
@@ -104,7 +104,7 @@ impl ProgramShader {
         let mut arguments = Vec::new();
         let mut input_count = 0;
         // the module's arguments: the interface's inputs the entry point carries, in order
-        let io = primase_shader::entry_io(interface).map_err(error)?;
+        let io = iridia::entry_io(interface).map_err(error)?;
         for item in &io.arguments {
             let v = &interface.inputs[item.varyings[0]];
             let name = Program::varying_name(&v.label);

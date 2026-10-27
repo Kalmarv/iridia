@@ -1,9 +1,9 @@
 //! What the builder does when a lifter hands it values that cannot do what it is asked: the fault waits for the lifter to
 //! ask for it, and the builder is never left to panic on a program's account.
 use naga::{BinaryOperator, MathFunction};
-use primase_shader::build::{Builder, Kind};
+use iridia::build::{Builder, Kind};
 
-fn vector(b: &mut Builder, width: usize) -> primase_shader::build::Val {
+fn vector(b: &mut Builder, width: usize) -> iridia::build::Val {
     let one = b.lit_f(1.0);
     b.compose(&vec![one; width])
 }

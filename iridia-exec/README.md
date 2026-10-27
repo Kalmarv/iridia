@@ -1,6 +1,6 @@
 # Shader execution
 
-Bounded CPU execution of a `primase_shader::Program`, whatever bytecode it was lifted from (`primase-shader` holds the
+Bounded CPU execution of a `iridia::Program`, whatever bytecode it was lifted from (`iridia` holds the
 program, its validation and the lifters' builder; this crate depends on it, the lifters do not). `Executable::new` checks
 and compiles an entry-point program, `Executable::functions` the functions of a hull, domain, geometry or ray tracing
 program; a `Runner` executes one invocation, a 2 x 2 quad, or several invocations of their own in lockstep (masked
@@ -9,8 +9,8 @@ where they diverge, each with its own steps and budget) against a `Backend` that
 `tessellation` and `tessellator` run those stages. The crate documentation has the run rules.
 
 `PixelShader` is what a bake evaluates, whatever the bytecode: `interface()` (the program's varyings and resources in
-primase's own vocabulary, `toolkit/shader/README.md`), `input_count()`, `constant_buffers()` (bind slot and rows of four lanes),
-`textures()` and `samplers()` (bind slots), and `execute(inputs, buffers, sampler)`. `primase_shader_exec::ProgramShader` puts a lifted program (`primase-dxbc`, Shader Model 5; `primase-dxil`, Shader Model 6) behind it.
+primase's own vocabulary, `repos/iridia/iridia/README.md`), `input_count()`, `constant_buffers()` (bind slot and rows of four lanes),
+`textures()` and `samplers()` (bind slots), and `execute(inputs, buffers, sampler)`. `iridia_exec::ProgramShader` puts a lifted program (`primase-dxbc`, Shader Model 5; `primase-dxil`, Shader Model 6) behind it.
 `execute_lanes` evaluates invocations that share their inputs' derivatives, each as it evaluates alone (outputs,
 instructions, samples; on an error, the first failing one's): `ProgramShader` runs them 16 at a time in lockstep, and
 runs a group that stops again one invocation after another, so the error is the one alone gives.

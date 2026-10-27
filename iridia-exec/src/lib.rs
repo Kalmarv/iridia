@@ -1,4 +1,4 @@
-//! Executing a [`primase_shader::Program`] on the CPU: the one executor for a shader whatever bytecode it was lifted from, and the
+//! Executing a [`iridia::Program`] on the CPU: the one executor for a shader whatever bytecode it was lifted from, and the
 //! pixel-shader evaluation interface built on it ([`PixelShader`], [`Sampler`]).
 //!
 //! [`Executable::new`] checks a program and compiles it once into a flat form (typed operations on four-lane word
@@ -8,7 +8,7 @@
 //! effects of writes to unordered-access views. [`ProgramShader`] puts a program behind [`PixelShader`], in
 //! the register vocabulary of the D3D bytecode it came from.
 //!
-//! What a run does follows the program's [`primase_shader::D3dModes`]: a program that says its body spells out D3D's integer
+//! What a run does follows the program's [`iridia::D3dModes`]: a program that says its body spells out D3D's integer
 //! division, conversions and `min`/`max` runs as written, and one that expects denormals flushed to zero has every
 //! 32-bit float operation flush its operands and result (sign kept). Anything the program does that the module cannot
 //! make valid (an index past the end of a local array, an integer division by zero in the module) is an error of the
@@ -29,7 +29,7 @@ pub mod views;
 pub use texture::{Filtering, SampledTexture, SamplerUse, Unstated};
 pub use views::{Absent, Image, View, Views};
 
-use primase_shader::Interface;
+use iridia::Interface;
 
 mod compile;
 mod flat;
@@ -58,7 +58,7 @@ pub use request::{
 pub use run::{Bound, Decision, Dispatched, Output, Resources, Runner, STEP_LIMIT, Scratch};
 pub use stage::Constants;
 
-use primase_shader::Program;
+use iridia::Program;
 
 /// An error of checking or compiling a program, in the program's own terms.
 pub(crate) fn error(detail: impl Into<String>) -> Error {
@@ -73,7 +73,7 @@ impl Executable {
     /// Check `program` (its module and its interface) and compile it. A construct the executor does not run (a
     /// 64-bit value, an atomic other than add, an image atomic) is refused here, by name.
     pub fn new(program: &Program) -> Result<Self, Error> {
-        if primase_shader::stage_functions(&program.interface)
+        if iridia::stage_functions(&program.interface)
             .map_err(error)?
             .is_some()
         {
@@ -82,7 +82,7 @@ impl Executable {
                     "a {:?} program does the ray tracing pipeline's work through operations only the pipeline has \
                      ({}): run it with Executable::function inside a pipeline (Pipeline)",
                     program.stage,
-                    primase_shader::rt::OPERATIONS.join(", ")
+                    iridia::rt::OPERATIONS.join(", ")
                 )
             } else {
                 format!(
@@ -104,9 +104,9 @@ impl Executable {
     }
 
     /// Compile one function of a program made of functions (a hull program's `main` and `patch_constant`, a domain
-    /// program's or a position-less vertex program's `main`; see [`primase_shader::stage_functions`]) to run for one
+    /// program's or a position-less vertex program's `main`; see [`iridia::stage_functions`]) to run for one
     /// invocation. The registers it takes are its arguments in order, an array argument (the control points) as one
-    /// register per element; the members of its result are the members of [`primase_shader::FunctionSig::result`].
+    /// register per element; the members of its result are the members of [`iridia::FunctionSig::result`].
     pub fn function(program: &Program, name: &str) -> Result<Self, Error> {
         let info = program.validate().map_err(|problems| {
             error(
@@ -120,11 +120,11 @@ impl Executable {
         compile::compile(program, &info, Some(name)).map_err(error)
     }
 
-    /// Every function of a program made of functions ([`primase_shader::stage_functions`]: a hull, domain, geometry or ray tracing
+    /// Every function of a program made of functions ([`iridia::stage_functions`]: a hull, domain, geometry or ray tracing
     /// program, a vertex program that feeds a tessellator), each compiled by [`Executable::function`] under its name;
     /// `None` for a program that is an entry point, which [`Executable::new`] takes.
     pub fn functions(program: &Program) -> Result<Option<Vec<(&'static str, Self)>>, Error> {
-        let Some(signatures) = primase_shader::stage_functions(&program.interface).map_err(error)? else {
+        let Some(signatures) = iridia::stage_functions(&program.interface).map_err(error)? else {
             return Ok(None);
         };
         signatures
@@ -144,8 +144,8 @@ impl Executable {
     pub fn sampled(
         &self,
     ) -> (
-        std::collections::BTreeSet<primase_shader::ResourceId>,
-        std::collections::BTreeSet<primase_shader::ResourceId>,
+        std::collections::BTreeSet<iridia::ResourceId>,
+        std::collections::BTreeSet<iridia::ResourceId>,
     ) {
         let (mut textures, mut samplers) = (
             std::collections::BTreeSet::new(),

@@ -1,5 +1,5 @@
 [package]
-name = "primase-shader"
+name = "iridia"
 description = "The shader program every bytecode lifts into: interface, validation, builder, WGSL writer"
 version.workspace = true
 edition.workspace = true

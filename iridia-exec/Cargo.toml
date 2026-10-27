@@ -1,5 +1,5 @@
 [package]
-name = "primase-shader-exec"
+name = "iridia-exec"
 description = "Bounded CPU execution of a shader program, whatever bytecode it was lifted from"
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ publish.workspace = true
 [dependencies]
 primase-core.workspace = true
 primase-image.workspace = true
-primase-shader.workspace = true
+iridia.workspace = true
 thiserror.workspace = true
 naga.workspace = true
 half.workspace = true

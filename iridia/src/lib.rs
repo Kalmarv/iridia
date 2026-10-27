@@ -2,7 +2,7 @@
 //!
 //! A [`Program`] is a `naga::Module` with the [`Interface`] a caller binds inputs, constants and textures by and what the module
 //! cannot say; [`Program::validate`] checks it, [`emit`] writes it as WGSL, [`build::Builder`] is the typed builder the lifters
-//! (`primase-dxbc`, `primase-dxil`, `primase-mojoshader`) share, [`gate`] is their version gate and [`flow`] says what a
+//! (`primase-dxbc`, `primase-dxil`, `iridia-mojo`) share, [`gate`] is their version gate and [`flow`] says what a
 //! program's outputs are made of, [`matrix`] how it holds a matrix constant, [`output_uses`] what its discards and blend
 //! show an unroled output lane is used for, [`output_stores`] what its entry point stores into each output lane and
 //! how a stored value is made, [`surface`] the reading of a program's outputs as a surface packed for a GPU composite,
@@ -11,7 +11,7 @@
 //! registers kept in provenance. The [`d3d`] module is where D3D's enum numbers and
 //! packing rules are mapped into it, for the readers of every bytecode.
 //!
-//! Running a program is `primase-shader-exec`, which depends on this crate.
+//! Running a program is `iridia-exec`, which depends on this crate.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 
 pub mod bound;

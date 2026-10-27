@@ -1,8 +1,8 @@
 # MojoShader GLSL lifting
 
 `lift` reads the GLSL dialect MojoShader writes when it translates Shader Model 2 and 3 programs for OpenGL, and builds a
-`primase_shader::Program` from it. It is not a GLSL front end: it reads exactly what that translation writes and refuses
-anything else by name (`Error`, a `primase_shader::Refusal`).
+`iridia::Program` from it. It is not a GLSL front end: it reads exactly what that translation writes and refuses
+anything else by name (`Error`, a `iridia::Refusal`).
 
 ## The dialect
 

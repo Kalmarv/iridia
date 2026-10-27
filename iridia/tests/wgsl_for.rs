@@ -1,14 +1,14 @@
-//! A program's WGSL for a pipeline ([`primase_shader::emit::wgsl_for`]): each lowering read back from the text by
+//! A program's WGSL for a pipeline ([`iridia::emit::wgsl_for`]): each lowering read back from the text by
 //! naga's WGSL front end, so what is checked is what a pipeline is given.
 use std::collections::BTreeMap;
 
 use naga::{Binding, Interpolation, TypeInner};
-use primase_shader::emit::{ClipVaryings, Pipeline, wgsl_for};
-use primase_shader::{InterpMode, Interpolation as Interp, Program, ProgramError, ResourceKind, emit};
+use iridia::emit::{ClipVaryings, Pipeline, wgsl_for};
+use iridia::{InterpMode, Interpolation as Interp, Program, ProgramError, ResourceKind, emit};
 
 /// dxc's vertex program: SV_Position, TEXCOORD0, COLOR0 and one clip distance.
 fn vertex() -> Program {
-    primase_dxil::lift(include_bytes!("../../dxil/tests/fixtures/vertex.dxil")).expect("dxc's program lifts")
+    primase_dxil::lift(include_bytes!("fixtures/vertex.dxil")).expect("dxc's program lifts")
 }
 
 /// dxc's pixel program reading TEXCOORD0 and COLOR0.
@@ -76,7 +76,7 @@ fn outputs_take_the_locations_and_interpolation_their_consumer_reads_them_at() {
         mode: InterpMode::Linear,
         ..uv.interp.unwrap_or(Interp {
             mode: InterpMode::Perspective,
-            sampling: primase_shader::InterpSampling::Center,
+            sampling: iridia::InterpSampling::Center,
         })
     });
     let program = vertex();
@@ -281,7 +281,7 @@ fn resources_are_bound_where_the_pipeline_says() {
 #[test]
 fn a_sampler_heap_is_one_sampler() {
     // dxc's compute program samples with a sampler from the sampler heap at an index from a constant buffer
-    let program = primase_dxil::lift(include_bytes!("../../dxil/tests/fixtures/heap.dxil"))
+    let program = primase_dxil::lift(include_bytes!("fixtures/heap.dxil"))
         .expect("dxc's program lifts");
     let as_is = emit::wgsl(&program).expect("written");
     assert!(as_is.contains("binding_array<sampler>"), "{as_is}");
@@ -359,7 +359,7 @@ fn an_output_takes_the_type_its_consumer_reads_it_as() {
         .find(|v| v.label.name.eq_ignore_ascii_case("COLOR"))
         .expect("COLOR0");
     colour.value.width = 2;
-    colour.value.scalar = primase_shader::ScalarType::Uint;
+    colour.value.scalar = iridia::ScalarType::Uint;
     let written = wgsl_for(
         &vertex(),
         &Pipeline {
@@ -386,7 +386,7 @@ fn an_output_takes_the_type_its_consumer_reads_it_as() {
 #[test]
 fn every_retype_of_an_output_is_a_note_with_its_count_and_kind() {
     // dxc's vertex program writes COLOR0 as four floats; the consumer reads it as `width` lanes of `scalar`
-    let notes = |width: u8, scalar: primase_shader::ScalarType| {
+    let notes = |width: u8, scalar: iridia::ScalarType| {
         let mut consumer = pixel().interface;
         let colour = consumer
             .inputs
@@ -406,7 +406,7 @@ fn every_retype_of_an_output_is_a_note_with_its_count_and_kind() {
         .notes
     };
     let has = |notes: &[String], text: &str| notes.iter().any(|n| n == text);
-    use primase_shader::ScalarType::{Float, Sint, Uint};
+    use iridia::ScalarType::{Float, Sint, Uint};
     // fewer lanes, the same kind: only the lanes note (the padding note is for TEXCOORD0, which the consumer widens)
     let narrower = notes(2, Float);
     assert!(

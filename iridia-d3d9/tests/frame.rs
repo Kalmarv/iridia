@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 //! Hand-worked token boundaries: END inside a comment or literal is data, not the program's END.
-use primase_shader::Stage;
+use iridia::Stage;
 
 #[test]
 fn frame_keeps_both_stage_versions_and_leaves_container_bytes() {
@@ -21,19 +21,19 @@ fn frame_keeps_both_stage_versions_and_leaves_container_bytes() {
         ];
         let mut bytes: Vec<_> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         bytes.extend([0xbe, 0xef, 1]);
-        let (got, program) = primase_d3d9::frame(&bytes).unwrap();
+        let (got, program) = iridia_d3d9::frame(&bytes).unwrap();
         assert_eq!(got, stage);
         assert_eq!(program.len(), 44);
         assert_eq!(program, &bytes[..44]);
         for n in 0..44 {
             assert!(
-                primase_d3d9::frame(&bytes[..n]).is_err(),
+                iridia_d3d9::frame(&bytes[..n]).is_err(),
                 "accepted truncated prefix {n}"
             );
         }
     }
     assert!(
-        primase_d3d9::frame(&[0, 2, 255, 255])
+        iridia_d3d9::frame(&[0, 2, 255, 255])
             .unwrap_err()
             .detail
             .contains("version")
@@ -42,5 +42,5 @@ fn frame_keeps_both_stage_versions_and_leaves_container_bytes() {
         .into_iter()
         .flat_map(u32::to_le_bytes)
         .collect();
-    assert!(primase_d3d9::frame(&bad).unwrap_err().detail.contains("span"));
+    assert!(iridia_d3d9::frame(&bad).unwrap_err().detail.contains("span"));
 }

@@ -5,14 +5,14 @@
 //! visit count. The output must be the one a walk of the graph itself gives, including for graphs with loops, switches
 //! and branches that leave several constructs at once.
 use naga::{Expression, Handle, Statement, SwitchValue};
-use primase_shader::build::structure::{self, Cfg, Emit, Term};
-use primase_shader::build::{Builder, Kind, Val};
-use primase_shader::{
+use iridia::build::structure::{self, Cfg, Emit, Term};
+use iridia::build::{Builder, Kind, Val};
+use iridia::{
     Conventions, D3dModes, D3dSignature, Interface, InterpMode, Label, Program, Provenance, ScalarType,
     ShaderFormat, Stage, SystemValue, Value, Varying, VaryingProvenance, entry_io,
 };
-use primase_shader_exec::PixelShader;
-use primase_shader_exec::ProgramShader;
+use iridia_exec::PixelShader;
+use iridia_exec::ProgramShader;
 
 const LIMIT: u32 = 64;
 
@@ -261,7 +261,7 @@ fn program(cfg: &Cfg, seed: u32) -> Result<Program, structure::Error> {
 fn run(program: Program) -> u32 {
     let shader = ProgramShader::new(program).unwrap();
     let execution = shader
-        .execute(&[], &[], &mut |_: primase_shader_exec::Sample| Ok([0.0; 4]))
+        .execute(&[], &[], &mut |_: iridia_exec::Sample| Ok([0.0; 4]))
         .unwrap();
     execution.outputs[0][0]
 }
@@ -336,7 +336,7 @@ fn random_lowered_graphs_run_as_their_walk() {
         let cfg = Cfg { terms };
         for seed in 0..4 {
             let Ok(p) = program(&cfg, seed) else { break };
-            routed += usize::from(primase_shader::emit::wgsl(&p).unwrap().contains("jump"));
+            routed += usize::from(iridia::emit::wgsl(&p).unwrap().contains("jump"));
             assert_eq!(run(p), walk(&cfg, seed), "{cfg:?} seed {seed}");
             ran += 1;
         }

@@ -1,11 +1,11 @@
-//! The dataflow query ([`primase_shader::flow`]) on `fixtures/flow.hlsl`, each entry point compiled to both bytecodes
+//! The dataflow query ([`iridia::flow`]) on `fixtures/flow.hlsl`, each entry point compiled to both bytecodes
 //! and lifted by both lifters: the query sees each way a vertex colour can reach the target or the discard (by its
 //! value, as a coordinate, through a condition, not at all), sees a blend's structure, and says the same of either
 //! bytecode.
 use std::collections::{BTreeMap, BTreeSet};
 
-use primase_shader::flow::{Flow, Node, NodeId, Op, Read, Values, Via};
-use primase_shader::{Interface, Label, Program};
+use iridia::flow::{Flow, Node, NodeId, Op, Read, Values, Via};
+use iridia::{Interface, Label, Program};
 
 /// Each entry point of the fixture, as fxc and dxc compile it.
 const FIXTURES: [(&str, &[u8], &[u8]); 6] = [
@@ -63,7 +63,7 @@ fn input_name(interface: &Interface, input: usize, lane: u8) -> String {
     format!("{}{}.{}", l.name, l.index, b"xyzw"[lane as usize] as char)
 }
 
-fn texel_name(interface: &Interface, resource: primase_shader::ResourceId, lane: u8) -> String {
+fn texel_name(interface: &Interface, resource: iridia::ResourceId, lane: u8) -> String {
     let r = interface
         .resources
         .iter()
@@ -347,19 +347,19 @@ fn a_call_is_refused_not_dropped() {
 /// of holds the add of the counter's earlier value and the index.
 #[test]
 fn an_atomic_on_thread_group_memory_is_followed() {
-    let program = primase_dxil::lift(include_bytes!("../../dxil/tests/fixtures/compute_basic.dxil"))
+    let program = primase_dxil::lift(include_bytes!("fixtures/compute_basic.dxil"))
         .expect("dxc's program lifts");
     let values = Values::of_program(&program).expect("the value graph");
     let index = program
         .interface
         .inputs
         .iter()
-        .position(|v| v.system == Some(primase_shader::SystemValue::GroupIndex))
+        .position(|v| v.system == Some(iridia::SystemValue::GroupIndex))
         .expect("SV_GroupIndex");
     let reached = values.reached_from(values.writes().iter().flatten().copied());
     let added = reached.iter().any(|&id| match values.node(id) {
         Node::Op {
-            op: Op::Binary(primase_shader::flow::BinaryOperator::Add),
+            op: Op::Binary(iridia::flow::BinaryOperator::Add),
             operands,
         } => {
             operands
@@ -386,11 +386,11 @@ fn a_texture_picked_from_an_array_by_a_run_time_index_is_a_texel_of_the_array_wi
     for (name, bytes) in [
         (
             "ps_6_0",
-            &include_bytes!("../../dxil/tests/fixtures/resource_arrays.dxil")[..],
+            &include_bytes!("fixtures/resource_arrays.dxil")[..],
         ),
         (
             "ps_6_6",
-            &include_bytes!("../../dxil/tests/fixtures/resource_arrays.66.dxil")[..],
+            &include_bytes!("fixtures/resource_arrays.66.dxil")[..],
         ),
     ] {
         let program = primase_dxil::lift(bytes).expect("dxc's program lifts");
@@ -399,7 +399,7 @@ fn a_texture_picked_from_an_array_by_a_run_time_index_is_a_texel_of_the_array_wi
             .interface
             .resources
             .iter()
-            .find(|r| r.count == 4 && matches!(r.kind, primase_shader::ResourceKind::Texture { .. }))
+            .find(|r| r.count == 4 && matches!(r.kind, iridia::ResourceKind::Texture { .. }))
             .unwrap_or_else(|| panic!("{name}: the array of four textures"));
         // each read of the array: how, and whether its first control (the element) is a number or something computed
         let reads: Vec<(Read, bool)> = values

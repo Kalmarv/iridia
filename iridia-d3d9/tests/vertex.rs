@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used)]
 //! Hand-assembled SM3 tokens: bank edges, packed output semantics and independent arithmetic answers.
-use primase_d3d9::{lift, read};
-use primase_shader::{Stage, SystemValue};
-use primase_shader_exec::{ProgramShader, Sample};
+use iridia_d3d9::{lift, read};
+use iridia::{Stage, SystemValue};
+use iridia_exec::{ProgramShader, Sample};
 
 fn instruction(op: u32, operands: &[u32]) -> Vec<u32> {
     [vec![op | (operands.len() as u32) << 24], operands.to_vec()].concat()
@@ -56,7 +56,7 @@ fn vertex_banks_clip_position_and_packed_semantics_keep_their_values() {
     assert_eq!(p.provenance.target, "vs_3_0");
     assert_eq!(
         p.provenance.source_hash,
-        Some(primase_shader::source_hash(&bytes))
+        Some(iridia::source_hash(&bytes))
     );
     assert!(p.interface.inputs.iter().all(|v| v.interp.is_none()));
     let outs = &p.interface.outputs;
@@ -68,7 +68,7 @@ fn vertex_banks_clip_position_and_packed_semantics_keep_their_values() {
             .collect::<Vec<_>>(),
         [("COLOR", 4, 1), ("TEXCOORD", 3, 6), ("FOG", 0, 8)]
     );
-    primase_shader::emit::wgsl(&p).unwrap();
+    iridia::emit::wgsl(&p).unwrap();
     let mut input = [[0u32; 4]; 16];
     input[15] = [1f32, 2., 3., 1.].map(f32::to_bits);
     let mut constants = [[0u32; 4]; 256];
@@ -185,19 +185,19 @@ fn vertex_refuses_undeclared_unwritten_and_unsupported_features() {
         changed[at] ^= 0x80;
         let _ = lift(&changed);
     }
-    let cut = primase_d3d9::Projection {
+    let cut = iridia_d3d9::Projection {
         after_word: 0,
         temporary: 0,
         lanes: [0, 1, 2],
     };
     assert!(
-        primase_d3d9::project(&bytes, cut)
+        iridia_d3d9::project(&bytes, cut)
             .unwrap_err()
             .detail
             .contains("pixel-only")
     );
     assert!(
-        primase_d3d9::reencode(&bytes, cut)
+        iridia_d3d9::reencode(&bytes, cut)
             .unwrap_err()
             .detail
             .contains("pixel-only")
@@ -207,12 +207,12 @@ fn vertex_refuses_undeclared_unwritten_and_unsupported_features() {
 #[test]
 fn vertex_fixture_has_a_versioned_ir_baseline() {
     let outcome = lift(&fixture()).unwrap().text().map_err(|e| e.to_string());
-    let table = primase_shader::gate::table(
+    let table = iridia::gate::table(
         "primase-d3d9 vertex",
-        primase_d3d9::LIFTER_VERSION,
+        iridia_d3d9::LIFTER_VERSION,
         &[("packed".into(), outcome)],
     );
-    primase_shader::gate::check(include_str!("vertex-versions.tsv"), &table)
+    iridia::gate::check(include_str!("vertex-versions.tsv"), &table)
         .unwrap_or_else(|e| panic!("{e}\n{table}"));
 }
 
@@ -254,7 +254,7 @@ fn constant_table_checks_stage_and_vertex_allocation_limits() {
         .concat(),
     );
     let p = lift(&bytes).unwrap();
-    let primase_shader::ResourceKind::ConstantBuffer { layout } = &p.interface.resources[0].kind else {
+    let iridia::ResourceKind::ConstantBuffer { layout } = &p.interface.resources[0].kind else {
         panic!()
     };
     assert_eq!(layout.size, 4096);

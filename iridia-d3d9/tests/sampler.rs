@@ -3,7 +3,7 @@ use primase_core::pbr::{Filter, MipFilter};
 use primase_core::shader::{AddressMode, SamplerState};
 #[test]
 fn native_sampler_pairs_keep_addresses_filters_and_unknowns() {
-    let s = primase_d3d9::sampler_states([
+    let s = iridia_d3d9::sampler_states([
         (1, 2),
         (2, 3),
         (3, 5),
@@ -25,7 +25,7 @@ fn native_sampler_pairs_keep_addresses_filters_and_unknowns() {
     assert_eq!(s.filters.min, Some(Filter::Linear));
     assert_eq!(s.filters.mip, Some(MipFilter::Linear));
     assert_eq!(s.mip_lod_bias, Some(0.5));
-    assert_eq!(primase_d3d9::sampler_states([]).unwrap(), SamplerState::default());
+    assert_eq!(iridia_d3d9::sampler_states([]).unwrap(), SamplerState::default());
     for pair in [
         (4, 0),
         (6, 3),
@@ -37,6 +37,6 @@ fn native_sampler_pairs_keep_addresses_filters_and_unknowns() {
         (11, 1),
         (1, 99),
     ] {
-        assert!(primase_d3d9::sampler_states([pair]).is_err(), "{pair:?}");
+        assert!(iridia_d3d9::sampler_states([pair]).is_err(), "{pair:?}");
     }
 }

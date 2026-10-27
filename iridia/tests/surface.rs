@@ -1,8 +1,8 @@
-//! The GPU half of the surface reading ([`primase_shader::surface`]): the rows a surface packs to, and the WGSL that
+//! The GPU half of the surface reading ([`iridia::surface`]): the rows a surface packs to, and the WGSL that
 //! decodes them, read back by naga's front end and validated, its row constants the crate's.
 use primase_core::shader::surface::Surface;
 use primase_core::shader::{LaneAffine, NormalEncoding, NormalSpace, Occluded, OutputRole, ScalarEncoding};
-use primase_shader::surface::{self, ROWS, WGSL, rows};
+use iridia::surface::{self, ROWS, WGSL, rows};
 
 fn read(outputs: &[(u8, OutputRole)]) -> Surface {
     Surface::read(outputs.iter().map(|(lanes, role)| (*lanes, role)))

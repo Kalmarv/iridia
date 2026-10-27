@@ -9,7 +9,7 @@ use super::rayquery::{Built, Query, Reported, Scenes};
 use super::request::{
     Backend, Element, ImageAtomic, ImageLoad, ImageLod, ImageQuery, ImageSample, ImageStore,
 };
-use primase_shader::ResourceId;
+use iridia::ResourceId;
 
 /// The most operations and loop turns one invocation may execute: a program that does not end is refused.
 pub const STEP_LIMIT: u64 = 1 << 24;
@@ -1017,7 +1017,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
             Pick::Slot(s) => self.regs[s as usize * N + l][0],
         };
         if !matches!(res.pick, Pick::One)
-            && res.count != primase_shader::Resource::UNBOUNDED
+            && res.count != iridia::Resource::UNBOUNDED
             && index >= res.count
         {
             return Err(format!(
