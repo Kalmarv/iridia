@@ -168,7 +168,9 @@ impl SampledTexture {
             return Err(format!("sampler bias {b} is not finite"));
         }
         let base = match filtering {
-            Filtering::BaseBilinear { .. } => Some(levels.decoded(0, transfer)),
+            Filtering::BaseBilinear { .. } => {
+                Some(levels.decoded(0, transfer).map_err(|e| format!("level 0: {e}"))?)
+            }
             Filtering::Point | Filtering::Bilinear | Filtering::Trilinear => None,
         };
         Ok(SampledTexture {

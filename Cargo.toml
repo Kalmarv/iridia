@@ -11,9 +11,9 @@ repository = "https://github.com/Kalmarv/iridia"
 publish = false
 
 [workspace.dependencies]
-dxbc-reader = { git = "https://github.com/Kalmarv/dx", rev = "fecc8636a59acb038c7e798766a4160b031a6047" }
-dxcontainer = { git = "https://github.com/Kalmarv/dx", rev = "fecc8636a59acb038c7e798766a4160b031a6047" }
-dxil-reader = { git = "https://github.com/Kalmarv/dx", rev = "fecc8636a59acb038c7e798766a4160b031a6047" }
+dxbc-reader = { git = "https://github.com/Kalmarv/dx", rev = "ab07f2b27e9f154508c4502ac8b61134b7e34b08" }
+dxcontainer = { git = "https://github.com/Kalmarv/dx", rev = "ab07f2b27e9f154508c4502ac8b61134b7e34b08" }
+dxil-reader = { git = "https://github.com/Kalmarv/dx", rev = "ab07f2b27e9f154508c4502ac8b61134b7e34b08" }
 half = { version = "=2.7.1", default-features = false }
 iridia = { path = "iridia" }
 iridia-dxbc = { path = "iridia-dxbc" }
@@ -21,8 +21,8 @@ iridia-dxil = { path = "iridia-dxil" }
 iridia-exec = { path = "iridia-exec" }
 iridia-interface = { path = "iridia-interface" }
 naga = { package = "primase-naga", git = "https://github.com/Kalmarv/primase-naga", rev = "8e6519c3eac6f08519c61c40cb6516ea95f6dde9", default-features = false, features = ["wgsl-out"] }
-primase-foundations = { git = "https://github.com/Kalmarv/primase-foundations", rev = "05dc616e7bd14cad63c4e5218be6e8b79cee60ce" }
-primase-testdata = { git = "https://github.com/Kalmarv/primase-testdata", rev = "71a28a5b188b259e1d49681823aa00996260f544" }
+primase-foundations = { git = "https://github.com/Kalmarv/primase-foundations", rev = "dc4369b73343f3e0d81adc47f2e504027efc1d5a" }
+primase-testdata = { git = "https://github.com/Kalmarv/primase-testdata", rev = "d0258530ca9ca0ca74e957716ae8683e7facc8a7" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std", "preserve_order", "float_roundtrip"] }
 sha2 = { version = "=0.11.1", default-features = false }

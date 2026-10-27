@@ -38,7 +38,7 @@ use dxil_reader::reflection;
 
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
-pub const LIFTER_VERSION: u32 = 7;
+pub const LIFTER_VERSION: u32 = 8;
 
 /// Lift a DXIL container's entry function: Shader Model 6, any stage but amplification (vertex, pixel, hull, domain,
 /// geometry, compute, mesh and the ray tracing stages). Every construct the lifter does not carry (a double, a 64-bit

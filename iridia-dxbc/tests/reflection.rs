@@ -138,7 +138,7 @@ fn checked_reflection_ranges_and_cycles() {
         iridia_dxbc::reflection(&fixture(&bad))
             .unwrap_err()
             .to_string()
-            .contains("exceeds constant buffer")
+            .contains("lies outside its 16 byte constant buffer")
     );
     let mut bad = valid.clone();
     set(&mut bad, 124, 5);
@@ -150,7 +150,7 @@ fn checked_reflection_ranges_and_cycles() {
         iridia_dxbc::reflection(&fixture(&bad))
             .unwrap_err()
             .to_string()
-            .contains("cyclic")
+            .contains("part of a cycle")
     );
     let mut bad = valid.clone();
     set(&mut bad, 100, 10000);
