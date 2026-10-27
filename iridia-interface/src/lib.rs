@@ -55,6 +55,7 @@
 //! assert!(json.contains(r#""stage":"pixel""#));
 //! # Ok::<(), serde_json::Error>(())
 //! ```
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),

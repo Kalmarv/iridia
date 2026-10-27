@@ -10,9 +10,13 @@ use super::{BufferKind, BufferLayout, D3dClass, Resource, ResourceId, ResourceKi
 pub enum ScalarType {
     /// A boolean, 32 bits wide wherever it is stored (constant buffers, signatures).
     Bool,
+    /// A signed 32-bit integer.
     Sint,
+    /// An unsigned 32-bit integer.
     Uint,
+    /// A 32-bit float.
     Float,
+    /// A 64-bit float.
     Double,
 }
 impl ScalarType {
@@ -28,7 +32,9 @@ impl ScalarType {
 /// A scalar type and a width of 1 to 4 lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Value {
+    /// The type of every lane.
     pub scalar: ScalarType,
+    /// Number of lanes, 1 to 4.
     pub width: u8,
 }
 
@@ -37,7 +43,9 @@ pub struct Value {
 /// the consumer's business. Stages match by label.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Label {
+    /// The semantic or location name as the source writes it (`TEXCOORD`, `SV_Target`, `vUv`).
     pub name: String,
+    /// The semantic index (the 5 of `TEXCOORD5`; the location of a SPIR-V variable).
     pub index: u32,
 }
 
@@ -49,15 +57,20 @@ pub enum SystemValue {
     ClipPosition,
     /// A pixel stage's window-space position input (x, y, depth, 1/w).
     FragCoord,
+    /// A pixel stage's input: whether the primitive is front facing.
     FrontFacing,
+    /// A vertex stage's input: the index of the vertex being processed.
     VertexIndex,
     /// A vertex stage's instance number; in a ray tracing hit program, the instance's index in the acceleration
     /// structure.
     InstanceIndex,
     /// A pixel stage's primitive number; in a ray tracing hit program, the hit primitive's index in its geometry.
     PrimitiveIndex,
+    /// A pixel stage's input: the index of the sample being shaded when it runs per sample.
     SampleIndex,
+    /// The index of the render target array slice a primitive goes to (a geometry or mesh output, a pixel input).
     RenderTargetArrayIndex,
+    /// The index of the viewport a primitive is drawn in (a geometry or mesh output, a pixel input).
     ViewportArrayIndex,
     /// Clip distances; the label's index says which array element.
     ClipDistance,
@@ -71,6 +84,7 @@ pub enum SystemValue {
     DepthGreaterEqual,
     /// Depth output the program promises is not greater than the rasterized depth.
     DepthLessEqual,
+    /// A pixel stage's stencil reference output.
     StencilRef,
     /// Coverage mask, as an input or an output.
     Coverage,
@@ -95,13 +109,17 @@ pub enum SystemValue {
     DispatchRaysDimensions,
     /// The traced ray's origin and direction in world space, three components each.
     WorldRayOrigin,
+    /// The ray's direction in world space.
     WorldRayDirection,
     /// The same in the space of the instance the ray hit (an intersection, any-hit or closest-hit program).
     ObjectRayOrigin,
+    /// The ray's direction in the instance's space.
     ObjectRayDirection,
     /// The ray's start and the distance of the closest accepted hit so far (or the candidate being tested, in an
     /// any-hit program), along the ray.
     RayTMin,
+    /// The distance along the ray of the closest accepted hit so far, or of the candidate being tested in an any-hit
+    /// program.
     RayTCurrent,
     /// The traced ray's flags.
     RayFlags,
@@ -114,6 +132,7 @@ pub enum SystemValue {
     /// The hit instance's 3 by 4 transform to world space and back. One varying for each row used, the label's index
     /// naming the row, its four lanes the row's four columns.
     ObjectToWorld,
+    /// The inverse of [`SystemValue::ObjectToWorld`], in the same row layout.
     WorldToObject,
 }
 
@@ -133,15 +152,20 @@ pub enum InterpMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InterpSampling {
+    /// Sampled at the pixel's centre.
     Center,
+    /// Sampled inside the primitive when the pixel centre is not covered (HLSL `centroid`).
     Centroid,
     /// Per sample.
     Sample,
 }
 
+/// A pixel input's interpolation: the mode and the sampling location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Interpolation {
+    /// How the value is interpolated across the primitive.
     pub mode: InterpMode,
+    /// Where in the pixel the value is taken.
     pub sampling: InterpSampling,
 }
 
@@ -149,7 +173,9 @@ pub struct Interpolation {
 /// occupies, as a mask (bit k is lane k, x first), and the signature's read/write mask as stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct D3dSignature {
+    /// The signature register the element is in, counted from 0; each register holds four 32-bit lanes.
     pub register: u32,
+    /// The lanes of the register the element occupies: bit 0 is x, bit 3 is w.
     pub mask: u8,
     /// The signature's second mask as stored: for an input, the lanes the program always reads; for an output, the
     /// lanes it never writes.
@@ -159,6 +185,7 @@ pub struct D3dSignature {
 /// The source's own address of a varying; one field per API that has a notion of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct VaryingProvenance {
+    /// The D3D signature address of the varying; `None` for a source that has none.
     pub d3d: Option<D3dSignature>,
 }
 
@@ -170,6 +197,7 @@ pub struct Varying {
     pub label: Label,
     /// What the pipeline itself supplies or takes here, when it is a system value.
     pub system: Option<SystemValue>,
+    /// The type and lane count of the varying.
     pub value: Value,
     /// How it is interpolated, where the source states it for this varying: a pixel input the program declares.
     /// `None` for outputs, for stages that do not interpolate, and for an input the program never declares (a source
@@ -178,6 +206,7 @@ pub struct Varying {
     /// Whether the program reads (an input) or writes (an output) at least one lane, as the source's signature
     /// states.
     pub used: bool,
+    /// The source's address of the varying.
     pub provenance: VaryingProvenance,
 }
 
@@ -185,8 +214,11 @@ pub struct Varying {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TessDomain {
+    /// Lines: a patch is a set of isolines.
     Isoline,
+    /// A triangle patch.
     Triangle,
+    /// A quad patch.
     Quad,
 }
 
@@ -194,9 +226,13 @@ pub enum TessDomain {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Partitioning {
+    /// Each edge is divided into a whole number of segments.
     Integer,
+    /// The factor is rounded up to a power of two.
     Pow2,
+    /// Fractional, with an odd number of segments between the ends.
     FractionalOdd,
+    /// Fractional, with an even number of segments.
     FractionalEven,
 }
 
@@ -204,9 +240,13 @@ pub enum Partitioning {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TessTopology {
+    /// Points.
     Point,
+    /// Lines.
     Line,
+    /// Triangles wound clockwise.
     TriangleCw,
+    /// Triangles wound counter-clockwise.
     TriangleCcw,
 }
 
@@ -215,13 +255,19 @@ pub enum TessTopology {
 /// its control points'.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct HullFacts {
+    /// The domain the hull program declares.
     pub domain: TessDomain,
+    /// How the tessellator divides the edges.
     pub partitioning: Partitioning,
+    /// What the tessellator outputs.
     pub topology: TessTopology,
+    /// Control points the program reads per patch (1 to 32).
     pub input_control_points: u32,
+    /// Control points the program writes per patch (1 to 32).
     pub output_control_points: u32,
     /// The largest tessellation factor, as the bits of an `f32` (the interface is hashed).
     pub max_tess_factor_bits: u32,
+    /// The patch-constant outputs, per patch, in the order the signature lists them.
     pub patch_constants: Vec<Varying>,
 }
 
@@ -229,8 +275,11 @@ pub struct HullFacts {
 /// points it reads, and the patch-constant varyings it reads (`inputs` of the interface are its control points').
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct DomainFacts {
+    /// The domain the program was written for (the hull program that feeds it states the same one).
     pub domain: TessDomain,
+    /// Control points per patch the program reads (1 to 32).
     pub input_control_points: u32,
+    /// The patch-constant inputs the program reads.
     pub patch_constants: Vec<Varying>,
 }
 
@@ -238,10 +287,15 @@ pub struct DomainFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GsInput {
+    /// One point (1 vertex).
     Point,
+    /// One line (2 vertices).
     Line,
+    /// One triangle (3 vertices).
     Triangle,
+    /// A line with its two neighbouring vertices (4 vertices).
     LineAdjacency,
+    /// A triangle with its three neighbouring vertices (6 vertices).
     TriangleAdjacency,
 }
 impl GsInput {
@@ -261,8 +315,11 @@ impl GsInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GsOutput {
+    /// The emitted vertices are separate points.
     PointList,
+    /// The emitted vertices make a line strip.
     LineStrip,
+    /// The emitted vertices make a triangle strip.
     TriangleStrip,
 }
 
@@ -270,9 +327,13 @@ pub enum GsOutput {
 /// invocation emits and how many invocations run for a primitive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct GeometryFacts {
+    /// The primitive the program reads.
     pub input: GsInput,
+    /// What the emitted vertices make.
     pub output: GsOutput,
+    /// The most vertices one invocation emits (`maxvertexcount`; `Interface::verify` accepts 1 to 1024).
     pub max_vertices: u32,
+    /// How many invocations run for each input primitive (`instance`; `Interface::verify` accepts 1 to 32).
     pub instances: u32,
 }
 
@@ -280,7 +341,9 @@ pub struct GeometryFacts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeshTopology {
+    /// Each primitive is a line of two vertex indices.
     Line,
+    /// Each primitive is a triangle of three vertex indices.
     Triangle,
 }
 impl MeshTopology {
@@ -297,8 +360,11 @@ impl MeshTopology {
 /// size is the entry point's, as a compute program's is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct MeshFacts {
+    /// What the primitives are.
     pub topology: MeshTopology,
+    /// The most vertices the program writes (`Interface::verify` accepts 1 to 256).
     pub max_vertices: u32,
+    /// The most primitives the program writes (`Interface::verify` accepts 1 to 256).
     pub max_primitives: u32,
 }
 
@@ -316,10 +382,15 @@ pub enum HitGroupKind {
 /// no such program).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct HitGroup {
+    /// The hit group's name in the library.
     pub name: String,
+    /// Whether it runs on triangles or procedural primitives.
     pub kind: HitGroupKind,
+    /// Export name of the any-hit program, if any.
     pub any_hit: Option<String>,
+    /// Export name of the closest-hit program, if any.
     pub closest_hit: Option<String>,
+    /// Export name of the intersection program; `None` for a triangle group.
     pub intersection: Option<String>,
 }
 
@@ -329,37 +400,53 @@ pub struct HitGroup {
 pub enum Subobject {
     /// The state object's flags (D3D12's `D3D12_STATE_OBJECT_FLAGS`).
     StateObjectConfig {
+        /// The subobject's name in the library.
         name: String,
+        /// The flags value, as stored.
         flags: u32,
     },
     /// A root signature as D3D serialised it, for every program of the state object.
     GlobalRootSignature {
+        /// The subobject's name.
         name: String,
+        /// The serialised root signature bytes.
         signature: Vec<u8>,
     },
     /// A root signature as D3D serialised it, for the programs an association names.
     LocalRootSignature {
+        /// The subobject's name.
         name: String,
+        /// The serialised root signature bytes.
         signature: Vec<u8>,
     },
     /// The exports (programs and hit groups, by name) another subobject applies to.
     ExportsAssociation {
+        /// The association's own name.
         name: String,
+        /// The name of the subobject whose exports these are.
         subobject: String,
+        /// The export names the association covers.
         exports: Vec<String>,
     },
     /// The largest payload and hit attributes the state object's programs use.
     ShaderConfig {
+        /// The subobject's name.
         name: String,
+        /// The largest payload the programs use, in bytes.
         max_payload_bytes: u32,
+        /// The largest hit attribute structure the programs use, in bytes.
         max_attribute_bytes: u32,
     },
     /// The deepest `TraceRay` recursion, and the pipeline flags where the library states them.
     PipelineConfig {
+        /// The subobject's name.
         name: String,
+        /// The deepest recursion of `TraceRay`.
         max_recursion_depth: u32,
+        /// The pipeline flags where the library states them.
         flags: Option<u32>,
     },
+    /// A hit group.
     HitGroup(HitGroup),
 }
 
@@ -367,7 +454,9 @@ pub enum Subobject {
 /// subobject of the library, in the order it stores them. A pipeline is built from a library's programs and these.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct RayTracingFacts {
+    /// The export name of this program, as the subobjects refer to it.
     pub export: String,
+    /// Every subobject of the library, in the order stored.
     pub subobjects: Vec<Subobject>,
 }
 
@@ -376,13 +465,17 @@ pub struct RayTracingFacts {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StageFacts {
+    /// The program states nothing beyond its varyings and resources.
     #[default]
     None,
     /// A vertex program that writes no clip-space position: its outputs feed a hull program (or a stream-output
     /// stage), so the program is a function (`main`) and not an entry point.
     VertexWithoutPosition,
+    /// A hull program's patch.
     Hull(HullFacts),
+    /// A domain program's patch.
     Domain(DomainFacts),
+    /// A geometry program's primitives.
     Geometry(GeometryFacts),
     /// A ray tracing program of a library (see [`RayTracingFacts`]).
     RayTracing(RayTracingFacts),
@@ -393,10 +486,15 @@ pub enum StageFacts {
 /// What a program exposes: its stage, the varyings it takes and gives, and the resources it binds.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Interface {
+    /// The stage the program runs in.
     pub stage: Stage,
+    /// The varyings the program reads, one per label.
     pub inputs: Vec<Varying>,
+    /// The varyings the program writes, one per label.
     pub outputs: Vec<Varying>,
+    /// The resources the program binds, each with a different id.
     pub resources: Vec<Resource>,
+    /// Facts the stage adds; `Interface::verify` checks that they fit the stage.
     pub facts: StageFacts,
 }
 impl Interface {

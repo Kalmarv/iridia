@@ -24,7 +24,9 @@ pub enum ShaderFormat {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Stage {
+    /// A vertex program: one invocation per vertex.
     Vertex,
+    /// A pixel (fragment) program: one invocation per covered pixel.
     Pixel,
     /// A compute program: no varyings, system inputs naming the invocation, a thread group size.
     Compute,

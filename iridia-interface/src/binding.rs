@@ -9,14 +9,19 @@ use crate::{Label, ResourceId};
 /// A vertex attribute a program's input reads: what the drawn mesh's stream holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum Attribute {
+    /// The vertex position.
     Position,
+    /// The vertex normal.
     Normal,
     /// Tangent set: xyz tangent, w the bitangent sign. Set 0 is glTF's standard TANGENT.
     Tangent(u8),
     /// u right, v down: (0, 0) is the image's top-left corner (glTF).
     TexCoord(u8),
+    /// Vertex colour set `n`.
     Color(u8),
+    /// Joint indices set `n` of a skinned mesh.
     Joints(u8),
+    /// Joint weights set `n` of a skinned mesh.
     Weights(u8),
 }
 
@@ -35,16 +40,21 @@ pub enum InputRole {
     /// The pipeline supplies it (the varying's system value says which).
     System,
     /// Nothing known: the source's own meaning is not resolved, and why.
-    Unknown { why: String },
+    Unknown {
+        /// What was examined and why no role follows.
+        why: String,
+    },
 }
 /// The lanes `first..first + count` of an input: `count` components of the vertex attribute `semantic`, from component
 /// `component` (the attribute's own components: x 0, y 1, z 2, w 3), each in the encoding the input's scalar type has, as
 /// the other packed inputs take theirs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct LaneStream {
+    /// The vertex attribute the lanes come from.
     pub semantic: Attribute,
     /// The first lane (0 for x).
     pub first: u8,
+    /// How many lanes, starting at `first`, it fills.
     pub count: u8,
     /// The first component of the attribute lane `first` takes (0 for all but the programs that take one component of an
     /// attribute apart: a source game's cloth programs read the tangent's w, the bitangent sign, as the one
@@ -57,17 +67,24 @@ pub struct LaneStream {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ViewParameter {
+    /// The camera's position in world space (xyz).
     CameraPosition,
+    /// The world-to-view matrix.
     View,
+    /// The view-to-clip projection matrix.
     Projection,
+    /// The world-to-clip matrix (view times projection).
     ViewProjection,
     /// The view-projection of a world with the camera at its origin: a program multiplies a world position minus the
     /// camera's ([`ViewParameter::CameraPosition`]) by it, so it is [`ViewParameter::ViewProjection`] without the camera's
     /// translation. The program takes the camera position from its own constant, so the two roles are bound together; a
     /// consumer that feeds the plain matrix here puts the geometry in the wrong place.
     CameraRelativeViewProjection,
+    /// The view-to-world matrix.
     InverseView,
+    /// The clip-to-view matrix.
     InverseProjection,
+    /// The clip-to-world matrix.
     InverseViewProjection,
     /// The render target's size in pixels as two values: the width, then the height. A source that packs more into
     /// the register (the reciprocals beside the size, in either order) binds each pair by its own role over its own
@@ -107,7 +124,9 @@ pub enum ObjectMatrix {
 pub enum ObjectParameter {
     /// The object-to-world matrix.
     World,
+    /// The world-to-object matrix.
     InverseWorld,
+    /// The object-to-clip matrix.
     WorldViewProjection,
     /// The object-to-view matrix.
     WorldView,
@@ -180,6 +199,7 @@ pub enum ObjectParameter {
 pub enum FrameParameter {
     /// Seconds since a start the game defines.
     Time,
+    /// The time of day in the game's own unit.
     TimeOfDay,
     /// The exposure the frame's output is scaled by.
     Exposure,
@@ -201,18 +221,24 @@ pub enum ConstantRole {
     /// The material's own parameter, as stored: the 32-bit words the constant takes (bit patterns, so an integer
     /// parameter and a float one are both exact).
     Material(Vec<u32>),
+    /// A camera or view-wide value.
     View(ViewParameter),
+    /// A value of the drawn object.
     Object(ObjectParameter),
+    /// A value of the frame.
     Frame(FrameParameter),
     /// A reference confirmed by the program's discard graph. `compared` states whether a portable cutoff on output
     /// alpha is the same test or an approximation. A baking consumer freezes the reference below the alpha's range, and must
     /// also neutralize any stated dither perturbation; the draw uses the material's original `value`.
     AlphaReference {
+        /// The reference the discard compares against.
         value: f32,
+        /// What the reference is compared with.
         compared: AlphaComparison,
     },
     /// Not resolved to a role, and why.
     Unknown {
+        /// What was examined and why no role follows.
         why: String,
     },
 }
@@ -226,7 +252,10 @@ pub enum AlphaComparison {
     Transformed,
     /// A pre-transform alpha plus `(dither.a - 0.5) * scale`. `scale_word` is a word offset in the reference's own
     /// buffer. A hard cutoff on output alpha approximates the game's stochastic, pre-transform test.
-    Dithered { scale_word: u32 },
+    Dithered {
+        /// Word offset of the dither scale in the reference's own buffer.
+        scale_word: u32,
+    },
     /// The discard compares a value made of texture samples and constants that reaches no target's alpha (a G-buffer
     /// program writes none: `t1.w * t0.w + scale * (noise - 0.5) < reference`). A baking consumer freezes the reference
     /// below the range as for the others. The test is the program's own expression, read exactly from its graph
@@ -238,12 +267,15 @@ pub enum AlphaComparison {
 /// source names it (a stripped program has fields by offset only), and what it stands for.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ConstantBinding {
+    /// The constant buffer resource holding the constant.
     pub resource: ResourceId,
     /// Byte offset in the buffer.
     pub offset: u32,
     /// Bytes.
     pub size: u32,
+    /// The constant's name, `None` for a stripped program.
     pub name: Option<String>,
+    /// What the constant stands for.
     pub role: ConstantRole,
     /// For a matrix role ([`ConstantRole::is_matrix`]), how its 16-byte lines hold the role's matrix
     /// ([`MatrixLines`]); `None` for every other role.
@@ -275,10 +307,18 @@ pub enum Unshown {
     /// It reads them but sums no product of them with other values: it does not apply the matrix.
     NotApplied,
     /// It applies the matrix both ways: `along` sums of one line's words, `across` of one lane's.
-    BothWays { along: usize, across: usize },
+    BothWays {
+        /// How many sums of the words of one line there are.
+        along: usize,
+        /// How many sums of the words of one lane across lines there are.
+        across: usize,
+    },
     /// The program could not be examined for it, and `why`: its value graph could not be built, or the matrix's buffer
     /// could not be found in it.
-    Unexamined { why: String },
+    Unexamined {
+        /// Why the program could not be examined.
+        why: String,
+    },
 }
 impl std::fmt::Display for Unshown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -380,6 +420,7 @@ pub enum AddressMode {
 pub struct SamplerState {
     /// Addressing along u, v and w.
     pub wrap: [Option<AddressMode>; 3],
+    /// The sampler's filters.
     pub filters: Filters,
     /// The most texels along the axis of anisotropy an anisotropic filter takes (1: none beyond the filters'), where
     /// the source states an anisotropic filter.
@@ -434,7 +475,9 @@ impl FrameTexture {
 /// what the source binds to it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct BufferBinding {
+    /// The buffer resource of the shader.
     pub resource: ResourceId,
+    /// What the source binds to it.
     pub source: BufferSource,
 }
 /// What a buffer slot holds.
@@ -446,7 +489,10 @@ pub enum BufferSource {
     /// Nothing is known of the contents and the source says why: a consumer states the stand-in it uses, and never
     /// reads the buffer as zeros without saying so (as a texture with no known source, or an unknown
     /// constant).
-    Unknown { why: String },
+    Unknown {
+        /// Why nothing is known of the contents.
+        why: String,
+    },
 }
 /// A table of the draw's data a program reads from a buffer.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -458,7 +504,10 @@ pub enum BufferTable {
     /// four for a full matrix) in a buffer instead of constants, and with that role's row convention. They lie one
     /// matrix after another, so element `i` of the buffer is row `i % rows` of matrix `i / rows`; the elements are
     /// four floats, 16 bytes.
-    ObjectMatrices { rows: u8 },
+    ObjectMatrices {
+        /// Rows of four floats per matrix: 3 or 4.
+        rows: u8,
+    },
     /// [`BufferTable::ObjectMatrices`] with one header element before each matrix: the same rows and row convention, `rows`
     /// rows of four floats after a header element of four words, so element `i` of the buffer is the header of matrix
     /// `i / (rows + 1)` when `i % (rows + 1)` is 0 and row `i % (rows + 1) - 1` of it otherwise.
@@ -467,7 +516,10 @@ pub enum BufferTable {
     /// each put the rows later by that many elements. A consumer writes every header as zero, which puts the rows directly
     /// after it. That the zero header is that layout is what a program run against such a table gave (identity rows after
     /// a zero header gave the position back), not something the engine documents.
-    HeaderedMatrices { rows: u8 },
+    HeaderedMatrices {
+        /// Rows of four floats after each header element: 3 or 4.
+        rows: u8,
+    },
     /// The block of an instance whose program skins, in a table of elements of four floats each (the shape every one of
     /// the five skinned vertex programs of one game's hat materials reads, measured by running each against tables filled to
     /// tell the parts apart):
@@ -500,8 +552,11 @@ pub enum BufferTable {
     /// [`BufferTable::HeaderedMatrices`] or [`BufferTable::SkinnedMatrices`] of the same stage), of the instance's first element:
     /// its first row, or its header for a headered table. The program adds the indices of the matrices it takes (a joint's, a model's own) to it.
     Instances {
+        /// 32-bit words in each record.
         stride: u8,
+        /// Index of the word of a record that holds the index of the instance's first matrix element.
         matrix_start: u8,
+        /// The matrix table (`ObjectMatrices`, `HeaderedMatrices` or `SkinnedMatrices`) the indices point into.
         matrices: ResourceId,
     },
 }
@@ -518,8 +573,11 @@ pub enum SkinPrefix {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NormalSpace {
+    /// World space.
     World,
+    /// View (camera) space.
     View,
+    /// Tangent space of the surface.
     Tangent,
 }
 /// How a normal is stored in the lanes of an output.
@@ -535,13 +593,21 @@ pub enum NormalEncoding {
     /// x and y mapped to 0-1, z from the unit length.
     XyUnorm,
     /// x, y, z stored as `n * 0.5 + bias` (the bias given by its f32 bits): decoded `(v - bias) * 2`.
-    XyzBiased { bias_bits: u32 },
+    XyzBiased {
+        /// The bias, as the bits of an `f32`.
+        bias_bits: u32,
+    },
     /// Octahedral mapping in lanes 0 and 1: each stored as `e * stored.scale + stored.bias` (the producer's scale and
     /// bias, as measured) and read back by the engine as `v * read.scale + read.bias` before the unfold (`z = 1 - |x| -
     /// |y|`, x and y folded where z < 0, normalised). The two halves are stated as each side measures them and need not
     /// be exact inverses: an engine may store `0.4995 e + 0.4995` and read `2 v - 1`. The common 0-1 layout is `stored`
     /// [`LaneAffine::UNORM`] and `read` [`LaneAffine::SIGNED`].
-    Octahedral { stored: LaneAffine, read: LaneAffine },
+    Octahedral {
+        /// The map from the unfolded coordinate to the stored value.
+        stored: LaneAffine,
+        /// The map from the stored value to the coordinate the unfold takes.
+        read: LaneAffine,
+    },
     /// Octahedral in the diamond layout over three 8-bit UNORM lanes: lanes 0 and 1 are the low eight bits of two 9-bit
     /// coordinates `u` and `v` (`round(255 (c + 1))`, 0 to 510 over -1 to 1), lane 2's bit 1 and bit 2 their ninth bits and
     /// its bit 0 the sign of z; the lane's other five bits are not part of the normal (a payload byte, which an engine
@@ -557,13 +623,20 @@ pub enum NormalEncoding {
     /// payload.bias`; the payload is not part of the normal (a value an engine keeps beside it). Lane 3 is the axis
     /// over three (x 0, y 1/3, z 2/3). The major component's magnitude is the unit length's remainder
     /// ([`NormalEncoding::decode_cube_face`]).
-    CubeFace { minor: LaneAffine, payload: LaneAffine },
+    CubeFace {
+        /// The map applied to the `sc` and `tc` components for lanes 0 and 1.
+        minor: LaneAffine,
+        /// The map applied to the payload value in lane 2.
+        payload: LaneAffine,
+    },
 }
 /// One lane's affine map, `v * scale + bias`, by the f32 bits of each so that it compares and hashes exactly; it is written
 /// as the numbers `scale` and `bias`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LaneAffine {
+    /// The scale, as the bits of an `f32`.
     pub scale_bits: u32,
+    /// The bias, as the bits of an `f32`.
     pub bias_bits: u32,
 }
 impl Serialize for LaneAffine {
@@ -588,6 +661,7 @@ impl LaneAffine {
         bias_bits: 0xBF80_0000,
     };
 
+    /// A map with this scale and bias.
     pub fn new(scale: f32, bias: f32) -> Self {
         Self {
             scale_bits: scale.to_bits(),
@@ -595,10 +669,12 @@ impl LaneAffine {
         }
     }
 
+    /// The scale.
     pub fn scale(&self) -> f32 {
         f32::from_bits(self.scale_bits)
     }
 
+    /// The bias.
     pub fn bias(&self) -> f32 {
         f32::from_bits(self.bias_bits)
     }
@@ -881,21 +957,30 @@ pub enum Occluded {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum OutputRole {
+    /// The surface's albedo (base colour), linear.
     Albedo,
+    /// The surface normal, decoded by `encoding` into `space`.
     Normal {
+        /// How the normal is stored in the lanes.
         encoding: NormalEncoding,
+        /// The space the normal is in.
         space: NormalSpace,
     },
     /// Smoothness, 1 - perceptual roughness: the value decoded by `encoding`.
     Gloss {
+        /// How the gloss is stored.
         encoding: ScalarEncoding,
     },
+    /// The perceptual roughness, stored as is.
     Roughness,
+    /// The metalness (0 to 1).
     Metallic,
     /// The factor the light `of` is scaled by where the surface is shadowed from it (1 unoccluded, 0 fully): the value
     /// decoded by `encoding`, as the lighting pass multiplies the light by it.
     Occlusion {
+        /// Which light the occlusion applies to.
         of: Occluded,
+        /// How the factor is stored.
         encoding: ScalarEncoding,
     },
     /// How much of the light a surface reflects as a highlight is blocked where the surface faces away from the
@@ -907,15 +992,18 @@ pub enum OutputRole {
     Translucency,
     /// Specular reflectance at normal incidence (F0), the value decoded by `encoding`.
     Reflectance {
+        /// How the reflectance is stored.
         encoding: ScalarEncoding,
     },
     /// The strength of the specular term, how much light the surface reflects as a highlight (0 to 1 once decoded).
     SpecularIntensity {
+        /// How the strength is stored.
         encoding: ScalarEncoding,
     },
     /// How tight the specular highlight is: the material's falloff or exponent as the source's lighting uses it
     /// (what lighting derives from it, a Blinn-Phong exponent for instance, is the source's).
     SpecularExponent {
+        /// How the exponent is stored.
         encoding: ScalarEncoding,
     },
     /// The source's Fresnel term for the surface, as the source stores it (how the lighting turns it into a
@@ -927,6 +1015,7 @@ pub enum OutputRole {
     /// The light the surface gives off: a scalar in one lane that scales the albedo (the lighting pass adds the albedo
     /// times it to the lit colour) or a colour in three, the value decoded by `encoding`.
     Emission {
+        /// How the emission is stored.
         encoding: ScalarEncoding,
     },
     /// The finished colour of a forward pass.
@@ -940,6 +1029,7 @@ pub enum OutputRole {
     /// Lanes the program writes that no role is established for, with why: what the source's evidence shows of them
     /// (what reads them, or that nothing examined does). Never empty.
     Unknown {
+        /// What the source's evidence shows of the lanes.
         why: String,
     },
 }
@@ -979,15 +1069,19 @@ impl ScalarEncoding {
 /// occlusion in a), as several bindings of one label.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OutputBinding {
+    /// The output varying the lanes belong to.
     pub label: Label,
     /// Lane mask: bit k is lane k of the output's value.
     pub lanes: u8,
+    /// What the lanes stand for.
     pub role: OutputRole,
 }
 /// A stage's input binding: the role of an input varying the shader declares.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InputBinding {
+    /// The input varying.
     pub label: Label,
+    /// What the input stands for.
     pub role: InputRole,
 }
 /// What picks one of several stages of one kind in a binding: the mesh-side field a consumer reads, named by the
@@ -999,6 +1093,7 @@ pub struct VariantKey {
     /// The component and field the mesh carries the key in, as `component.field` (`<dialect>.<component>.<field>`), or
     /// the name the source gives its keys where no mesh field holds them (a name in the source's own terms).
     pub field: String,
+    /// The value of the stage's key, compared for equality with the mesh's field.
     pub value: u32,
     /// What the key stands for, in the source's terms. A description only: it never identifies a variant (a binding's
     /// check, and a consumer picking a stage, go by `field` and `value`) and may be empty.
@@ -1009,7 +1104,9 @@ pub struct VariantKey {
 /// permutation id). It describes and never identifies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct KeyPart {
+    /// The part's name.
     pub name: String,
+    /// The part's value.
     pub value: u64,
 }
 /// What the source states of how it binds a constant buffer of the program, beyond what its constants are.
@@ -1032,81 +1129,124 @@ pub struct ConstantBufferBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlendFactor {
+    /// Zero.
     Zero,
+    /// One.
     One,
+    /// The source colour.
     SrcColour,
+    /// One minus the source colour.
     OneMinusSrcColour,
+    /// The source alpha.
     SrcAlpha,
+    /// One minus the source alpha.
     OneMinusSrcAlpha,
+    /// The colour already in the target.
     DstColour,
+    /// One minus the target colour.
     OneMinusDstColour,
+    /// The alpha already in the target.
     DstAlpha,
+    /// One minus the target alpha.
     OneMinusDstAlpha,
 }
+/// How the two weighted terms of a blend are combined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlendOp {
+    /// `source + destination`.
     Add,
+    /// `source - destination`.
     Subtract,
+    /// `destination - source`.
     ReverseSubtract,
+    /// The smaller of the two unweighted values.
     Min,
+    /// The larger of the two unweighted values.
     Max,
 }
 /// `op(src * source, dst * destination)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct BlendEquation {
+    /// The factor the incoming (source) value is multiplied by.
     pub source: BlendFactor,
+    /// The factor the value already in the target is multiplied by.
     pub destination: BlendFactor,
+    /// How the two products are combined.
     pub op: BlendOp,
 }
 /// Blending of the colour and the alpha channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Blend {
+    /// The equation for the red, green and blue channels.
     pub colour: BlendEquation,
+    /// The equation for the alpha channel.
     pub alpha: BlendEquation,
 }
+/// How two values are compared; the left one is the fragment's own (its depth or alpha, or the stencil reference), the
+/// right one what it is tested against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Compare {
+    /// Never passes.
     Never,
+    /// Passes where less.
     Less,
+    /// Passes where equal.
     Equal,
+    /// Passes where less than or equal.
     LessEqual,
+    /// Passes where greater.
     Greater,
+    /// Passes where not equal.
     NotEqual,
+    /// Passes where greater than or equal.
     GreaterEqual,
+    /// Always passes.
     Always,
 }
+/// Which facing of triangle is not drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cull {
+    /// Neither: both facings are drawn.
     None,
+    /// Front-facing triangles are culled.
     Front,
+    /// Back-facing triangles are culled.
     Back,
 }
 /// Depth test and write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct DepthState {
+    /// The depth comparison a fragment must pass.
     pub test: Compare,
+    /// Whether a passing fragment writes its depth.
     pub write: bool,
 }
 /// Alpha test: a pixel is kept where `alpha compare reference`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct AlphaTest {
+    /// The comparison of the fragment's alpha with `reference`.
     pub compare: Compare,
+    /// The reference alpha, 0 to 1.
     pub reference: f32,
 }
 /// A stencil operation (D3D12 and Vulkan have the same eight).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StencilOp {
+    /// Keep the stored value.
     Keep,
+    /// Set it to zero.
     Zero,
+    /// Set it to the reference value.
     Replace,
     /// Increment, clamped at the maximum.
     IncrementClamp,
     /// Decrement, clamped at zero.
     DecrementClamp,
+    /// Invert its bits.
     Invert,
     /// Increment, wrapping to zero.
     IncrementWrap,
@@ -1122,17 +1262,22 @@ pub struct StencilFace {
     pub depth_fail: StencilOp,
     /// On both passed.
     pub pass: StencilOp,
+    /// The comparison of the reference with the stored value.
     pub compare: Compare,
 }
 /// An enabled stencil test (a disabled one is `None` in [`RenderState::stencil`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Stencil {
+    /// Mask applied to the reference and the stored value before they are compared.
     pub read_mask: u8,
+    /// Mask of the stencil bits a write changes.
     pub write_mask: u8,
     /// The reference value the test compares against and `Replace` writes, where the source states one (D3D12 sets it
     /// per draw: a source that stores it per draw states none).
     pub reference: Option<u8>,
+    /// The operations for front-facing triangles.
     pub front: StencilFace,
+    /// The operations for back-facing triangles.
     pub back: StencilFace,
 }
 /// What one render target does with a fragment: its blend and which channels it writes.
@@ -1147,15 +1292,20 @@ pub struct TargetState {
 /// is not zero (r the smallest resolvable depth difference).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DepthBias {
+    /// The constant term, in units of the smallest resolvable depth difference.
     pub constant: f32,
+    /// The factor of the polygon's maximum depth slope.
     pub slope_scaled: f32,
+    /// The most the bias may reach in magnitude; 0 for no limit.
     pub clamp: f32,
 }
 /// How a triangle is filled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fill {
+    /// Filled triangles.
     Solid,
+    /// Triangle outlines.
     Wireframe,
 }
 /// Fixed-function state as the source stores it; each `None` where it states none. D3D12-shaped: `blend` is render
@@ -1164,15 +1314,21 @@ pub enum Fill {
 /// verification checks it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct RenderState {
+    /// Blending of render target 0; `None` where it is not blended.
     pub blend: Option<Blend>,
+    /// The depth test and write.
     pub depth: Option<DepthState>,
+    /// The face culling.
     pub cull: Option<Cull>,
+    /// The alpha test.
     pub alpha_test: Option<AlphaTest>,
     /// Per render target, in order.
     pub targets: [Option<TargetState>; 8],
     /// The stencil test, where one is enabled.
     pub stencil: Option<Stencil>,
+    /// The depth bias.
     pub depth_bias: Option<DepthBias>,
+    /// How triangles are filled.
     pub fill: Option<Fill>,
     /// Whether counter-clockwise triangles are front faces.
     pub front_counter_clockwise: Option<bool>,

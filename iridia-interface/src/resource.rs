@@ -12,9 +12,13 @@ pub struct ResourceId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextureDim {
+    /// A one-dimensional texture or image.
     D1,
+    /// A two-dimensional texture or image.
     D2,
+    /// A three-dimensional (volume) texture or image.
     D3,
+    /// A cube map (six faces, sampled by direction).
     Cube,
 }
 
@@ -22,8 +26,11 @@ pub enum TextureDim {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SampleType {
+    /// Floating-point (or normalized) texels, read as floats.
     Float,
+    /// Signed integer texels.
     Sint,
+    /// Unsigned integer texels.
     Uint,
     /// A depth texture (a source whose API distinguishes it from a float texture; D3D does not).
     Depth,
@@ -36,7 +43,11 @@ pub enum BufferKind {
     /// Elements of one value type (a formatted view).
     Typed(Value),
     /// Elements of this many bytes.
-    Structured { stride: u32 },
+    /// Elements of `stride` bytes each (a D3D structured buffer's element size).
+    Structured {
+        /// Bytes per element.
+        stride: u32,
+    },
     /// Bytes, addressed by offset.
     Raw,
 }
@@ -45,11 +56,16 @@ pub enum BufferKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageTarget {
+    /// A storage image.
     Image {
+        /// Its dimensionality.
         dim: TextureDim,
+        /// Whether it is an array of layers.
         arrayed: bool,
+        /// What a read returns.
         sample: SampleType,
     },
+    /// A storage buffer.
     Buffer(BufferKind),
 }
 
@@ -57,8 +73,11 @@ pub enum StorageTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
+    /// The program only reads it.
     Read,
+    /// The program only writes it.
     Write,
+    /// The program reads and writes it.
     ReadWrite,
 }
 
@@ -78,24 +97,36 @@ pub enum Majorness {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConstantType {
+    /// A single value.
     Scalar(ScalarType),
+    /// Consecutive lanes of one scalar type with no padding between them.
     Vector(Value),
     /// `rows` by `columns` of `scalar`. The matrix is stored as lines (rows for [`Majorness::Row`], columns for
     /// [`Majorness::Column`]), `stride` bytes apart; each line's lanes are consecutive.
     Matrix {
+        /// The scalar type of every lane.
         scalar: ScalarType,
+        /// Number of rows.
         rows: u8,
+        /// Number of columns.
         columns: u8,
+        /// Whether the stored lines are the rows or the columns.
         major: Majorness,
+        /// Bytes from the start of one stored line to the start of the next.
         stride: u32,
     },
+    /// A run of equal elements.
     Array {
+        /// The element type.
         element: Box<ConstantType>,
+        /// Number of elements.
         count: u32,
         /// Bytes from the start of one element to the start of the next.
         stride: u32,
     },
+    /// Named members at explicit offsets.
     Struct {
+        /// The members, in declaration order.
         members: Vec<Member>,
     },
 }
@@ -103,8 +134,11 @@ pub enum ConstantType {
 /// A structure's member: its offset is from the start of the structure.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Member {
+    /// The member's name.
     pub name: String,
+    /// Byte offset from the start of the structure.
     pub offset: u32,
+    /// The member's type.
     pub ty: ConstantType,
 }
 
@@ -163,9 +197,11 @@ impl ConstantType {
 /// One named constant of a buffer.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Constant {
+    /// The constant's name in the source.
     pub name: String,
     /// Byte offset in the buffer.
     pub offset: u32,
+    /// The constant's type and layout.
     pub ty: ConstantType,
     /// The default value the source states, as bytes of the constant's layout.
     pub default: Option<Vec<u8>>,
@@ -176,6 +212,7 @@ pub struct Constant {
 pub struct BufferLayout {
     /// Bytes.
     pub size: u32,
+    /// The constants the source names; their offsets can leave gaps.
     pub constants: Vec<Constant>,
 }
 
@@ -185,13 +222,23 @@ pub struct BufferLayout {
 pub enum ResourceKind {
     /// Constants by explicit byte offset. A program whose source states no names (a stripped one) has none here;
     /// the consumer names fields by offset.
-    ConstantBuffer { layout: BufferLayout },
+    /// The constants and size of one constant buffer.
+    ConstantBuffer {
+        /// The buffer's size and the constants in it.
+        layout: BufferLayout,
+    },
+    /// A texture read by sampling or by load.
     Texture {
+        /// Its dimensionality.
         dim: TextureDim,
+        /// Whether it is an array of layers.
         arrayed: bool,
+        /// Whether it has multiple samples per texel.
         multisampled: bool,
+        /// What a read returns.
         sample: SampleType,
     },
+    /// A sampler state object.
     Sampler {
         /// A comparison sampler (shadow lookups).
         comparison: bool,
@@ -199,7 +246,13 @@ pub enum ResourceKind {
     /// A buffer the program reads.
     Buffer(BufferKind),
     /// An image or buffer the program may write.
-    Storage { target: StorageTarget, access: Access },
+    /// A resource the program may write: an image or a buffer, and what it may do to it.
+    Storage {
+        /// Whether it is an image or a buffer, and which kind.
+        target: StorageTarget,
+        /// What the program does with it.
+        access: Access,
+    },
     /// A ray tracing acceleration structure the program traces rays into.
     AccelerationStructure,
 }
@@ -221,8 +274,11 @@ pub enum D3dClass {
 /// A D3D bind point: class, register index and register space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct D3dBinding {
+    /// Which register class (`b`, `t`, `s` or `u`) the resource is bound in.
     pub class: D3dClass,
+    /// The register index within the class and space.
     pub register: u32,
+    /// The register space (`space<n>`; 0 where the source has no spaces).
     pub space: u32,
 }
 
@@ -231,6 +287,7 @@ pub struct D3dBinding {
 pub struct ResourceProvenance {
     /// The name the source gives it (`Texture2D_8`, a constant buffer's name).
     pub name: String,
+    /// The D3D bind point; `None` when the source has no such address.
     pub d3d: Option<D3dBinding>,
     /// The resource this one is the hidden counter of: an unordered-access view's 32-bit counter (D3D's append and
     /// consume buffers, `IncrementCounter`), a buffer of its own in WebGPU. It has no D3D binding of its own; the
@@ -248,12 +305,15 @@ pub struct ResourceProvenance {
 /// One bound resource.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Resource {
+    /// This resource's id within its interface.
     pub id: ResourceId,
+    /// What the resource is.
     pub kind: ResourceKind,
     /// How many consecutive bindings it spans: 1, or the length of a resource array. [`Resource::UNBOUNDED`] is an
     /// array whose length is the bound data's, not the program's (D3D's `-1`): nothing in the program says how far
     /// an index may go.
     pub count: u32,
+    /// The source's own name and address.
     pub provenance: ResourceProvenance,
 }
 

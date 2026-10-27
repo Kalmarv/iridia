@@ -20,7 +20,9 @@ use super::binding::{
 /// its lane mask (bit k lane k).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Place {
+    /// Position of the output among the outputs given to [`Surface::read`].
     pub output: usize,
+    /// The output's lanes the term uses, as a mask: bit 0 is x, bit 3 is w.
     pub lanes: u8,
 }
 
@@ -44,7 +46,9 @@ impl Place {
 /// A term stored in the lanes of one output, each lane's value decoded by `encoding`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Term {
+    /// The lanes the term is stored in.
     pub place: Place,
+    /// How a stored value decodes to the term's value.
     pub encoding: ScalarEncoding,
 }
 
@@ -65,11 +69,14 @@ impl Term {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Base {
+    /// The albedo (base colour) a deferred program writes.
     Albedo(Place),
+    /// The finished colour of a forward program that writes no albedo.
     Colour(Place),
 }
 
 impl Base {
+    /// The lanes the colour is stored in.
     pub fn place(&self) -> Place {
         match *self {
             Base::Albedo(p) | Base::Colour(p) => p,
@@ -86,8 +93,11 @@ impl Base {
 /// The surface's normal: its place, how its lanes store it and the space it is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Normal {
+    /// The lanes the normal is stored in.
     pub place: Place,
+    /// How the lanes encode the normal.
     pub encoding: NormalEncoding,
+    /// The space the decoded normal is in.
     pub space: NormalSpace,
 }
 
@@ -198,6 +208,7 @@ pub enum Roughness {
 }
 
 impl Roughness {
+    /// The term the roughness is stored as, whichever form it takes.
     pub fn term(&self) -> Term {
         match *self {
             Roughness::Roughness(t) | Roughness::Gloss(t) | Roughness::Exponent(t) => t,
@@ -226,6 +237,7 @@ pub enum Emission {
 }
 
 impl Emission {
+    /// The term the emission is stored as, whichever form it takes.
     pub fn term(&self) -> Term {
         match *self {
             Emission::Colour(t) | Emission::OfAlbedo(t) => t,
@@ -247,8 +259,11 @@ impl Emission {
 /// A program's outputs as a surface: each term's place and decoding, `None` where no output has a role for it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Surface {
+    /// The surface's colour; `None` when no output has the role of an albedo or a finished colour.
     pub base: Option<Base>,
+    /// The surface's normal; `None` when no output has a normal role.
     pub normal: Option<Normal>,
+    /// The surface's roughness; `None` when no output has a roughness, gloss or exponent role.
     pub roughness: Option<Roughness>,
     /// The metalness, 0 to 1: the reflectance is the metallic workflow's `mix(0.04, albedo, metallic)` and the diffuse
     /// colour `albedo * (1 - metallic)`.
@@ -258,6 +273,7 @@ pub struct Surface {
     pub reflectance: Option<Term>,
     /// The specular strength, 0 to 1: a consumer scales the light the surface reflects as a highlight by it.
     pub specular: Option<Term>,
+    /// The light the surface gives off; `None` when no output has an emission role.
     pub emission: Option<Emission>,
     /// The occlusion of every light that reaches the surface from outside it (1 unoccluded): a consumer scales the
     /// light the surface reflects by it, its emission aside.
