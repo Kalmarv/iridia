@@ -44,6 +44,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),
@@ -295,9 +296,11 @@ pub struct Sample {
     pub texture: u32,
     /// Sampler bind slot (`s<n>`).
     pub sampler: u32,
+    /// The texture coordinate (u, v).
     pub uv: [f32; 2],
     /// A 2D array's layer coordinate, as the program gives it (the sampler rounds it); `None` for a 2D texture.
     pub layer: Option<f32>,
+    /// How the level of detail is picked.
     pub lod: Lod,
 }
 
@@ -322,6 +325,7 @@ pub struct Store {
     pub address: [u32; 3],
     /// The lanes as the program writes them (bits), only those `mask` marks.
     pub value: [u32; 4],
+    /// The lanes written, bit 0 for x to bit 3 for w.
     pub mask: u8,
 }
 
@@ -331,13 +335,16 @@ pub struct Store {
 pub struct AtomicAdd {
     /// Unordered-access view bind slot (`u<n>`).
     pub view: u32,
+    /// Where the add lands: a structured view's element and byte offset, or a typed view's x, y and z.
     pub address: [u32; 3],
+    /// The value added to the 32-bit word.
     pub value: u32,
 }
 
 /// Answers sample, load, store and structured-buffer requests; an error stops the evaluation. A closure answers samples
 /// only.
 pub trait Sampler {
+    /// Answer a 2D [`Sample`] with the texel's four lanes as floats, or an error that stops the evaluation.
     fn sample(&mut self, request: Sample) -> std::result::Result<[f32; 4], String>;
     /// The texel's four lanes as its view returns them: f32 bits for a float view, the integers for a uint or sint
     /// one.
@@ -443,7 +450,9 @@ pub struct Execution {
     pub outputs: Vec<[u32; 4]>,
     /// Only lanes marked in this mask were written by the shader.
     pub output_masks: Vec<u8>,
+    /// Instructions this evaluation executed.
     pub instructions: usize,
+    /// Samples this evaluation requested.
     pub samples: usize,
     /// Whether the program discarded the pixel (`discard`): its outputs are then those written before.
     pub discarded: bool,
@@ -453,8 +462,11 @@ pub struct Execution {
 #[derive(Debug, thiserror::Error)]
 #[error("{bytecode} at {at}: {detail}")]
 pub struct Error {
+    /// What was being checked or run: `program`, `draw`, `evaluate` or `evaluate_periodic`.
     pub bytecode: &'static str,
+    /// A position in the bytecode's own unit where the error has one (a grid row for `evaluate`); 0 otherwise.
     pub at: usize,
+    /// What was refused or went wrong, in words.
     pub detail: String,
 }
 

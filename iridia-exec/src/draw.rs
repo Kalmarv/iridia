@@ -53,32 +53,49 @@ fn error(detail: impl Into<String>) -> Error {
 /// The viewport: where clip space lands in the targets.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
+    /// Left edge of the viewport, in pixels.
     pub x: f32,
+    /// Top edge of the viewport, in pixels (y runs down).
     pub y: f32,
+    /// Width in pixels.
     pub width: f32,
+    /// Height in pixels.
     pub height: f32,
+    /// The depth that clip-space z/w = 0 maps to.
     pub min_depth: f32,
+    /// The depth that clip-space z/w = 1 maps to.
     pub max_depth: f32,
 }
 
 /// Which facing culling drops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cull {
+    /// No triangle is culled.
     None,
+    /// Front-facing triangles are culled.
     Front,
+    /// Back-facing triangles are culled.
     Back,
 }
 
 /// A depth comparison: the pixel's depth (left) against the depth buffer's (right).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Compare {
+    /// Never passes.
     Never,
+    /// Passes where the pixel's depth is less.
     Less,
+    /// Passes where equal.
     Equal,
+    /// Passes where less or equal.
     LessEqual,
+    /// Passes where greater.
     Greater,
+    /// Passes where not equal.
     NotEqual,
+    /// Passes where greater or equal.
     GreaterEqual,
+    /// Always passes.
     Always,
 }
 
@@ -100,14 +117,18 @@ impl Compare {
 /// The depth test and whether a pixel that passes writes its depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DepthState {
+    /// The comparison of the pixel's depth with the depth buffer's.
     pub compare: Compare,
+    /// Whether a pixel that passes writes its depth.
     pub write: bool,
 }
 
 /// The fixed-function state of a draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rasterizer {
+    /// Where clip space lands in the targets.
     pub viewport: Viewport,
+    /// Which facing is dropped.
     pub cull: Cull,
     /// Whether a counter-clockwise triangle (y down) is front facing.
     pub front_counter_clockwise: bool,
@@ -119,7 +140,9 @@ pub struct Rasterizer {
 /// program's output words) and the depth buffer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Surface {
+    /// Width of every target in pixels.
     pub width: u32,
+    /// Height of every target in pixels.
     pub height: u32,
     /// By output register; `None` for a register the draw does not write.
     pub targets: Vec<Option<Vec<[u32; 4]>>>,
@@ -130,7 +153,9 @@ pub struct Surface {
 /// What a draw did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawStats {
+    /// Triangles in the index list.
     pub triangles: usize,
+    /// Triangles dropped by culling.
     pub culled: usize,
     /// Triangles clipped away entirely.
     pub clipped_away: usize,
@@ -138,8 +163,11 @@ pub struct DrawStats {
     pub not_a_number: usize,
     /// Pixels the program ran for (helpers not counted).
     pub shaded: usize,
+    /// Pixels the pixel program discarded.
     pub discarded: usize,
+    /// Pixels that failed the depth test.
     pub depth_failed: usize,
+    /// Pixels written to the targets.
     pub written: usize,
 }
 

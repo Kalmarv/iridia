@@ -169,10 +169,12 @@ impl TessellationShader {
         })
     }
 
+    /// The hull program.
     pub fn hull(&self) -> &Program {
         &self.hull
     }
 
+    /// The domain program.
     pub fn domain(&self) -> &Program {
         &self.domain
     }

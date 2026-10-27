@@ -51,7 +51,9 @@ pub struct ShaderTable {
 /// the acceleration structure all the programs trace into.
 #[derive(Clone, Debug, Default)]
 pub struct PipelineResources {
+    /// The constant buffers of the root signature, by (register, space): rows of four 32-bit words.
     pub constants: BTreeMap<(u32, u32), Vec<[u32; 4]>>,
+    /// The acceleration structure every program traces into.
     pub scene: Scene,
 }
 

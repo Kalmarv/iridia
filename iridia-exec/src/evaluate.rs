@@ -33,6 +33,7 @@ pub struct Field {
 pub struct Layout {
     /// Bind slot and size in words of each buffer the program reads.
     pub buffers: Vec<(u32, u32)>,
+    /// Each named constant's place, by the name D3D reflection gives it.
     pub fields: BTreeMap<String, Field>,
 }
 impl Layout {
@@ -129,6 +130,7 @@ pub struct Constants {
     written: Vec<Vec<bool>>,
 }
 impl Constants {
+    /// Constant buffers laid out as `layout` says, every word zero and unset.
     pub fn new(layout: &Layout) -> Self {
         Self {
             fields: layout.fields.clone(),
@@ -211,6 +213,7 @@ impl Constants {
 /// One component of an input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Lane {
+    /// The 32-bit pattern of the lane.
     Bits(u32),
     /// The grid's U (times the period).
     U,
@@ -221,7 +224,9 @@ pub enum Lane {
 /// register (`TEXCOORD1` packed into `.zw` receives lanes 0 and 1 there); lanes past its components are unused.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Input {
+    /// Four lanes, each its own value or grid coordinate.
     Lanes([Lane; 4]),
+    /// The same four floats at every pixel.
     Constant([f32; 4]),
     /// U, V, 0, 0.
     GridUv,
@@ -241,16 +246,21 @@ impl Input {
 /// not along y; V likewise along y; other lanes are constant.
 #[derive(Clone, Copy, Debug)]
 pub struct Grid {
+    /// Pixels along each side of the square grid.
     pub size: u32,
+    /// The span of U and V across the grid: U runs to `period[0]` and V to `period[1]`.
     pub period: [f32; 2],
 }
 
+/// What [`evaluate`] returns: the requested outputs of every pixel of the grid as floats, and the counts of the run.
 #[derive(Debug)]
 pub struct Evaluation {
     /// Per requested output: size * size values in row-major order (unrequested components zero), or None when the
     /// program does not write the requested components.
     pub targets: Vec<Option<Vec<[f32; 4]>>>,
+    /// Instructions executed, summed over the pixels.
     pub instructions: u64,
+    /// Samples requested, summed over the pixels.
     pub samples: u64,
 }
 
@@ -286,7 +296,9 @@ pub struct Raw {
     pub pixels: Vec<Vec<([u32; 4], u8)>>,
     /// Per pixel, in the same order, whether the program discarded it (its outputs are then those written before).
     pub discarded: Vec<bool>,
+    /// Instructions executed, summed over the pixels.
     pub instructions: u64,
+    /// Samples requested, summed over the pixels.
     pub samples: u64,
 }
 

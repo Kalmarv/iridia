@@ -11,16 +11,22 @@ use iridia::ResourceId;
 /// caller's to check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Element {
+    /// The resource of the program's interface.
     pub id: ResourceId,
+    /// The element of an array of resources the program's index picked; 0 for a resource that is not an array.
     pub index: u32,
 }
 
 /// A texture's shape as a request states it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dim {
+    /// A one-dimensional texture.
     D1,
+    /// A two-dimensional texture.
     D2,
+    /// A three-dimensional texture.
     D3,
+    /// A cube map.
     Cube,
 }
 
@@ -43,13 +49,17 @@ pub enum ImageLod {
 /// A sample of any texture: 1D, 2D, 3D, cube, arrayed, with an offset, a gather or a comparison.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageSample<R> {
+    /// The texture sampled: an interface [`Element`] or a bind slot, as `R` says.
     pub texture: R,
+    /// The sampler, named the same way.
     pub sampler: R,
+    /// The texture's shape.
     pub dim: Dim,
     /// The coordinate's components (1D: x; 2D: x, y; 3D and cube: x, y, z); the rest 0.
     pub coord: [f32; 3],
     /// An array's layer, as the program gives it (already rounded and clamped to 0 or more).
     pub layer: Option<f32>,
+    /// How the level of detail is picked.
     pub lod: ImageLod,
     /// The constant texel offset (0 where the program states none).
     pub offset: [i32; 3],
@@ -64,13 +74,19 @@ pub struct ImageSample<R> {
 /// A texel load (`ld`, `ld_ms`, a typed unordered-access load).
 #[derive(Clone, Copy, Debug)]
 pub struct ImageLoad<R> {
+    /// The texture read.
     pub texture: R,
+    /// The texture's shape.
     pub dim: Dim,
     /// A view of an unordered-access resource rather than a shader resource.
     pub storage: bool,
+    /// The integer address of the texel (x, y, z; the rest 0).
     pub texel: [i32; 3],
+    /// An array's layer.
     pub layer: Option<i32>,
+    /// The sample of a multisampled texture.
     pub sample: Option<i32>,
+    /// The mip level; `None` where the load states none.
     pub mip: Option<i32>,
 }
 
@@ -79,29 +95,41 @@ pub struct ImageLoad<R> {
 pub enum QueryKind {
     /// The width, height and depth at `level` (as many as the dimension has).
     Size,
+    /// The number of mip levels.
     Levels,
+    /// The number of array layers.
     Layers,
+    /// The number of samples per texel.
     Samples,
 }
 
 /// A `resinfo`-style query.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageQuery<R> {
+    /// The texture queried.
     pub texture: R,
+    /// The texture's shape.
     pub dim: Dim,
+    /// Which property is read.
     pub kind: QueryKind,
+    /// The mip level a size is asked at; `None` where the query states none.
     pub level: Option<u32>,
 }
 
 /// A write to an unordered-access texture.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageStore<R> {
+    /// The unordered-access view written.
     pub view: R,
     /// Which view of an array of views (0 for a view that is not in an array).
     pub index: u32,
+    /// The view's shape.
     pub dim: Dim,
+    /// The integer address of the texel (x, y, z; the rest 0).
     pub texel: [u32; 3],
+    /// An array's layer.
     pub layer: Option<u32>,
+    /// The lanes as the program writes them (bits); only the first `lanes` are written.
     pub value: [u32; 4],
     /// How many of the value's lanes the program writes.
     pub lanes: u8,
@@ -110,13 +138,21 @@ pub struct ImageStore<R> {
 /// What an atomic operation on a texel does with the word it holds and the program's value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageAtomicOp {
+    /// Add the program's value to the word.
     Add,
+    /// Subtract the program's value from the word.
     Sub,
+    /// Bitwise and.
     And,
+    /// Bitwise or.
     Or,
+    /// Bitwise exclusive or.
     Xor,
+    /// The smaller of the two (signed or unsigned, as `ImageAtomic::signed` says).
     Min,
+    /// The larger of the two (signed or unsigned, as `ImageAtomic::signed` says).
     Max,
+    /// Store the program's value.
     Exchange,
 }
 
@@ -124,15 +160,21 @@ pub enum ImageAtomicOp {
 /// before; the program reads it when its `Statement::ImageAtomic` has a result.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageAtomic<R> {
+    /// The unordered-access view operated on.
     pub view: R,
     /// Which view of an array of views (0 for a view that is not in an array).
     pub index: u32,
+    /// The view's shape.
     pub dim: Dim,
+    /// The integer address of the texel (x, y, z; the rest 0).
     pub texel: [u32; 3],
+    /// An array's layer.
     pub layer: Option<u32>,
+    /// The operation.
     pub op: ImageAtomicOp,
     /// Whether `Min` and `Max` compare the words as signed integers.
     pub signed: bool,
+    /// The program's operand.
     pub value: u32,
 }
 
@@ -140,31 +182,47 @@ pub struct ImageAtomic<R> {
 /// which the programs the ray runs read and write; the caller leaves it as the ray's last program did.
 #[derive(Debug)]
 pub struct TraceRay<'a> {
+    /// The interface resource of the acceleration structure.
     pub scene: ResourceId,
+    /// The ray's flags ([`crate::ray_flags`]).
     pub flags: u32,
+    /// The instance inclusion mask: an instance is seen when it shares a bit with it.
     pub mask: u32,
+    /// `RayContributionToHitGroupIndex`: added to the hit group index.
     pub hit_group_offset: u32,
+    /// `MultiplierForGeometryContributionToHitGroupIndex`: the geometry index is multiplied by it.
     pub hit_group_stride: u32,
+    /// `MissShaderIndex`: which miss program runs if nothing is hit.
     pub miss_index: u32,
+    /// The ray's origin in world space.
     pub origin: [f32; 3],
+    /// The nearest distance along the ray that counts as a hit.
     pub t_min: f32,
+    /// The ray's direction in world space.
     pub direction: [f32; 3],
+    /// The farthest distance along the ray that counts as a hit.
     pub t_max: f32,
+    /// The words of the payload structure.
     pub payload: &'a mut [u32],
 }
 
 /// `ReportHit`: an intersection program reports a hit at `t` of kind `hit_kind`, with the words of its attributes.
 #[derive(Debug)]
 pub struct ReportHit<'a> {
+    /// The distance along the ray of the hit.
     pub t: f32,
+    /// The hit kind the intersection program reports.
     pub hit_kind: u32,
+    /// The words of the hit attributes structure.
     pub attributes: &'a mut [u32],
 }
 
 /// `CallShader`: run the callable program `index` of the shader table on the words of a parameter structure.
 #[derive(Debug)]
 pub struct CallShader<'a> {
+    /// Which callable program of the shader table.
     pub index: u32,
+    /// The words of the parameter structure.
     pub parameter: &'a mut [u32],
 }
 
@@ -172,14 +230,18 @@ pub struct CallShader<'a> {
 /// writes. A request the caller cannot answer is an error that stops the evaluation. Reads of buffers need no call:
 /// the buffers are bound before the run.
 pub trait Backend {
+    /// Answer a texture sample with the texel's four lanes, or an error that stops the evaluation.
     fn sample(&mut self, request: ImageSample<Element>) -> Result<[f32; 4], String>;
     /// The texel's four lanes as its view returns them: f32 bits for a float view, the integers otherwise.
     fn load(&mut self, request: ImageLoad<Element>) -> Result<[u32; 4], String> {
         Err(format!("resource {}: no loads given", request.texture.id.0))
     }
+    /// Answer a size or level-count query with its lanes.
     fn query(&mut self, request: ImageQuery<Element>) -> Result<[u32; 4], String> {
         Err(format!("resource {}: no queries given", request.texture.id.0))
     }
+    /// Write a texel of an unordered-access texture. The effect is the caller's: it reaches none of this evaluation's
+    /// reads.
     fn store_image(&mut self, request: ImageStore<ResourceId>) -> Result<(), String> {
         Err(format!("resource {}: no stores given", request.view.0))
     }

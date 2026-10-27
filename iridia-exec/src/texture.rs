@@ -25,7 +25,10 @@ use crate::{Image, Lod};
 pub enum Filtering {
     /// The base level only, whatever level of detail the program asks for: bilinear in f32 over texels decoded once,
     /// the texel coordinate resolved to `subtexel` precision ([`Decoded::bilinear_at`]).
-    BaseBilinear { subtexel: Subtexel },
+    BaseBilinear {
+        /// The precision the texel coordinate is resolved to.
+        subtexel: Subtexel,
+    },
     /// The texel the coordinate falls in, of the stored level nearest the level of detail ([`Levels::point`],
     /// [`Levels::nearest_level`]), in f64: a point filter with a point mip filter.
     Point,
@@ -79,6 +82,7 @@ pub enum Unstated {
 /// states.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SamplerUse {
+    /// The addressing along u and v.
     pub address: [Address; 2],
     /// Added to a computed level of detail ([`Filtering::Trilinear`]); finite.
     pub mip_lod_bias: Option<f32>,
@@ -196,22 +200,27 @@ impl SampledTexture {
         self.footprintless
     }
 
+    /// The stored levels.
     pub fn levels(&self) -> &Levels {
         &self.levels
     }
 
+    /// The transfer function the texels are decoded with.
     pub fn transfer(&self) -> Transfer {
         self.transfer
     }
 
+    /// The sampler state the texture is sampled with.
     pub fn sampler(&self) -> SamplerUse {
         self.sampler
     }
 
+    /// The addressing along u and v.
     pub fn address(&self) -> [Address; 2] {
         self.sampler.address
     }
 
+    /// The filtering policy.
     pub fn filtering(&self) -> Filtering {
         self.filtering
     }

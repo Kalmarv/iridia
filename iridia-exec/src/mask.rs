@@ -7,13 +7,19 @@ pub trait Mask: Copy + PartialEq + std::fmt::Debug {
     fn none() -> Self;
     /// Lanes `0..n`.
     fn first(n: usize) -> Self;
+    /// Whether `lane` is in the set.
     fn has(self, lane: usize) -> bool;
+    /// Add `lane`; a lane past the width of the set changes nothing.
     fn insert(&mut self, lane: usize);
+    /// Remove `lane`; a lane past the width of the set changes nothing.
     fn remove(&mut self, lane: usize);
+    /// The lanes in both sets.
     fn and(self, other: Self) -> Self;
+    /// The lanes in either set.
     fn or(self, other: Self) -> Self;
     /// The lanes of `self` that are not in `other`.
     fn minus(self, other: Self) -> Self;
+    /// Whether the set has no lane.
     fn is_empty(self) -> bool;
 }
 

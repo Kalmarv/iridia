@@ -29,6 +29,7 @@ use crate::{Dim, ImageLoad, ImageQuery, ImageSample, Load, Lod, QueryKind, Sampl
 /// A texture the caller samples itself (its footprint, addressing, filtering and transfer are its own policy), by the
 /// level of detail the program states ([`crate::Lod`]).
 pub trait Image: Send + Sync + std::fmt::Debug {
+    /// The texel at `uv` at level of detail `lod`, or an error that stops the evaluation.
     fn sample(&self, uv: [f32; 2], lod: Lod) -> Result<[f32; 4], String>;
 }
 
@@ -49,7 +50,12 @@ pub enum View {
     /// A typed buffer of four 32-bit lanes per element.
     Typed(Arc<[[u32; 4]]>),
     /// A structured buffer: elements of `stride` bytes, as 32-bit words.
-    Structured { stride: u32, words: Vec<u32> },
+    Structured {
+        /// Bytes per element.
+        stride: u32,
+        /// The buffer's 32-bit words, element after element.
+        words: Vec<u32>,
+    },
 }
 
 /// How a sampler slot filters a view.
@@ -58,13 +64,18 @@ pub enum ViewFilter {
     /// The texel a coordinate falls in.
     Point,
     /// Linear between the texels about a coordinate, the texel coordinate resolved to `subtexel` precision.
-    Linear { subtexel: Subtexel },
+    Linear {
+        /// The precision the texel coordinate is resolved to.
+        subtexel: Subtexel,
+    },
 }
 
 /// A sampler slot's state: its filter and the addressing along u, v and w.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ViewSampler {
+    /// How the sampler filters.
     pub filter: ViewFilter,
+    /// The addressing along u, v and w.
     pub address: [Address; 3],
 }
 
@@ -84,8 +95,11 @@ pub enum Absent {
 /// documentation). A program reads them through `&Views` (the views are only read, so one table serves every thread).
 #[derive(Clone, Debug, Default)]
 pub struct Views {
+    /// The views by bind slot (`t<n>` or `u<n>`).
     pub views: BTreeMap<u32, View>,
+    /// The sampler states by bind slot (`s<n>`).
     pub samplers: BTreeMap<u32, ViewSampler>,
+    /// What a read does where nothing is bound or addressed.
     pub absent: Absent,
 }
 

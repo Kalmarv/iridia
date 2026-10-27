@@ -45,7 +45,9 @@ impl Bound<'_> {
 /// What a run reads besides its inputs: constant buffers (rows of four lanes) and buffers (32-bit words), by resource.
 #[derive(Clone, Debug, Default)]
 pub struct Resources {
+    /// Constant buffers by interface resource: rows of four 32-bit words.
     pub constants: BTreeMap<ResourceId, Vec<[u32; 4]>>,
+    /// Buffers by interface resource: 32-bit words.
     pub buffers: BTreeMap<ResourceId, Vec<u32>>,
     /// The elements of arrays of buffers, by resource and element.
     pub elements: BTreeMap<(ResourceId, u32), Vec<u32>>,
@@ -126,9 +128,11 @@ pub struct Output {
     /// The words of each pointer argument (a ray tracing program's payload, attributes or parameter) as the program
     /// left them, in argument order.
     pub pointees: Vec<Vec<u32>>,
+    /// What the program decided about the hit it was offered; `Decision::None` for any other program.
     pub decision: Decision,
     /// One entry per member of the result, lanes beyond the member's width 0.
     pub values: Vec<[u32; 4]>,
+    /// Whether the invocation discarded.
     pub discarded: bool,
     /// Operations and loop turns executed.
     pub steps: u64,
@@ -146,6 +150,7 @@ pub struct Scratch<const N: usize> {
     outs: [Vec<Reg>; N],
 }
 impl<const N: usize> Scratch<N> {
+    /// Registers and local memory for `N` lanes of `exe`, with its literals already written.
     pub fn new(exe: &Executable) -> Self {
         let mut regs = vec![[0u32; 4]; exe.slots.saturating_mul(N)];
         for (s, v) in &exe.inits {

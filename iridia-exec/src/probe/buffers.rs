@@ -8,13 +8,16 @@ use crate::{ImageLoad, ImageQuery, ImageSample, Load, Sample, Sampler};
 pub struct BufferExtent {
     /// Bytes in an element, nonzero and divisible by four.
     pub stride: u32,
+    /// Elements in the view.
     pub elements: u32,
 }
 
 /// One word requested from a structured buffer, in the sampler's binding-slot vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BufferRead {
+    /// The structured buffer's bind slot (`t<n>`).
     pub slot: u32,
+    /// The element read.
     pub element: u32,
     /// Byte offset within the element, aligned to a word.
     pub offset: u32,
@@ -33,14 +36,20 @@ pub struct BufferRead {
 /// requested in-range word, not only the element it expects the final output to use.
 #[derive(Debug)]
 pub struct AnsweredBuffers<S, F> {
+    /// The sampler that answers image reads.
     pub images: S,
+    /// The function that answers each structured read.
     pub answer: F,
     extents: BTreeMap<u32, BufferExtent>,
+    /// The structured reads made, each with the word answered.
     pub reads: Vec<(BufferRead, u32)>,
+    /// The extent requests made: the slot and the element count answered, `None` for an undeclared view.
     pub queries: Vec<(u32, Option<u32>)>,
 }
 
 impl<S, F> AnsweredBuffers<S, F> {
+    /// Combine `images` with the structured views `extents` declares, by slot. A stride that is zero or not a multiple of
+    /// 4, or an extent whose word count does not fit 32 bits, is refused.
     pub fn new(images: S, extents: BTreeMap<u32, BufferExtent>, answer: F) -> Result<Self, String> {
         for (&slot, extent) in &extents {
             if extent.stride == 0 || !extent.stride.is_multiple_of(4) {

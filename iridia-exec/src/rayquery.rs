@@ -27,15 +27,25 @@ use std::collections::BTreeMap;
 
 /// A ray's flags, as DXR numbers them (and naga's `RayFlag` after them).
 pub mod flags {
+    /// Opaque geometry regardless of its own flag (`RAY_FLAG_FORCE_OPAQUE`).
     pub const FORCE_OPAQUE: u32 = 0x1;
+    /// Non-opaque geometry regardless of its own flag (`RAY_FLAG_FORCE_NON_OPAQUE`).
     pub const FORCE_NON_OPAQUE: u32 = 0x2;
+    /// End the search at the first hit (`RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH`).
     pub const ACCEPT_FIRST_HIT: u32 = 0x4;
+    /// Run no closest-hit program (`RAY_FLAG_SKIP_CLOSEST_HIT_SHADER`).
     pub const SKIP_CLOSEST_HIT: u32 = 0x8;
+    /// Cull back-facing triangles (`RAY_FLAG_CULL_BACK_FACING_TRIANGLES`).
     pub const CULL_BACK_FACING: u32 = 0x10;
+    /// Cull front-facing triangles (`RAY_FLAG_CULL_FRONT_FACING_TRIANGLES`).
     pub const CULL_FRONT_FACING: u32 = 0x20;
+    /// Cull opaque geometry (`RAY_FLAG_CULL_OPAQUE`).
     pub const CULL_OPAQUE: u32 = 0x40;
+    /// Cull non-opaque geometry (`RAY_FLAG_CULL_NON_OPAQUE`).
     pub const CULL_NON_OPAQUE: u32 = 0x80;
+    /// Skip triangle geometry (`RAY_FLAG_SKIP_TRIANGLES`).
     pub const SKIP_TRIANGLES: u32 = 0x100;
+    /// Skip procedural geometry (`RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES`).
     pub const SKIP_PROCEDURAL: u32 = 0x200;
 }
 
@@ -43,6 +53,7 @@ pub mod flags {
 /// axis-aligned box the program intersects itself.
 #[derive(Clone, Debug)]
 pub struct Geometry {
+    /// The triangles' vertex positions in object space.
     pub positions: Vec<[f32; 3]>,
     /// Vertex indices, three to a triangle; none: the positions are the triangles, three to each.
     pub indices: Option<Vec<u32>>,
@@ -86,6 +97,7 @@ pub struct InstanceFlags {
     pub front_counter_clockwise: bool,
     /// ..._FORCE_OPAQUE and ..._FORCE_NON_OPAQUE.
     pub force_opaque: bool,
+    /// `D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE`: all the instance's geometry counts as non-opaque.
     pub force_non_opaque: bool,
 }
 
@@ -102,13 +114,16 @@ pub struct Instance {
     pub mask: u8,
     /// InstanceContributionToHitGroupIndex (24 bits).
     pub contribution: u32,
+    /// What the instance does besides place its bottom level.
     pub flags: InstanceFlags,
 }
 
 /// The bottom levels and the top level of an acceleration structure.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
+    /// The bottom levels, each a list of geometries.
     pub bottoms: Vec<Vec<Geometry>>,
+    /// The top level: the instances of the bottom levels.
     pub instances: Vec<Instance>,
 }
 

@@ -34,6 +34,7 @@ pub const QUERY_STAND_IN: [u32; 4] = [1; 4];
 /// A program's buffers, as the caller answers them: `count` (1 to 4) words from word `word` of the buffer `view`, and a
 /// buffer's length in words.
 pub trait BufferReads {
+    /// Answer `count` (1 to 4) words from word `word` of `view`; lanes past `count` are 0.
     fn read(&mut self, view: ResourceId, word: u32, count: u8) -> Result<[u32; 4], String>;
     /// The buffer's length in words: long enough for any read, unless the caller says otherwise.
     fn words(&mut self, view: ResourceId) -> Result<u32, String> {
@@ -56,11 +57,14 @@ impl BufferReads for Zeros {
 /// program's resource [`Element`], or a bind slot). A load or a query is refused unless the answer gives one, so no read
 /// is answered by a value nobody stated.
 pub trait Answer<R> {
+    /// Answer a sample request with the texel's four lanes.
     fn sample(&mut self, request: &ImageSample<R>) -> Result<[f32; 4], String>;
+    /// Answer a texel load; refused unless the answer gives one.
     fn load(&mut self, request: &ImageLoad<R>) -> Result<[u32; 4], String> {
         let _ = request;
         Err("a texel load, which the answer does not give".into())
     }
+    /// Answer a size or level-count query; refused unless the answer gives one.
     fn query(&mut self, request: &ImageQuery<R>) -> Result<[u32; 4], String> {
         let _ = request;
         Err("a size or level-count query, which the answer does not give".into())
@@ -95,13 +99,18 @@ impl<R> Answer<R> for StandIns {
 /// textures; stores, atomics and structured buffers are refused, as a sampler that gives none refuses them.
 #[derive(Debug)]
 pub struct AnsweredReads<R, A> {
+    /// How the reads are answered.
     pub answer: A,
+    /// The samples answered, in order.
     pub samples: Vec<ImageSample<R>>,
+    /// The loads answered, in order.
     pub loads: Vec<ImageLoad<R>>,
+    /// The queries answered, in order.
     pub queries: Vec<ImageQuery<R>>,
 }
 
 impl<R, A: Answer<R>> AnsweredReads<R, A> {
+    /// Reads answered by `answer`, with nothing recorded yet.
     pub fn new(answer: A) -> Self {
         AnsweredReads {
             answer,
@@ -111,18 +120,21 @@ impl<R, A: Answer<R>> AnsweredReads<R, A> {
         }
     }
 
+    /// Answer a sample and record it; a refused one is not recorded.
     pub fn sample(&mut self, request: ImageSample<R>) -> Result<[f32; 4], String> {
         let value = self.answer.sample(&request)?;
         self.samples.push(request);
         Ok(value)
     }
 
+    /// Answer a load and record it; a refused one is not recorded.
     pub fn load(&mut self, request: ImageLoad<R>) -> Result<[u32; 4], String> {
         let value = self.answer.load(&request)?;
         self.loads.push(request);
         Ok(value)
     }
 
+    /// Answer a query and record it; a refused one is not recorded.
     pub fn query(&mut self, request: ImageQuery<R>) -> Result<[u32; 4], String> {
         let value = self.answer.query(&request)?;
         self.queries.push(request);
@@ -174,7 +186,9 @@ impl<A: Answer<u32>> Sampler for AnsweredReads<u32, A> {
 /// The map a program applies to a texture coordinate, `sampled = scale * input + offset` on each axis ([`affine_uv`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UvMap {
+    /// The factor on each axis.
     pub scale: [f64; 2],
+    /// The offset on each axis.
     pub offset: [f64; 2],
 }
 
@@ -271,7 +285,9 @@ pub fn affine_uv(points: &[([f32; 2], [f32; 2])]) -> Result<UvMap, String> {
 /// How many texture reads of a run were answered with a stand-in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextureUse {
+    /// Samples answered with a stand-in.
     pub samples: u32,
+    /// Loads answered with a stand-in.
     pub loads: u32,
     /// Size and level-count queries, as the lifted program asks them: one `GetDimensions` of a size and a level count
     /// may be two.
@@ -325,8 +341,11 @@ impl TextureUse {
 /// left them.
 #[derive(Debug)]
 pub struct ProbeRun<B> {
+    /// The clip-space position (x, y, z, w) the program wrote.
     pub clip: [f32; 4],
+    /// How many texture reads were answered with stand-ins.
     pub textures: TextureUse,
+    /// The caller's buffers as the run left them.
     pub buffers: B,
 }
 
@@ -359,6 +378,7 @@ impl VertexProbe {
         })
     }
 
+    /// The vertex program the probe runs.
     pub fn program(&self) -> &Program {
         &self.program
     }

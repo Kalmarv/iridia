@@ -251,6 +251,7 @@ impl ProgramShader {
         })
     }
 
+    /// The vertex or pixel program the shader runs.
     pub fn program(&self) -> &Program {
         &self.program
     }

@@ -83,6 +83,7 @@ impl MeshShader {
         Ok(shader)
     }
 
+    /// The mesh program the shader runs.
     pub fn program(&self) -> &Program {
         &self.program
     }

@@ -29,14 +29,23 @@ pub type Vertex = Vec<[u32; 4]>;
 /// How a draw's vertices make primitives (D3D's primitive topologies a geometry shader can follow).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Topology {
+    /// Each vertex is a point.
     PointList,
+    /// Every two vertices make a line.
     LineList,
+    /// Each vertex after the first makes a line with the one before it.
     LineStrip,
+    /// Every three vertices make a triangle.
     TriangleList,
+    /// Each vertex after the second makes a triangle with the two before it (odd triangles swap their last two vertices).
     TriangleStrip,
+    /// Every four vertices make a line with its two neighbours.
     LineListAdjacency,
+    /// A strip of lines with an adjacent vertex at each end.
     LineStripAdjacency,
+    /// Every six vertices make a triangle with its three neighbours.
     TriangleListAdjacency,
+    /// A strip of triangles with adjacency, numbered as D3D11 numbers them.
     TriangleStripAdjacency,
 }
 
@@ -132,8 +141,11 @@ impl From<GsOutput> for Topology {
 /// The vertices an invocation emitted between two cuts, with the primitive and the instance that emitted them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Strip {
+    /// The primitive of the draw that emitted the vertices, counted from 0 (`SV_PrimitiveID`).
     pub primitive: u32,
+    /// The instance of that primitive.
     pub instance: u32,
+    /// The emitted vertices, one register per output varying.
     pub vertices: Vec<Vertex>,
 }
 
@@ -181,6 +193,7 @@ impl GeometryShader {
         })
     }
 
+    /// The geometry program the shader runs.
     pub fn program(&self) -> &Program {
         &self.program
     }

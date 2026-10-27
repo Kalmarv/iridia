@@ -34,9 +34,13 @@ pub use iridia::Partitioning;
 /// What the tessellator emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputPrimitive {
+    /// Points.
     Point,
+    /// Lines.
     Line,
+    /// Triangles wound clockwise.
     TriangleCw,
+    /// Triangles wound counter-clockwise.
     TriangleCcw,
 }
 
@@ -44,7 +48,9 @@ pub enum OutputPrimitive {
 /// line detail) and the inside ones (a triangle 1, a quad 2: the factor along u, then along v).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Factors {
+    /// The edge factors.
     pub edges: [f32; 4],
+    /// The inside factors.
     pub inside: [f32; 2],
 }
 
@@ -53,7 +59,9 @@ pub struct Factors {
 /// ends of lines of a line list, or the corners of triangles of a triangle list, as the output primitive says.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Tessellation {
+    /// The domain locations (u, v) of the points.
     pub points: Vec<[f32; 2]>,
+    /// Point numbers into `points`, in groups of the output primitive's size.
     pub indices: Vec<u32>,
 }
 
