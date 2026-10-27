@@ -53,6 +53,26 @@ fn value(width: u8) -> Value {
         width,
     }
 }
+/// How many lanes a write mask names.
+fn lanes_in(mask: u8) -> u8 {
+    u8::try_from(mask.count_ones()).unwrap_or(4)
+}
+/// The semantic name of a declaration usage.
+fn semantic(usage: u8, at: usize) -> Result<&'static str> {
+    SEMANTICS.get(usize::from(usage)).copied().ok_or_else(|| {
+        error(
+            at,
+            format!(
+                "declaration usage {usage}, where D3DDECLUSAGE is 0 to {}",
+                SEMANTICS.len().saturating_sub(1)
+            ),
+        )
+    })
+}
+/// The index of an entry point argument.
+fn argument(index: usize, at: usize) -> Result<u32> {
+    u32::try_from(index).map_err(|_| error(at, "more than 4294967295 inputs"))
+}
 fn varying(name: &str, index: u32, mask: u8, register: u32, system: Option<SystemValue>) -> Varying {
     Varying {
         label: Label {
@@ -60,7 +80,7 @@ fn varying(name: &str, index: u32, mask: u8, register: u32, system: Option<Syste
             index,
         },
         system,
-        value: value(mask.count_ones() as u8),
+        value: value(lanes_in(mask)),
         interp: None,
         used: false,
         provenance: VaryingProvenance {
@@ -89,13 +109,15 @@ fn field(c: &crate::Constant) -> Result<Field> {
             format!("CTAB {}: non-float/structured/empty type {:?}", c.name, t),
         ));
     }
+    // rows and columns are 1 to 4, checked above
+    let lanes = |n: u16| u8::try_from(n).map_err(|_| error(0, format!("CTAB {}: {n} lanes", c.name)));
     let element = match t.class {
         0 if t.rows == 1 && t.columns == 1 => ConstantType::Scalar(ScalarType::Float),
-        1 if t.rows == 1 => ConstantType::Vector(value(t.columns as u8)),
+        1 if t.rows == 1 => ConstantType::Vector(value(lanes(t.columns)?)),
         2 | 3 => ConstantType::Matrix {
             scalar: ScalarType::Float,
-            rows: t.rows as u8,
-            columns: t.columns as u8,
+            rows: lanes(t.rows)?,
+            columns: lanes(t.columns)?,
             major: if t.class == 2 {
                 Majorness::Row
             } else {
@@ -112,18 +134,24 @@ fn field(c: &crate::Constant) -> Result<Field> {
     } else {
         1
     };
-    if !c.count.is_multiple_of(registers) || c.count / registers > t.elements {
+    let Some(count) = c
+        .count
+        .checked_div(registers)
+        .filter(|&n| c.count.is_multiple_of(registers) && n <= t.elements)
+    else {
         return Err(error(
             0,
-            format!("CTAB {}: allocation not a whole number of type elements", c.name),
+            format!(
+                "CTAB {}: an allocation of {} registers is not a whole number of the type's elements ({} registers each, at most {})",
+                c.name, c.count, registers, t.elements
+            ),
         ));
-    }
-    let count = c.count / registers;
+    };
     let ty = if t.elements > 1 {
         ConstantType::Array {
             element: Box::new(element),
             count: count.into(),
-            stride: u32::from(registers) * 16,
+            stride: u32::from(registers).saturating_mul(16),
         }
     } else {
         element
@@ -131,11 +159,27 @@ fn field(c: &crate::Constant) -> Result<Field> {
     let default_size = ty
         .size()
         .ok_or_else(|| error(0, "CTAB normalized type size overflow"))? as usize;
+    let default = c
+        .default
+        .as_ref()
+        .map(|bytes| {
+            bytes.get(..default_size).map(<[u8]>::to_vec).ok_or_else(|| {
+                error(
+                    0,
+                    format!(
+                        "CTAB {}: a default of {} bytes, where its type takes {default_size}",
+                        c.name,
+                        bytes.len()
+                    ),
+                )
+            })
+        })
+        .transpose()?;
     Ok(Field {
         name: c.name.clone(),
-        offset: u32::from(c.register) * 16,
+        offset: u32::from(c.register).saturating_mul(16),
         ty,
-        default: c.default.as_ref().map(|bytes| bytes[..default_size].to_vec()),
+        default,
     })
 }
 
@@ -232,13 +276,19 @@ fn lower(
                 input.used = true;
                 l.interface.inputs.push(input);
                 let arg = Val {
-                    expr: l.b.app(E::FunctionArgument(index as u32)),
+                    expr: l.b.app(E::FunctionArgument(argument(index, cut.after_word)?)),
                     kind: Kind::F,
                     width: 3,
                 };
                 let mut parts = (0..4).map(|n| l.b.lane(value, n)).collect::<Vec<_>>();
-                for (n, &lane) in cut.lanes.iter().enumerate() {
-                    parts[lane as usize] = l.b.lane(arg, n as u8);
+                for (n, &lane) in (0u8..).zip(&cut.lanes) {
+                    let part = parts.get_mut(usize::from(lane)).ok_or_else(|| {
+                        error(
+                            cut.after_word,
+                            format!("projection lane {lane}, where a register has lanes 0 to 3"),
+                        )
+                    })?;
+                    *part = l.b.lane(arg, n);
                 }
                 let replaced = l.b.compose(&parts);
                 l.write(
@@ -300,8 +350,11 @@ impl Lower<'_> {
         class: D3dClass,
         register: u32,
         global: Handle<GlobalVariable>,
-    ) {
-        let id = ResourceId(self.interface.resources.len() as u32);
+    ) -> Result<()> {
+        let id = ResourceId(
+            u32::try_from(self.interface.resources.len())
+                .map_err(|_| error(self.at, "more than 4294967295 resources"))?,
+        );
         self.interface.resources.push(Resource {
             id,
             kind,
@@ -318,6 +371,7 @@ impl Lower<'_> {
             },
         });
         self.bindings.push((id, global));
+        Ok(())
     }
     fn global(
         &mut self,
@@ -339,7 +393,7 @@ impl Lower<'_> {
     fn prepare(&mut self) -> Result<()> {
         for i in &self.source.inputs {
             let mut v = varying(
-                SEMANTICS[i.usage as usize],
+                semantic(i.usage, self.at)?,
                 i.index.into(),
                 i.mask,
                 i.register,
@@ -359,7 +413,7 @@ impl Lower<'_> {
             }
             let index = self.interface.inputs.len();
             let arg = Val {
-                expr: self.b.app(E::FunctionArgument(index as u32)),
+                expr: self.b.app(E::FunctionArgument(argument(index, self.at)?)),
                 kind: Kind::F,
                 width: v.value.width,
             };
@@ -369,7 +423,7 @@ impl Lower<'_> {
             for (n, p) in parts.iter_mut().enumerate() {
                 if i.mask & (1 << n) != 0 {
                     *p = self.b.lane(arg, lane);
-                    lane += 1;
+                    lane = lane.saturating_add(1);
                 }
             }
             let expanded = self.b.compose(&parts);
@@ -386,7 +440,7 @@ impl Lower<'_> {
                 if let Register::Constant(n) = s.register
                     && !self.source.definitions.contains_key(&n)
                 {
-                    rows = rows.max(n + 1);
+                    rows = rows.max(n.saturating_add(1));
                 }
             }
         }
@@ -395,7 +449,7 @@ impl Lower<'_> {
             for c in &ctab.constants {
                 match c.register_set {
                     2 => {
-                        rows = rows.max(u32::from(c.register) + u32::from(c.count));
+                        rows = rows.max(u32::from(c.register).saturating_add(u32::from(c.count)));
                         fields.push(field(c)?);
                         let t = &c.ty;
                         let lines = if t.class == 2 {
@@ -405,7 +459,7 @@ impl Lower<'_> {
                         } else {
                             1
                         };
-                        if u32::from(c.count) < u32::from(t.elements) * u32::from(lines) {
+                        if u32::from(c.count) < u32::from(t.elements).saturating_mul(u32::from(lines)) {
                             self.notes.push(format!("CTAB {} retains its declared type; its optimized allocation binds {} registers",c.name,c.count));
                         }
                     }
@@ -446,7 +500,7 @@ impl Lower<'_> {
             self.resource(
                 ResourceKind::ConstantBuffer {
                     layout: BufferLayout {
-                        size: rows.get() * 16,
+                        size: rows.get().saturating_mul(16),
                         constants: fields,
                     },
                 },
@@ -454,7 +508,7 @@ impl Lower<'_> {
                 D3dClass::ConstantBuffer,
                 0,
                 g,
-            );
+            )?;
         }
         for (&slot, &dim) in &self.source.samplers {
             let naga_dim = match dim {
@@ -495,14 +549,14 @@ impl Lower<'_> {
                 D3dClass::ShaderResource,
                 slot,
                 texture,
-            );
+            )?;
             self.resource(
                 ResourceKind::Sampler { comparison: false },
                 name,
                 D3dClass::Sampler,
                 slot,
                 sampler,
-            );
+            )?;
             self.samplers.insert(slot, (texture, sampler, dim));
         }
         Ok(())
@@ -520,8 +574,14 @@ impl Lower<'_> {
                         format!("v{n}: read of undeclared lanes {required:#x}"),
                     ));
                 }
-                self.interface.inputs[index].used = true;
-                if let Some(d) = &mut self.interface.inputs[index].provenance.d3d {
+                let input = self.interface.inputs.get_mut(index).ok_or_else(|| {
+                    error(
+                        self.at,
+                        format!("input v{n} is input {index} of a list that is shorter"),
+                    )
+                })?;
+                input.used = true;
+                if let Some(d) = &mut input.provenance.d3d {
                     d.read_write_mask |= required;
                 }
                 Ok(v)
@@ -583,10 +643,13 @@ impl Lower<'_> {
         if d.mask == 15 {
             self.b.store(p, v);
         } else {
-            for n in 0..4 {
+            for n in 0u8..4 {
                 if d.mask & (1 << n) != 0 {
-                    let ptr = self.b.app(E::AccessIndex { base: p, index: n });
-                    let lane = self.b.lane(v, n as u8);
+                    let ptr = self.b.app(E::AccessIndex {
+                        base: p,
+                        index: u32::from(n),
+                    });
+                    let lane = self.b.lane(v, n);
                     self.b.store(ptr, lane);
                 }
             }
@@ -594,7 +657,7 @@ impl Lower<'_> {
         self.locals.insert(d.register, (local, mask | d.mask));
     }
     fn sample(&mut self, i: &Instruction) -> Result<Val> {
-        let s = i.sources[1];
+        let s = i.source(1)?;
         let Register::Sampler(slot) = s.register else {
             return Err(error(self.at, "TEX source 1 is not a sampler"));
         };
@@ -614,7 +677,7 @@ impl Lower<'_> {
         if i.control != 0 {
             required |= 8;
         }
-        let coordinates = self.source(i.sources[0], required)?;
+        let coordinates = self.source(i.source(0)?, required)?;
         let mut coord = self.b.swizzle(coordinates, lanes);
         let level = match i.control {
             0 => SampleLevel::Auto,
@@ -663,7 +726,7 @@ impl Lower<'_> {
             ));
         }
         if i.opcode == Nrm
-            && (!matches!(d.register, Register::Temporary(_)) || i.sources[0].register == d.register)
+            && (!matches!(d.register, Register::Temporary(_)) || i.source(0)?.register == d.register)
         {
             return Err(error(
                 self.at,
@@ -695,7 +758,15 @@ impl Lower<'_> {
         for (n, &s) in i.sources.iter().enumerate() {
             args.push(self.source(s, i.source_mask(n))?);
         }
-        let a = args[0];
+        let arg = |n: usize| {
+            args.get(n).copied().ok_or_else(|| {
+                error(
+                    i.word,
+                    format!("{:?} reads source {n}, where it has {}", i.opcode, args.len()),
+                )
+            })
+        };
+        let a = arg(0)?;
         let v = match i.opcode {
             Mov => a,
             Add | Sub | Mul => self.b.binary(
@@ -705,27 +776,27 @@ impl Lower<'_> {
                     _ => Bo::Multiply,
                 },
                 a,
-                args[1],
+                arg(1)?,
             ),
             Mad => {
-                let product = self.b.binary(Bo::Multiply, a, args[1]);
-                self.b.binary(Bo::Add, product, args[2])
+                let product = self.b.binary(Bo::Multiply, a, arg(1)?);
+                self.b.binary(Bo::Add, product, arg(2)?)
             }
             Abs => self.b.math(Mf::Abs, &[a]),
             Min | Max => self
                 .b
-                .d3d_min_max(if i.opcode == Min { Mf::Min } else { Mf::Max }, a, args[1]),
+                .d3d_min_max(if i.opcode == Min { Mf::Min } else { Mf::Max }, a, arg(1)?),
             Frc => self.b.math(Mf::Fract, &[a]),
             Cmp => {
                 let zero = self.b.lit_f(0.0);
                 let cond = self.b.binary(Bo::GreaterEqual, a, zero);
-                self.b.select(cond, args[1], args[2])
+                self.b.select(cond, arg(1)?, arg(2)?)
             }
             Lrp => {
                 let one = self.b.lit_f(1.0);
                 let inverse = self.b.binary(Bo::Subtract, one, a);
-                let left = self.b.binary(Bo::Multiply, a, args[1]);
-                let right = self.b.binary(Bo::Multiply, inverse, args[2]);
+                let left = self.b.binary(Bo::Multiply, a, arg(1)?);
+                let right = self.b.binary(Bo::Multiply, inverse, arg(2)?);
                 self.b.binary(Bo::Add, left, right)
             }
             Dp3 | Dp4 | Dp2Add => {
@@ -737,10 +808,10 @@ impl Lower<'_> {
                     &[0, 1]
                 };
                 let x = self.b.swizzle(a, lanes);
-                let y = self.b.swizzle(args[1], lanes);
+                let y = self.b.swizzle(arg(1)?, lanes);
                 let mut dot = self.b.math(Mf::Dot, &[x, y]);
                 if i.opcode == Dp2Add {
-                    let z = self.b.lane(args[2], 0);
+                    let z = self.b.lane(arg(2)?, 0);
                     dot = self.b.binary(Bo::Add, dot, z);
                 }
                 self.b.splat(dot, 4)
@@ -769,7 +840,7 @@ impl Lower<'_> {
                     Exp => self.b.math(Mf::Exp2, &[x]),
                     Log => self.b.math(Mf::Log2, &[x]),
                     _ => {
-                        let y = self.b.lane(args[1], 0);
+                        let y = self.b.lane(arg(1)?, 0);
                         self.b.math(Mf::Pow, &[x, y])
                     }
                 };
@@ -793,18 +864,18 @@ impl Lower<'_> {
                 .iter()
                 .map(|o| {
                     let system = (o.usage == 0 && o.index == 0).then_some(SystemValue::ClipPosition);
-                    (
+                    Ok((
                         Register::Output(o.register),
                         varying(
-                            SEMANTICS[o.usage as usize],
+                            semantic(o.usage, self.at)?,
                             o.index.into(),
                             o.mask,
                             o.register,
                             system,
                         ),
-                    )
+                    ))
                 })
-                .collect()
+                .collect::<Result<_>>()?
         } else {
             self.locals
                 .iter()

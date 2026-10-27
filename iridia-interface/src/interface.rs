@@ -414,7 +414,7 @@ impl Interface {
                         v.label.name, v.label.index, v.value.width
                     ));
                 }
-                if constants[..i].iter().any(|other| other.label == v.label) {
+                if constants.iter().take(i).any(|other| other.label == v.label) {
                     return Err(format!(
                         "patch constant {}{} is listed twice",
                         v.label.name, v.label.index
@@ -505,7 +505,7 @@ impl Interface {
                         v.label.name, v.label.index, v.value.width
                     ));
                 }
-                if varyings[..i].iter().any(|other| other.label == v.label) {
+                if varyings.iter().take(i).any(|other| other.label == v.label) {
                     return Err(format!(
                         "{direction} {}{} is listed twice",
                         v.label.name, v.label.index
@@ -516,7 +516,7 @@ impl Interface {
         let width_ok = |w: u8| (1..=4).contains(&w);
         for (i, r) in self.resources.iter().enumerate() {
             let name = &r.provenance.name;
-            if self.resources[..i].iter().any(|other| other.id == r.id) {
+            if self.resources.iter().take(i).any(|other| other.id == r.id) {
                 return Err(format!("resource id {} ({name}) is used twice", r.id.0));
             }
             if r.count == 0 {
@@ -589,7 +589,7 @@ impl Interface {
                 let end = if r.is_unbounded() {
                     u64::MAX
                 } else {
-                    first + u64::from(r.count)
+                    first.saturating_add(u64::from(r.count))
                 };
                 (d.class, d.space, first, end)
             })
@@ -598,7 +598,7 @@ impl Interface {
             let Some((class, space, first, end)) = span(a) else {
                 continue;
             };
-            for b in &self.resources[..i] {
+            for b in self.resources.iter().take(i) {
                 if let Some((c, s, f, e)) = span(b)
                     && (c, s) == (class, space)
                     && first < e

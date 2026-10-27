@@ -12,7 +12,9 @@
 //! pass reads one target per term.
 use serde::Serialize;
 
-use super::binding::{CUBE_FACES, NormalEncoding, NormalSpace, Occluded, OutputRole, ScalarEncoding};
+use super::binding::{
+    Axis, CubeFace, NormalEncoding, NormalSpace, Occluded, OutputRole, ScalarEncoding, narrow,
+};
 
 /// The lanes of one output a term is stored in: the output's position among the outputs read ([`Surface::read`]) and
 /// its lane mask (bit k lane k).
@@ -35,7 +37,7 @@ impl Place {
 
     /// Lane `k` of the term (0 its first lane) out of the four values of its output, or 0 past the output's four.
     pub fn lane(&self, values: [f32; 4], k: usize) -> f32 {
-        values.get(self.first() + k).copied().unwrap_or(0.0)
+        values.get(self.first().saturating_add(k)).copied().unwrap_or(0.0)
     }
 }
 
@@ -123,20 +125,27 @@ impl Normal {
             NormalEncoding::Octahedral { read, .. } => unfold(read.apply(lane(0)), read.apply(lane(1))),
             NormalEncoding::OctahedralDiamond => {
                 let (n, _) = NormalEncoding::decode_octahedral_diamond([lane(0), lane(1), lane(2)]);
-                n.map(|c| c as f32)
+                n.map(narrow)
             }
             NormalEncoding::CubeFace { minor, .. } => {
-                let axis = (lane(3) * 3.0).round().clamp(0.0, 2.0) as usize;
-                let face = axis * 2 + usize::from(lane(2) > 0.5);
-                let (major, components) = CUBE_FACES[face];
+                // lane 3 is the axis in thirds: 0, 1/3 or 2/3 (anything else is the nearest)
+                let thirds = (lane(3) * 3.0).round();
+                let axis = if thirds >= 2.0 {
+                    Axis::Z
+                } else if thirds >= 1.0 {
+                    Axis::Y
+                } else {
+                    Axis::X
+                };
+                let negative = lane(2) > 0.5;
+                let face = CubeFace::new(axis, negative);
                 let (sc, tc) = (
                     (lane(0) - minor.bias()) / minor.scale(),
                     (lane(1) - minor.bias()) / minor.scale(),
                 );
-                let mut n = [0.0f32; 3];
-                n[components[0].0] = sc * components[0].1 as f32;
-                n[components[1].0] = tc * components[1].1 as f32;
-                n[major] = (1.0 - sc * sc - tc * tc).max(0.0).sqrt() * if face % 2 == 1 { -1.0 } else { 1.0 };
+                let [(_, first_sign), (_, second_sign)] = face.minor;
+                let depth = (1.0 - sc * sc - tc * tc).max(0.0).sqrt() * if negative { -1.0 } else { 1.0 };
+                let n = face.place(depth, sc * narrow(first_sign), tc * narrow(second_sign), 0.0);
                 normalised(n).unwrap_or(n)
             }
         }
@@ -439,7 +448,7 @@ mod tests {
         let lanes = bytes.map(|b| f32::from(b) / 255.0);
         let diamond =
             normal(NormalEncoding::OctahedralDiamond, 0b0111).decode([lanes[0], lanes[1], lanes[2], 0.0]);
-        assert!(within(diamond.unwrap(), n.map(|c| c as f32), 0.01), "{diamond:?}");
+        assert!(within(diamond.unwrap(), n.map(narrow), 0.01), "{diamond:?}");
         let (minor, payload) = (LaneAffine::UNORM, LaneAffine::new(0.25, 0.1));
         for n in [[0.36f32, -0.48, 0.8], [-0.9, 0.3, 0.3162], [0.2, -0.95, -0.24]] {
             let lanes = NormalEncoding::encode_cube_face(minor, payload, n, 0.5);

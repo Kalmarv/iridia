@@ -131,7 +131,7 @@ impl ConstantType {
                 if lines == 0 || lanes == 0 {
                     return Some(0);
                 }
-                u32::from(lines - 1)
+                u32::from(lines.saturating_sub(1))
                     .checked_mul(*stride)?
                     .checked_add(u32::from(lanes).checked_mul(scalar.bytes())?)
             }

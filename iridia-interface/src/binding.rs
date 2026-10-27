@@ -608,16 +608,81 @@ impl LaneAffine {
         v * self.scale() + self.bias()
     }
 }
-/// The cube-map faces of [`NormalEncoding::CubeFace`] by face index: the axis of the major component and, for lanes 0
+/// An axis of a normal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Axis {
+    X,
+    Y,
+    Z,
+}
+impl Axis {
+    pub(super) const ALL: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z];
+
+    /// This axis's component of a vector.
+    pub(super) fn of<T: Copy>(self, [x, y, z]: [T; 3]) -> T {
+        match self {
+            Axis::X => x,
+            Axis::Y => y,
+            Axis::Z => z,
+        }
+    }
+}
+
+/// A face of the cube map of [`NormalEncoding::CubeFace`]: the axis of the normal's major component and, for lanes 0
 /// and 1, the axis and sign of the normal's component each holds.
-pub(super) const CUBE_FACES: [(usize, [(usize, f64); 2]); 6] = [
-    (0, [(2, -1.0), (1, -1.0)]),
-    (0, [(2, 1.0), (1, -1.0)]),
-    (1, [(0, 1.0), (2, 1.0)]),
-    (1, [(0, 1.0), (2, -1.0)]),
-    (2, [(0, 1.0), (1, -1.0)]),
-    (2, [(0, -1.0), (1, -1.0)]),
-];
+#[derive(Clone, Copy, Debug)]
+pub(super) struct CubeFace {
+    pub(super) major: Axis,
+    pub(super) minor: [(Axis, f64); 2],
+}
+impl CubeFace {
+    /// The face whose major component is on `axis`, facing the negative side or not.
+    pub(super) fn new(axis: Axis, negative: bool) -> CubeFace {
+        use Axis::{X, Y, Z};
+        let (major, minor) = match (axis, negative) {
+            (X, false) => (X, [(Z, -1.0), (Y, -1.0)]),
+            (X, true) => (X, [(Z, 1.0), (Y, -1.0)]),
+            (Y, false) => (Y, [(X, 1.0), (Z, 1.0)]),
+            (Y, true) => (Y, [(X, 1.0), (Z, -1.0)]),
+            (Z, false) => (Z, [(X, 1.0), (Y, -1.0)]),
+            (Z, true) => (Z, [(X, -1.0), (Y, -1.0)]),
+        };
+        CubeFace { major, minor }
+    }
+
+    /// A vector with `major` on the major axis, `first` and `second` on the axes lanes 0 and 1 hold, `none` on the other.
+    pub(super) fn place<T: Copy>(&self, major: T, first: T, second: T, none: T) -> [T; 3] {
+        let [(a, _), (b, _)] = self.minor;
+        Axis::ALL.map(|axis| {
+            if axis == self.major {
+                major
+            } else if axis == a {
+                first
+            } else if axis == b {
+                second
+            } else {
+                none
+            }
+        })
+    }
+}
+/// The 8-bit value an UNORM lane rounds to.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255 first
+fn unorm8(x: f32) -> u8 {
+    (x.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8
+}
+
+/// `v` rounded to a whole number of 0 to 510 (nine bits less one).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=510 first
+fn nine_bits(v: f64) -> u16 {
+    v.round().clamp(0.0, 510.0) as u16
+}
+
+/// `v` as an f32, rounded to the nearest.
+#[allow(clippy::cast_possible_truncation)] // the rounding is the point; the caller's values are lane values
+pub(super) fn narrow(v: f64) -> f32 {
+    v as f32
+}
 impl NormalEncoding {
     /// The unit normal and the payload of four lanes stored as [`NormalEncoding::CubeFace`] with `minor` and
     /// `payload`; `steps` is each lane's quantisation step in the target's format (1/1023 for a 10-bit UNORM lane,
@@ -630,32 +695,35 @@ impl NormalEncoding {
         lanes: [f32; 4],
         steps: [f32; 4],
     ) -> Result<([f64; 3], f32), String> {
-        let [a, b, side, axis] = lanes;
-        let thirds = f64::from(axis) * 3.0;
+        let [a, b, side, lane_3] = lanes;
+        let thirds = f64::from(lane_3) * 3.0;
         let nearest = thirds.round();
-        if !(0.0..=2.0).contains(&nearest) || (thirds - nearest).abs() / 3.0 >= f64::from(steps[3]) / 2.0 {
+        let [_, _, step_side, step_axis] = steps;
+        // by an exact comparison: a NaN, or an axis past z, is no axis
+        let axis_index = [0.0, 1.0, 2.0].iter().position(|&candidate| candidate == nearest);
+        let axis = axis_index
+            .and_then(|i| Axis::ALL.get(i))
+            .filter(|_| (thirds - nearest).abs() / 3.0 < f64::from(step_axis) / 2.0);
+        let Some(&axis) = axis else {
             return Err(format!(
-                "a cube-face lane 3 of {axis} is not an axis (0, 1/3 or 2/3 within half a step of {})",
-                steps[3]
+                "a cube-face lane 3 of {lane_3} is not an axis (0, 1/3 or 2/3 within half a step of {step_axis})"
             ));
-        }
+        };
         let from_half = f64::from(side) - 0.5;
-        if from_half.abs() < f64::from(steps[2]) {
+        if from_half.abs() < f64::from(step_side) {
             return Err(format!(
-                "a cube-face lane 2 of {side} is within a step ({}) of one half: its sign cannot be read",
-                steps[2]
+                "a cube-face lane 2 of {side} is within a step ({step_side}) of one half: its sign cannot be read"
             ));
         }
-        let face = nearest as usize * 2 + usize::from(from_half > 0.0);
-        let (major, components) = CUBE_FACES[face];
+        let negative = from_half > 0.0;
+        let face = CubeFace::new(axis, negative);
         let unmap = |v: f32| (f64::from(v) - f64::from(minor.bias())) / f64::from(minor.scale());
         let (sc, tc) = (unmap(a), unmap(b));
-        let mut n = [0.0f64; 3];
-        n[components[0].0] = sc * components[0].1;
-        n[components[1].0] = tc * components[1].1;
-        n[major] = (1.0 - sc * sc - tc * tc).max(0.0).sqrt() * if face % 2 == 1 { -1.0 } else { 1.0 };
-        let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-        let p = ((from_half.abs() as f32 - payload.bias()) / payload.scale()).clamp(0.0, 1.0);
+        let [(_, first_sign), (_, second_sign)] = face.minor;
+        let depth = (1.0 - sc * sc - tc * tc).max(0.0).sqrt() * if negative { -1.0 } else { 1.0 };
+        let n = face.place(depth, sc * first_sign, tc * second_sign, 0.0);
+        let length = n.iter().map(|c| c * c).sum::<f64>().sqrt();
+        let p = ((narrow(from_half.abs()) - payload.bias()) / payload.scale()).clamp(0.0, 1.0);
         Ok((n.map(|c| c / length), p))
     }
 
@@ -664,29 +732,30 @@ impl NormalEncoding {
     /// where it is at least x's, else x (on an edge between faces either face decodes to the normal).
     pub fn encode_cube_face(minor: LaneAffine, payload: LaneAffine, normal: [f32; 3], p: f32) -> [f32; 4] {
         let [x, y, z] = normal;
-        let axis = if z.abs() >= x.abs() && z.abs() >= y.abs() {
-            2
+        let (axis, thirds) = if z.abs() >= x.abs() && z.abs() >= y.abs() {
+            (Axis::Z, 2.0)
         } else if y.abs() >= x.abs() {
-            1
+            (Axis::Y, 1.0)
         } else {
-            0
+            (Axis::X, 0.0)
         };
-        let face = axis * 2 + usize::from(normal[axis] < 0.0);
-        let (_, components) = CUBE_FACES[face];
-        let lane = |(c, sign): (usize, f64)| minor.apply(if sign < 0.0 { -normal[c] } else { normal[c] });
+        let negative = axis.of(normal) < 0.0;
+        let [first, second] = CubeFace::new(axis, negative).minor;
+        let lane =
+            |(of, sign): (Axis, f64)| minor.apply(if sign < 0.0 { -of.of(normal) } else { of.of(normal) });
         let offset = p * payload.scale() + payload.bias();
         [
-            lane(components[0]),
-            lane(components[1]),
-            if face % 2 == 0 { 0.5 - offset } else { 0.5 + offset },
-            axis as f32 / 3.0,
+            lane(first),
+            lane(second),
+            if negative { 0.5 + offset } else { 0.5 - offset },
+            thirds / 3.0,
         ]
     }
 
     /// The normal and the payload byte of three UNORM lanes stored as [`NormalEncoding::OctahedralDiamond`]: each lane
     /// is taken as the 8-bit value it rounds to.
     pub fn decode_octahedral_diamond(lanes: [f32; 3]) -> ([f64; 3], u8) {
-        let [r, g, b] = lanes.map(|x| (x.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8);
+        let [r, g, b] = lanes.map(unorm8);
         let u9 = f64::from(b >> 1 & 1) * 256.0 + f64::from(r);
         let v9 = f64::from(b >> 2 & 1) * 256.0 + f64::from(g);
         let pu = (u9 / 255.0 - 1.0).clamp(-1.0, 1.0);
@@ -703,7 +772,7 @@ impl NormalEncoding {
         let [x, y, z] = normal;
         let sum = x.abs() + y.abs() + z.abs();
         let (x, y) = (x / sum, y / sum);
-        let nine = |c: f64| ((c * 255.0 + 255.0).round().clamp(0.0, 510.0)) as u16;
+        let nine = |c: f64| nine_bits(c * 255.0 + 255.0);
         let (u9, v9) = (nine(x + y), nine(x - y));
         let sign = u8::from(z >= 0.0);
         [
@@ -732,7 +801,10 @@ impl Serialize for ScalarEncoding {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         // `root` is written only where it is not 1, so an encoding without one reads as it always has
-        let mut out = serializer.serialize_struct("ScalarEncoding", 2 + usize::from(self.root != 1))?;
+        let mut out = serializer.serialize_struct(
+            "ScalarEncoding",
+            2usize.saturating_add(usize::from(self.root != 1)),
+        )?;
         out.serialize_field("power", &self.power)?;
         if self.root != 1 {
             out.serialize_field("root", &self.root)?;

@@ -55,6 +55,14 @@
 //! and [output declarations](https://learn.microsoft.com/windows/win32/direct3dhlsl/dcl-usage-outut-register---vs) define
 //! their layout. Arithmetic follows the [ps_3_0 instruction reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-instructions-ps-3-0).
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
 
 // Run the examples in the README as doc tests.
 #[cfg(doctest)]
@@ -139,20 +147,27 @@ pub fn frame(bytes: &[u8]) -> Result<(iridia::Stage, &[u8])> {
     let mut at = 4usize;
     while at / 4 < 1_048_576 {
         let token = word(at)?;
-        at += 4;
+        let token_word = at / 4;
+        at = at.saturating_add(4);
         if token == 0xffff {
-            return Ok((stage, &bytes[..at]));
+            let program = bytes
+                .get(..at)
+                .ok_or_else(|| error(token_word, "raw program END is past the container"))?;
+            return Ok((stage, program));
         }
         let count = if token & 65535 == 65534 {
             (token >> 16) & 32767
         } else {
             (token >> 24) & 15
         };
-        let end = at.saturating_add(count as usize * 4);
+        let end = at.saturating_add((count as usize).saturating_mul(4));
         if end > bytes.len() {
             return Err(error(
-                at / 4 - 1,
-                "raw program operand/comment span exceeds container",
+                token_word,
+                format!(
+                    "raw program operand/comment span of {count} words exceeds the container's {} bytes",
+                    bytes.len()
+                ),
             ));
         }
         at = end;

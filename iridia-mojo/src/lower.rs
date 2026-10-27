@@ -533,7 +533,12 @@ impl Lower<'_> {
                     }
                     let negative = self.accept("-");
                     let n = self.integer()?;
-                    *lane = if negative { -n } else { n };
+                    *lane = if negative {
+                        n.checked_neg()
+                            .ok_or_else(|| error(self.line(), "an integer constant over 64 bits"))?
+                    } else {
+                        n
+                    };
                     let value = i32::try_from(*lane)
                         .map_err(|_| error(self.line(), "an integer constant over 32 bits"))?;
                     parts.push(self.b.lit_i(value));
@@ -568,7 +573,7 @@ impl Lower<'_> {
         let end = self.tokens.len().saturating_sub(1);
         // the clip-space epilogue MojoShader appends to a vertex program
         if self.stage == Stage::Vertex && self.has_ident("posFixup") {
-            let tail: Vec<String> = self.tokens[..end].iter().map(|t| t.token.text()).collect();
+            let tail: Vec<String> = self.tokens.iter().take(end).map(|t| t.token.text()).collect();
             let mut matched = 0usize;
             let joined = tail.join(" ");
             let epilogue = EPILOGUE.join(" ");
@@ -680,7 +685,10 @@ impl Lower<'_> {
                 "a loop bounded by {bound}, which is not a constant integer vector"
             ));
         };
-        let lane = swizzle_lanes(&lane).filter(|l| l.len() == 1).map(|l| l[0]);
+        let lane = swizzle_lanes(&lane).and_then(|l| match l[..] {
+            [one] => Some(one),
+            _ => None,
+        });
         let Some(lane) = lane else {
             return self.fail("a loop bound that is not one lane");
         };
@@ -731,7 +739,12 @@ impl Lower<'_> {
         } else {
             lanes
         };
-        if lanes.iter().any(|l| *l >= width) || (1..lanes.len()).any(|k| lanes[..k].contains(&lanes[k])) {
+        if lanes.iter().any(|l| *l >= width)
+            || lanes
+                .iter()
+                .enumerate()
+                .any(|(k, lane)| lanes.iter().take(k).any(|earlier| earlier == lane))
+        {
             return Err(error(
                 line,
                 format!("a write mask of {name} that repeats or leaves it"),
@@ -750,8 +763,11 @@ impl Lower<'_> {
                 format!("a {:?} stored in a {kind:?} register", value.kind),
             ));
         }
-        if value.width == 1 && lanes.len() > 1 {
-            value = self.b.splat(value, lanes.len() as u8);
+        // the lanes are distinct and within the register's width, which is at most four
+        let count = u8::try_from(lanes.len())
+            .map_err(|_| error(line, format!("a write mask of {name} over 255 lanes")))?;
+        if value.width == 1 && count > 1 {
+            value = self.b.splat(value, count);
         }
         if usize::from(value.width) != lanes.len() {
             return Err(error(
@@ -764,8 +780,8 @@ impl Lower<'_> {
         if lanes.len() == usize::from(width) && lanes.iter().enumerate().all(|(k, l)| usize::from(*l) == k) {
             self.b.store(pointer, value);
         } else {
-            for (k, lane) in lanes.iter().enumerate() {
-                let part = self.b.lane(value, k as u8);
+            for (k, lane) in (0u8..).zip(&lanes) {
+                let part = self.b.lane(value, k);
                 let target = self.b.app(E::AccessIndex {
                     base: pointer,
                     index: u32::from(*lane),
@@ -963,10 +979,9 @@ impl Lower<'_> {
                 if lanes.iter().any(|l| *l >= v.v.width) {
                     return self.fail(format!("the swizzle {w} of a value {} lanes wide", v.v.width));
                 }
-                let r = if lanes.len() == 1 {
-                    self.b.lane(v.v, lanes[0])
-                } else {
-                    self.b.swizzle(v.v, &lanes)
+                let r = match lanes[..] {
+                    [one] => self.b.lane(v.v, one),
+                    _ => self.b.swizzle(v.v, &lanes),
                 };
                 v = r.into();
             } else {
@@ -1018,7 +1033,8 @@ impl Lower<'_> {
             }
             Sym::Const(v, _) => Ok(v.into()),
             Sym::Argument(index) => {
-                let expr = self.b.app(E::FunctionArgument(index as u32));
+                let index = u32::try_from(index).or_else(|_| self.fail("more than 4294967295 arguments"))?;
+                let expr = self.b.app(E::FunctionArgument(index));
                 Ok(Val {
                     expr,
                     kind: Kind::F,
@@ -1105,7 +1121,12 @@ impl Lower<'_> {
             if coordinate.v.kind != Kind::F || coordinate.v.width != 2 {
                 return self.fail("texture2D at a coordinate that is not two floats");
             }
-            let (texture, sampler) = (self.samplers[index].texture, self.samplers[index].sampler);
+            let Some(&Sampler { texture, sampler, .. }) = self.samplers.get(index) else {
+                return self.fail(format!(
+                    "texture2D of {sampler}, which is sampler {index} of {}",
+                    self.samplers.len()
+                ));
+            };
             let image = self.b.global_ptr(texture);
             let sampler = self.b.global_ptr(sampler);
             let expr = self.b.app(E::ImageSample {
@@ -1246,13 +1267,13 @@ impl Lower<'_> {
                 lanes.push(self.b.lane(v, k));
             }
         }
-        match lanes.len() {
-            1 => {
-                let v = self.b.splat(lanes[0], width);
+        match lanes[..] {
+            [one] => {
+                let v = self.b.splat(one, width);
                 Ok(v.into())
             }
-            n if n == usize::from(width) => Ok(self.b.compose(&lanes).into()),
-            n => self.fail(format!("{name}() of {n} lanes")),
+            _ if lanes.len() == usize::from(width) => Ok(self.b.compose(&lanes).into()),
+            _ => self.fail(format!("{name}() of {} lanes", lanes.len())),
         }
     }
 
@@ -1260,6 +1281,11 @@ impl Lower<'_> {
 
     fn finish(mut self, notes: Vec<String>) -> Result<Program> {
         self.checked()?;
+        let next_resource_id = |count: usize| {
+            u32::try_from(count)
+                .map(ResourceId)
+                .map_err(|_| error(0, "more than 4294967295 resources"))
+        };
         let interface = Interface {
             stage: self.stage,
             inputs: self.inputs.clone(),
@@ -1279,10 +1305,10 @@ impl Lower<'_> {
                 // the program declares the rows it reads: a constant beyond them is not its, one that reaches past them
                 // is cut to the rows it has
                 if c.offset >= size {
-                    left_out += 1;
+                    left_out = left_out.saturating_add(1);
                     continue;
                 }
-                cut += usize::from(c.offset.saturating_add(c.bytes) > size);
+                cut = cut.saturating_add(usize::from(c.offset.saturating_add(c.bytes) > size));
                 let bytes = c.bytes.min(size.saturating_sub(c.offset));
                 let ty = if bytes == 16 {
                     if c.width <= 1 {
@@ -1314,7 +1340,7 @@ impl Lower<'_> {
                     "{cut} constants the effect names reach past the program's {rows} uniform rows and are cut to them"
                 ));
             }
-            let id = ResourceId(resources.len() as u32);
+            let id = next_resource_id(resources.len())?;
             resources.push(Resource {
                 id,
                 kind: ResourceKind::ConstantBuffer {
@@ -1340,7 +1366,7 @@ impl Lower<'_> {
             bindings.push((id, global));
         }
         for s in &self.samplers {
-            let id = ResourceId(resources.len() as u32);
+            let id = next_resource_id(resources.len())?;
             resources.push(Resource {
                 id,
                 kind: ResourceKind::Texture {
@@ -1362,7 +1388,7 @@ impl Lower<'_> {
                 },
             });
             bindings.push((id, s.texture));
-            let id = ResourceId(resources.len() as u32);
+            let id = next_resource_id(resources.len())?;
             resources.push(Resource {
                 id,
                 kind: ResourceKind::Sampler { comparison: false },
