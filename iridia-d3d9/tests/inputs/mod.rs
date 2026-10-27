@@ -21,8 +21,8 @@ primase_testdata::inputs! {
         Query::Oracle(OracleSet::D3dDisassembler, Game::General, "sm3") => {
             status: Live,
             gate: true,
-            about: r#"privately extracted raw ps_3_0 (`pixel.bin`) and two vs_3_0 programs (`vertex.bin`, `vertex-layered.bin`), each with Microsoft's `.asm` disassembly; repos/iridia/iridia-d3d9/tests/disassembly.rs checks all executable operands, declarations, definitions and CTAB allocations"#,
-            source: r#"independent: Microsoft d3dcompiler_47.dll D3DDisassemble via repos/iridia/iridia-d3d9/tests/oracles/disassemble.py, on a shipped Shaun White Skateboarding SDB2 v39 pixel shader (record 5) and vertex shaders (records 5 and 150, ekshadersPChigh.bin); raw bytes and disassembly stay outside the repository"#,
+            about: r#"privately extracted raw ps_3_0 (`pixel.bin`) and two vs_3_0 programs (`vertex.bin`, `vertex-layered.bin`), each with Microsoft's `.asm` disassembly; iridia-d3d9/tests/disassembly.rs checks all executable operands, declarations, definitions and CTAB allocations"#,
+            source: r#"independent: Microsoft d3dcompiler_47.dll D3DDisassemble via iridia-d3d9/tests/oracles/disassemble.py, on a shipped Shaun White Skateboarding SDB2 v39 pixel shader (record 5) and vertex shaders (records 5 and 150, ekshadersPChigh.bin); raw bytes and disassembly stay outside the repository"#,
         },
     }
     debug {}

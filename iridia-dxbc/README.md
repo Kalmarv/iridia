@@ -12,7 +12,7 @@ Sampling belongs to the caller of an execution: it states its footprint/LOD, add
 policy, and a scalar execution cannot infer derivatives, so the caller states its inputs'.
 
 `reflection` reads SM5.0 pixel-program RDEF, ISGN and OSGN chunks into primase's interface vocabulary
-(`iridia::Interface`, see `repos/iridia/iridia/README.md`): resources by kind with their D3D bind points, constant
+(`iridia::Interface`, see `iridia/README.md`): resources by kind with their D3D bind points, constant
 buffers with explicit byte offsets, strides and default bytes, and one varying per signature element with its
 register and lanes in provenance. D3D's enum numbers stop there; one the mapping does not know is refused by name.
 It does not flatten arrays, infer their use or assign material parameters; the interpolation a program declares is

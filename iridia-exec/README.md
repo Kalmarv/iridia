@@ -9,7 +9,7 @@ where they diverge, each with its own steps and budget) against a `Backend` that
 `tessellation` and `tessellator` run those stages. The crate documentation has the run rules.
 
 `PixelShader` is what a bake evaluates, whatever the bytecode: `interface()` (the program's varyings and resources in
-primase's own vocabulary, `repos/iridia/iridia/README.md`), `input_count()`, `constant_buffers()` (bind slot and rows of four lanes),
+primase's own vocabulary, `iridia/README.md`), `input_count()`, `constant_buffers()` (bind slot and rows of four lanes),
 `textures()` and `samplers()` (bind slots), and `execute(inputs, buffers, sampler)`. `iridia_exec::ProgramShader` puts a lifted program (`iridia-dxbc`, Shader Model 5; `iridia-dxil`, Shader Model 6) behind it.
 `execute_lanes` evaluates invocations that share their inputs' derivatives, each as it evaluates alone (outputs,
 instructions, samples; on an error, the first failing one's): `ProgramShader` runs them 16 at a time in lockstep, and
