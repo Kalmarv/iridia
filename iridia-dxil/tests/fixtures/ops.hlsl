@@ -1,4 +1,4 @@
-// Fixture for primase-dxil: integer arithmetic, comparisons, rounding and the unary intrinsics.
+// Fixture for iridia-dxil: integer arithmetic, comparisons, rounding and the unary intrinsics.
 // Compile: dxc -T ps_6_0 -E main -Fo ops.dxil ops.hlsl
 cbuffer Values : register(b0)
 {

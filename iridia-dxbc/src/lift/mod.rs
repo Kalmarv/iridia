@@ -38,7 +38,7 @@ use dxbc_reader::decode::{Decoded, decode};
 
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
-pub const LIFTER_VERSION: u32 = 6;
+pub const LIFTER_VERSION: u32 = 7;
 
 /// Lift a DXBC container's program: Shader Model 4 or 5, any stage. Every instruction or declaration the lifter does
 /// not carry (and every container that holds no such program) is an `Err` naming the word and the reason.
@@ -201,7 +201,7 @@ impl<'a> Lift<'a> {
             provenance: Provenance {
                 format: ShaderFormat::Dxbc,
                 target,
-                lifter: "primase-dxbc".into(),
+                lifter: "iridia-dxbc".into(),
                 lifter_version: LIFTER_VERSION,
                 // the hash of the bytes, which `lift` sets
                 source_hash: None,

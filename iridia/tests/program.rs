@@ -209,7 +209,7 @@ fn the_text_form_is_stable_and_states_what_the_module_cannot() {
     let p = program();
     let text = p.text().unwrap();
     assert_eq!(text, p.text().unwrap());
-    let header = format!("// primase shader program v{}", iridia::PROGRAM_VERSION);
+    let header = format!("// iridia shader program v{}", iridia::PROGRAM_VERSION);
     for line in [
         header.as_str(),
         "// stage pixel entry main",

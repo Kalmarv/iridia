@@ -15,7 +15,7 @@ use super::flat::{
 };
 use super::request::{Dim, ImageAtomicOp, QueryKind};
 use super::run::Decision;
-use iridia::rt as primase_rt;
+use iridia::rt as iridia_rt;
 use iridia::{Program, ResourceId};
 
 /// The scalar kind of a typed value.
@@ -1136,7 +1136,7 @@ pub(super) fn compile(
                         s
                     }
                     match name.as_str() {
-                        primase_rt::TRACE_RAY if arguments.len() == 11 => {
+                        iridia_rt::TRACE_RAY if arguments.len() == 11 => {
                             let naga::Expression::GlobalVariable(g) = cx.exprs[arguments[0]] else {
                                 return Err(
                                     "a ray traced into an acceleration structure that is not a global".into(),
@@ -1158,7 +1158,7 @@ pub(super) fn compile(
                                 payload,
                             });
                         }
-                        primase_rt::REPORT_HIT if arguments.len() == 3 => {
+                        iridia_rt::REPORT_HIT if arguments.len() == 3 => {
                             let (t, kind) = (take(cx, &arguments[0]), take(cx, &arguments[1]));
                             let attributes = (cx.rt_pointer)(arguments[2])?;
                             out.push(St::RtReport {
@@ -1168,13 +1168,13 @@ pub(super) fn compile(
                                 result: result.map(|r| cx.slot[r.index()]),
                             });
                         }
-                        primase_rt::CALL_SHADER if arguments.len() == 2 => {
+                        iridia_rt::CALL_SHADER if arguments.len() == 2 => {
                             let index = take(cx, &arguments[0]);
                             let parameter = (cx.rt_pointer)(arguments[1])?;
                             out.push(St::RtCall { index, parameter });
                         }
-                        primase_rt::IGNORE_HIT => out.push(St::RtDecide(Decision::Ignore)),
-                        primase_rt::ACCEPT_HIT_AND_END_SEARCH => {
+                        iridia_rt::IGNORE_HIT => out.push(St::RtDecide(Decision::Ignore)),
+                        iridia_rt::ACCEPT_HIT_AND_END_SEARCH => {
                             out.push(St::RtDecide(Decision::AcceptAndEnd))
                         }
                         other => return Err(format!("a call of the function {other}")),

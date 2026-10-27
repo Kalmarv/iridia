@@ -1427,7 +1427,7 @@ impl Lower<'_> {
             provenance: Provenance {
                 format: ShaderFormat::Glsl,
                 target: self.hints.target.clone(),
-                lifter: "primase-mojoshader".into(),
+                lifter: "iridia-mojo".into(),
                 lifter_version: LIFTER_VERSION,
                 // the hash of the text, which `lift` sets
                 source_hash: None,

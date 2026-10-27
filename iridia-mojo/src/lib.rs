@@ -127,7 +127,7 @@ pub struct Attribute {
 
 /// The version of the lifter: bumped when what it produces for the same text changes, so a cache keyed by the text's
 /// hash knows what is stale; gated by `tests/lift.rs` (the programs there lifted and hashed under it, `iridia::gate`).
-pub const LIFTER_VERSION: u32 = 2;
+pub const LIFTER_VERSION: u32 = 3;
 
 /// Lift the vertex or pixel program `source`. Only [`Stage::Vertex`] and [`Stage::Pixel`] are programs of this
 /// dialect.

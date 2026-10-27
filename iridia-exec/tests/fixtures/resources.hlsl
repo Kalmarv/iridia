@@ -1,4 +1,4 @@
-// Fixture for the interface vocabulary's readers (primase-dxbc and primase-dxil), compiled to both bytecodes:
+// Fixture for the interface vocabulary's readers (iridia-dxbc and iridia-dxil), compiled to both bytecodes:
 //   fxc /T ps_5_0 /E main /Fo resources.dxbc resources.hlsl
 //   dxc -T ps_6_0 -E main -Fo resources.dxil resources.hlsl
 // One of every resource kind the vocabulary has, a constant buffer of every layout rule (matrices of both majorness,

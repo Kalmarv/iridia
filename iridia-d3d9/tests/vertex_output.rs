@@ -182,7 +182,7 @@ fn projected_vertex_output_has_a_versioned_ir_baseline() {
         .text()
         .map_err(|e| e.to_string());
     let table = iridia::gate::table(
-        "primase-d3d9 vertex output",
+        "iridia-d3d9 vertex output",
         iridia_d3d9::LIFTER_VERSION,
         &[("uv".into(), outcome)],
     );

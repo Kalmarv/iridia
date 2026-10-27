@@ -77,7 +77,7 @@ fn the_text_form_names_what_the_lift_decided() {
     );
     assert!(
         text.contains(&format!(
-            "// source Dxbc ps_5_0 lifted by primase-dxbc {}",
+            "// source Dxbc ps_5_0 lifted by iridia-dxbc {}",
             iridia_dxbc::LIFTER_VERSION
         )),
         "{text}"

@@ -48,7 +48,7 @@ use crate::{Interface, ResourceId, ShaderFormat, Stage};
 /// The version of the program representation: bumped when what a program means changes (a convention, a mode, how
 /// the module carries the interface). Each lifter's tests hash what it makes of its fixtures under this and its own version
 /// (`iridia::gate`), so a change that moves them without a bump of one of the two fails.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Which way clip space's depth runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

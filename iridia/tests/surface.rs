@@ -178,16 +178,16 @@ fn the_wgsl_validates_and_its_row_constants_are_the_crates() {
 @group(0) @binding(0) var<uniform> table: array<vec4<u32>, {rows}>;
 @fragment
 fn main(@location(0) value: vec4<f32>) -> @location(0) vec4<f32> {{
-    let albedo = primase_base(table[primase_surface_base], value);
-    let n = primase_normal(table[primase_surface_normal], value);
-    let r = primase_roughness(table[primase_surface_roughness], value);
-    let m = primase_scalar(table[primase_surface_metallic], value);
-    let f0 = primase_colour(table[primase_surface_reflectance], value);
-    let s = primase_scalar(table[primase_surface_specular], value);
-    let e = primase_emission(table[primase_surface_emission], value, albedo);
-    let o = primase_scalar(table[primase_surface_occlusion], value);
-    let a = primase_scalar(table[primase_surface_ambient_occlusion], value);
-    let shown = primase_stored(table[primase_surface_roughness], value);
+    let albedo = iridia_base(table[iridia_surface_base], value);
+    let n = iridia_normal(table[iridia_surface_normal], value);
+    let r = iridia_roughness(table[iridia_surface_roughness], value);
+    let m = iridia_scalar(table[iridia_surface_metallic], value);
+    let f0 = iridia_colour(table[iridia_surface_reflectance], value);
+    let s = iridia_scalar(table[iridia_surface_specular], value);
+    let e = iridia_emission(table[iridia_surface_emission], value, albedo);
+    let o = iridia_scalar(table[iridia_surface_occlusion], value);
+    let a = iridia_scalar(table[iridia_surface_ambient_occlusion], value);
+    let shown = iridia_stored(table[iridia_surface_roughness], value);
     return vec4<f32>(albedo + n + f0 + e + shown, r + m + s + o + a);
 }}
 ",
@@ -212,16 +212,16 @@ fn main(@location(0) value: vec4<f32>) -> @location(0) vec4<f32> {{
         }
     };
     let expected = [
-        ("primase_surface_rows", ROWS),
-        ("primase_surface_base", surface::BASE),
-        ("primase_surface_normal", surface::NORMAL),
-        ("primase_surface_roughness", surface::ROUGHNESS),
-        ("primase_surface_metallic", surface::METALLIC),
-        ("primase_surface_reflectance", surface::REFLECTANCE),
-        ("primase_surface_specular", surface::SPECULAR),
-        ("primase_surface_emission", surface::EMISSION),
-        ("primase_surface_occlusion", surface::OCCLUSION),
-        ("primase_surface_ambient_occlusion", surface::AMBIENT_OCCLUSION),
+        ("iridia_surface_rows", ROWS),
+        ("iridia_surface_base", surface::BASE),
+        ("iridia_surface_normal", surface::NORMAL),
+        ("iridia_surface_roughness", surface::ROUGHNESS),
+        ("iridia_surface_metallic", surface::METALLIC),
+        ("iridia_surface_reflectance", surface::REFLECTANCE),
+        ("iridia_surface_specular", surface::SPECULAR),
+        ("iridia_surface_emission", surface::EMISSION),
+        ("iridia_surface_occlusion", surface::OCCLUSION),
+        ("iridia_surface_ambient_occlusion", surface::AMBIENT_OCCLUSION),
     ];
     for (name, value) in expected {
         assert_eq!(constant(name) as usize, value, "{name}");

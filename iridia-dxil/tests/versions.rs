@@ -29,7 +29,7 @@ fn what_the_lifter_makes_of_its_fixtures_is_the_versions() {
             (name, outcome)
         })
         .collect();
-    let current = gate::table("primase-dxil", LIFTER_VERSION, &outcomes);
+    let current = gate::table("iridia-dxil", LIFTER_VERSION, &outcomes);
     let committed = std::fs::read_to_string(dir.join("lifted.hashes")).unwrap_or_default();
     if let Err(what) = gate::check(&committed, &current) {
         let new = inputs::scratch().join("dxil-lifted.hashes");

@@ -79,7 +79,7 @@ pub(crate) fn error(at: usize, detail: impl Into<String>) -> Error {
 }
 
 /// Increment when the same tokens lift differently. Hand-worked fixtures gate this version.
-pub const LIFTER_VERSION: u32 = 1;
+pub const LIFTER_VERSION: u32 = 2;
 
 /// Lift one complete `ps_3_0` or `vs_3_0` program; trailing bytes and unknown features are errors.
 pub fn lift(bytes: &[u8]) -> Result<iridia::Program> {

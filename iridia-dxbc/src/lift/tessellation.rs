@@ -542,7 +542,7 @@ impl Lift<'_> {
             provenance: Provenance {
                 format: ShaderFormat::Dxbc,
                 target,
-                lifter: "primase-dxbc".into(),
+                lifter: "iridia-dxbc".into(),
                 lifter_version: super::LIFTER_VERSION,
                 // the hash of the bytes, which `lift` sets
                 source_hash: None,

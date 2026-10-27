@@ -10,9 +10,9 @@ use iridia_interface::{
     surface::Base, surface::Emission, surface::Place, surface::Roughness, surface::Surface, surface::Term,
 };
 
-/// The WGSL functions: `primase_base`, `primase_normal`, `primase_roughness`, `primase_scalar`, `primase_colour` and
-/// `primase_emission` decode a term, `primase_stored` shows its lanes as the program wrote them; each takes a row and
-/// its target's four values. With the row constants `primase_surface_*`; module scope, no bindings: a consumer puts it
+/// The WGSL functions: `iridia_base`, `iridia_normal`, `iridia_roughness`, `iridia_scalar`, `iridia_colour` and
+/// `iridia_emission` decode a term, `iridia_stored` shows its lanes as the program wrote them; each takes a row and
+/// its target's four values. With the row constants `iridia_surface_*`; module scope, no bindings: a consumer puts it
 /// beside its own shader.
 pub const WGSL: &str = include_str!("surface.wgsl");
 

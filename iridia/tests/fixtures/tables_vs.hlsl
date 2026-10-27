@@ -1,4 +1,4 @@
-// Fixture for primase-frostbite (our own HLSL), four programs of one source:
+// Fixture for a Frostbite reader (our own HLSL), four programs of one source:
 //   dxc -T vs_6_0 -E main -Od -Fo tables_vs.dxil tables_vs.hlsl
 //   dxc -T vs_6_0 -E main -Od -D RECORD2 -Fo tables_vs.record2.dxil tables_vs.hlsl
 //   dxc -T vs_6_0 -E main -Od -D NO_HEADER -Fo tables_vs.no_header.dxil tables_vs.hlsl

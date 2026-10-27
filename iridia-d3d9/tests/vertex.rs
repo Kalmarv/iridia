@@ -205,7 +205,7 @@ fn vertex_refuses_undeclared_unwritten_and_unsupported_features() {
 fn vertex_fixture_has_a_versioned_ir_baseline() {
     let outcome = lift(&fixture()).unwrap().text().map_err(|e| e.to_string());
     let table = iridia::gate::table(
-        "primase-d3d9 vertex",
+        "iridia-d3d9 vertex",
         iridia_d3d9::LIFTER_VERSION,
         &[("packed".into(), outcome)],
     );

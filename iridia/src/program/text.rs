@@ -61,7 +61,7 @@ pub(super) fn text(p: &Program) -> Result<String, Error> {
         Err(e) => return Err(e),
     };
     let mut out = String::new();
-    let _ = writeln!(out, "// primase shader program v{}", super::VERSION);
+    let _ = writeln!(out, "// iridia shader program v{}", super::VERSION);
     let _ = writeln!(
         out,
         "// stage {} entry {}",

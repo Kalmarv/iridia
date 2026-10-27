@@ -53,7 +53,7 @@ pub(crate) fn project(bytes: &[u8], register: u32, mask: u8) -> Result<Program> 
     source.stage = Stage::Pixel;
     let mut program = crate::lower::vertex_output(&source, bytes)?;
     program.provenance.target = "vs_3_0/output-invocation".into();
-    program.provenance.lifter = format!("primase-d3d9/vertex-output:o{register}:mask={mask}");
+    program.provenance.lifter = format!("iridia-d3d9/vertex-output:o{register}:mask={mask}");
     program.notes.push(format!("derived invocation of original vs_3_0 o{register}, mask {mask:#x}; selected lanes keep original RGBA positions; unselected lanes are placeholders (0,0,0,1), not source outputs"));
     program.notes.sort();
     Ok(program)

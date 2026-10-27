@@ -311,7 +311,7 @@ fn what_the_lifter_makes_of_its_programs_is_the_versions() {
             (name.to_owned(), outcome)
         })
         .collect();
-    let current = iridia::gate::table("primase-mojoshader", iridia_mojo::LIFTER_VERSION, &outcomes);
+    let current = iridia::gate::table("iridia-mojo", iridia_mojo::LIFTER_VERSION, &outcomes);
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
     let committed = std::fs::read_to_string(dir.join("lifted.hashes")).unwrap_or_default();
     if let Err(what) = iridia::gate::check(&committed, &current) {

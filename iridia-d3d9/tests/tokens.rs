@@ -342,6 +342,6 @@ fn lifted_fixture_changes_require_a_version_bump() {
             (name.to_owned(), outcome)
         })
         .collect::<Vec<_>>();
-    let table = iridia::gate::table("primase-d3d9", iridia_d3d9::LIFTER_VERSION, &outcomes);
+    let table = iridia::gate::table("iridia-d3d9", iridia_d3d9::LIFTER_VERSION, &outcomes);
     iridia::gate::check(include_str!("versions.tsv"), &table).unwrap_or_else(|e| panic!("{e}\n{table}"));
 }

@@ -167,7 +167,7 @@ pub(crate) fn project(source: &Shader, bytes: &[u8], cut: crate::Projection, tai
     let mut program = lower(source, bytes, Some((cut, tail)), false)?;
     // A derived value and its original program share the source hash, but are distinct cache artifacts.
     program.provenance.lifter = format!(
-        "primase-d3d9/{}:word={}:r{}:{:?}",
+        "iridia-d3d9/{}:word={}:r{}:{:?}",
         if tail { "reencode" } else { "projection" },
         cut.after_word,
         cut.temporary,
@@ -892,7 +892,7 @@ impl Lower<'_> {
                     "ps_3_0"
                 }
                 .into(),
-                lifter: "primase-d3d9".into(),
+                lifter: "iridia-d3d9".into(),
                 lifter_version: LIFTER_VERSION,
                 source_hash: Some(iridia::source_hash(bytes)),
                 instruction_count: None,
