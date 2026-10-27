@@ -184,13 +184,23 @@ impl<'a> Lift<'a> {
             let IoType::Value(v) = item.ty else {
                 return self.refuse("an array-typed input");
             };
-            let expr = self.b.app(E::FunctionArgument(i as u32));
+            let Ok(argument) = u32::try_from(i) else {
+                return self.refuse("more than 4294967295 inputs");
+            };
+            let expr = self.b.app(E::FunctionArgument(argument));
             let mut value = Val {
                 expr,
                 kind: kind_of(v.scalar),
                 width: v.width,
             };
-            let varying = self.setup.interface.inputs[item.varyings[0]].clone();
+            let Some(varying) = item
+                .varyings
+                .first()
+                .and_then(|&v| self.setup.interface.inputs.get(v))
+                .cloned()
+            else {
+                return self.refuse(format!("the input {} names no varying", item.name));
+            };
             // raw bits: a bool is D3D's all-ones or zero
             if value.kind == Kind::B {
                 let ones = self.b.lit_u(u32::MAX);
@@ -207,10 +217,12 @@ impl<'a> Lift<'a> {
                     .copied()
                     .unwrap_or(0);
                 if declared & d3d.mask != 0 {
-                    let local = self.inputs[&d3d.register];
+                    let Some(&local) = self.inputs.get(&d3d.register) else {
+                        return self.refuse(format!("input register v{} has no local", d3d.register));
+                    };
                     let pointer = self.b.local_ptr(local);
                     for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
-                        let component = self.b.lane(value, j as u8);
+                        let component = self.b.lane(value, super::operands::lane_u8(j));
                         let target = self.b.app(E::AccessIndex {
                             base: pointer,
                             index: u32::from(lane),
@@ -275,9 +287,18 @@ impl<'a> Lift<'a> {
                 IoType::ClipDistances(_) => {
                     let mut components = Vec::new();
                     for &i in &item.varyings {
-                        let v = self.setup.interface.outputs[i].clone();
-                        let d3d = v.provenance.d3d.expect("a clip distance has a register");
-                        let local = self.outputs[&d3d.register];
+                        let Some(v) = self.setup.interface.outputs.get(i).cloned() else {
+                            return self.refuse("a clip distance past the interface's outputs");
+                        };
+                        let Some(d3d) = v.provenance.d3d else {
+                            return self.refuse(format!("clip distance {} has no register", item.name));
+                        };
+                        let Some(&local) = self.outputs.get(&d3d.register) else {
+                            return self.refuse(format!(
+                                "clip distance {} has no register o{}",
+                                item.name, d3d.register
+                            ));
+                        };
                         let p = self.b.local_ptr(local);
                         let row = self.b.load(p, Kind::U, 4);
                         for lane in lanes_of(d3d.mask) {
@@ -289,7 +310,14 @@ impl<'a> Lift<'a> {
                     self.b.app(E::Compose { ty, components })
                 }
                 IoType::Value(carried) => {
-                    let v = self.setup.interface.outputs[item.varyings[0]].clone();
+                    let Some(v) = item
+                        .varyings
+                        .first()
+                        .and_then(|&v| self.setup.interface.outputs.get(v))
+                        .cloned()
+                    else {
+                        return self.refuse(format!("the output {} names no varying", item.name));
+                    };
                     let (local, lanes): (Handle<naga::LocalVariable>, Vec<u8>) = match v.system {
                         Some(
                             SystemValue::Depth | SystemValue::DepthGreaterEqual | SystemValue::DepthLessEqual,

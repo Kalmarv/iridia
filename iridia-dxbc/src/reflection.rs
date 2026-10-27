@@ -46,7 +46,8 @@ fn signature_of(
     let tag = tags
         .iter()
         .find(|t| directory.iter().any(|c| &&c.kind == *t))
-        .unwrap_or(&tags[0]);
+        .or(tags.first())
+        .ok_or_else(|| error(0, "a signature with no part name"))?;
     dxbc_reader::signature(dxbc_reader::chunk(directory, tag).map_err(read)?, tag)
         .map_err(read)?
         .iter()
@@ -128,7 +129,9 @@ impl Binding<'_> {
     fn element(&self) -> std::result::Result<Value, String> {
         Ok(Value {
             scalar: self.scalar()?,
-            width: ((self.0.flags >> 2) & 3) as u8 + 1,
+            width: u8::try_from((self.0.flags >> 2) & 3)
+                .unwrap_or(3)
+                .saturating_add(1),
         })
     }
     fn stride(&self) -> std::result::Result<BufferKind, String> {
@@ -415,7 +418,7 @@ pub fn reflection(bytes: &[u8]) -> Result<Interface> {
             kind
         };
         resources.push(Resource {
-            id: ResourceId(i as u32),
+            id: ResourceId(u32::try_from(i).map_err(|_| error(0, "more than 4294967295 resources"))?),
             kind,
             count: record.count,
             provenance: ResourceProvenance {

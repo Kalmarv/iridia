@@ -39,6 +39,14 @@
 //!
 //! The container's digest is not verified: this reader does not authenticate shaders.
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
 
 // Run the examples in the README as doc tests.
 #[cfg(doctest)]

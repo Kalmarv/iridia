@@ -47,7 +47,7 @@ fn phases_of(decoded: &Decoded) -> Result<Vec<Phase>> {
     starts.sort_by_key(|(word, _)| *word);
     let mut phases = Vec::new();
     for (i, (start, kind)) in starts.iter().enumerate() {
-        let end = starts.get(i + 1).map_or(usize::MAX, |(w, _)| *w);
+        let end = starts.get(i.saturating_add(1)).map_or(usize::MAX, |(w, _)| *w);
         // the instance count a fork or join phase declares
         let mut instances = 1;
         for d in &decoded.declarations {
@@ -822,6 +822,11 @@ impl Setup {
             facts: Default::default(),
         };
         for e in &input_elements {
+            // a geometry program's primitive number is the function's own argument (`SV_PrimitiveID`, one for the
+            // primitive), not an input per vertex
+            if stage == Stage::Geometry && e.system_value == 7 {
+                continue;
+            }
             let declared = setup
                 .declared_inputs
                 .get(&e.register)
@@ -1195,7 +1200,9 @@ impl Setup {
                 }
             }
             setup.interface.resources.push(Resource {
-                id: ResourceId(i as u32),
+                id: ResourceId(
+                    u32::try_from(i).map_err(|_| refuse("more than 4294967295 resources".into()))?,
+                ),
                 kind,
                 count: 1,
                 provenance: ResourceProvenance {

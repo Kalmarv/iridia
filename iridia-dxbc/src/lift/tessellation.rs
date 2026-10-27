@@ -75,7 +75,7 @@ impl Lift<'_> {
         list.iter()
             .filter_map(|v| v.provenance.d3d.map(|d| d.register))
             .filter(|r| *r != u32::MAX)
-            .map(|r| r + 1)
+            .map(|r| r.saturating_add(1))
             .max()
             .unwrap_or(0)
     }
@@ -114,13 +114,13 @@ impl Lift<'_> {
         // the input control points as one array of registers, `registers` to a point
         if points > 0 {
             let registers = Self::registers_of(&inputs);
-            if let Some(array) = self.register_array("vicp", points * registers) {
+            if let Some(array) = self.register_array("vicp", points.saturating_mul(registers)) {
                 self.control_points = Some((array, registers));
             }
         }
         if out_points > 0 && sig.name == "patch_constant" {
             let registers = Self::registers_of(&outputs);
-            if let Some(array) = self.register_array("vocp", out_points * registers) {
+            if let Some(array) = self.register_array("vocp", out_points.saturating_mul(registers)) {
                 self.output_points = Some((array, registers));
             }
         }
@@ -132,7 +132,10 @@ impl Lift<'_> {
             self.start_geometry(g.max_vertices)?;
         }
         for (index, item) in sig.arguments.iter().enumerate() {
-            let expr = self.b.app(E::FunctionArgument(index as u32));
+            let Ok(argument) = u32::try_from(index) else {
+                return self.refuse("more than 4294967295 arguments");
+            };
+            let expr = self.b.app(E::FunctionArgument(argument));
             match (item.name.as_str(), item.ty) {
                 ("SV_GSInstanceID", IoType::Value(v)) => {
                     let value = Val {
@@ -195,13 +198,28 @@ impl Lift<'_> {
             matches!(&facts, StageFacts::Domain(_)) && !matches!(item.ty, IoType::Array(..));
         let (v, array) = if is_patch_constant {
             let StageFacts::Domain(d) = &facts else {
-                unreachable!("checked")
+                return self.refuse("patch constants of a program that is no domain program");
             };
-            (d.patch_constants[varying].clone(), self.patch_in.map(|a| (a, 0)))
+            (
+                d.patch_constants.get(varying).cloned(),
+                self.patch_in.map(|a| (a, 0)),
+            )
         } else if item.name.starts_with("out_") {
-            (self.setup.interface.outputs[varying].clone(), self.output_points)
+            (
+                self.setup.interface.outputs.get(varying).cloned(),
+                self.output_points,
+            )
         } else {
-            (self.setup.interface.inputs[varying].clone(), self.control_points)
+            (
+                self.setup.interface.inputs.get(varying).cloned(),
+                self.control_points,
+            )
+        };
+        let Some(v) = v else {
+            return self.refuse(format!(
+                "{} names varying {varying}, which the interface does not have",
+                item.name
+            ));
         };
         // a system value the signature does not place in a register has none
         let Some(d3d) = v.provenance.d3d.filter(|d| d.register != u32::MAX) else {
@@ -233,8 +251,13 @@ impl Lift<'_> {
                     });
                     let bits = bits_of(self, element, carried);
                     for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
-                        let component = self.b.lane(bits, j as u8);
-                        self.store_register_lane(array, point * registers + d3d.register, lane, component);
+                        let component = self.b.lane(bits, super::operands::lane_u8(j));
+                        self.store_register_lane(
+                            array,
+                            point.saturating_mul(registers).saturating_add(d3d.register),
+                            lane,
+                            component,
+                        );
                     }
                 }
             }
@@ -243,7 +266,7 @@ impl Lift<'_> {
                 if is_patch_constant {
                     if let Some((array, _)) = array {
                         for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
-                            let component = self.b.lane(bits, j as u8);
+                            let component = self.b.lane(bits, super::operands::lane_u8(j));
                             self.store_register_lane(array, d3d.register, lane, component);
                         }
                     }
@@ -251,7 +274,7 @@ impl Lift<'_> {
                     // a vertex program's input: its register `v<n>`
                     let pointer = self.b.local_ptr(local);
                     for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
-                        let component = self.b.lane(bits, j as u8);
+                        let component = self.b.lane(bits, super::operands::lane_u8(j));
                         let target = self.b.app(E::AccessIndex {
                             base: pointer,
                             index: u32::from(lane),
@@ -419,7 +442,12 @@ impl Lift<'_> {
             let (IoType::Value(carried), Some(index)) = (item.ty, item.varying) else {
                 return self.refuse("a result that is not a varying's value");
             };
-            let v = &varyings[index];
+            let Some(v) = varyings.get(index) else {
+                return self.refuse(format!(
+                    "{} names varying {index}, which the interface does not have",
+                    item.name
+                ));
+            };
             let Some(d3d) = v.provenance.d3d else {
                 return self.refuse(format!("{} has no register", item.name));
             };
@@ -515,6 +543,7 @@ impl Lift<'_> {
             self.function_epilogue()?;
         } else {
             self.body_range(0..usize::MAX)?;
+            self.check_closed()?;
             if !self.returned {
                 self.function_epilogue()?;
             }
@@ -565,13 +594,13 @@ impl Lift<'_> {
         let Some((array, registers)) = array else {
             return self.refuse("a control point is read where the function has none");
         };
-        if op.indices.len() != 2 || op.indices[1].relative.is_some() {
+        if op.indices.len() != 2 || self.index_of(op, 1)?.relative.is_some() {
             return self.refuse("a control point register indexed by a register");
         }
-        let point = self.index_expr(&op.indices[0].clone())?;
+        let point = self.index_expr(&self.index_of(op, 0)?.clone())?;
         let stride = self.b.lit_u(registers);
         let base = self.b.binary(naga::BinaryOperator::Multiply, point, stride);
-        let register = self.b.lit_u(op.indices[1].base);
+        let register = self.b.lit_u(self.index_of(op, 1)?.base);
         let at = self.b.binary(naga::BinaryOperator::Add, base, register);
         let pointer = self.b.local_ptr(array);
         let element = self.b.app(E::Access {
@@ -586,7 +615,7 @@ impl Lift<'_> {
         let Some(array) = self.patch_in else {
             return self.refuse("a patch constant is read where the function has none");
         };
-        let index = self.index_expr(&op.indices[0].clone())?;
+        let index = self.index_expr(&self.index_of(op, 0)?.clone())?;
         let pointer = self.b.local_ptr(array);
         let element = self.b.app(E::Access {
             base: pointer,

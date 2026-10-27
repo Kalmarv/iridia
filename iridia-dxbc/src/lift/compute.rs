@@ -5,6 +5,7 @@ use iridia::build::{Kind, Val};
 use naga::{AtomicFunction, BinaryOperator as Bo, Expression as E, GlobalVariable, Handle, Statement};
 
 use super::Lift;
+use super::operands::OperandAt;
 use super::resources::lanes_of;
 use super::setup::UavKind;
 use crate::Result;
@@ -72,9 +73,8 @@ impl Lift<'_> {
     fn view_atomic(&mut self, ins: &Instruction, slot: u32) -> Result<()> {
         let name = ins.name();
         let immediate = name.starts_with("imm_");
-        let ops = &ins.operands;
         let at = usize::from(immediate);
-        let wants_old = immediate && ops[0].register != Register::Null;
+        let wants_old = immediate && ins.operand(0)?.register != Register::Null;
         let fun = match name.trim_start_matches("imm_").trim_start_matches("atomic_") {
             "iadd" => AtomicFunction::Add,
             "and" => AtomicFunction::And,
@@ -91,9 +91,9 @@ impl Lift<'_> {
             .get(&slot)
             .copied()
             .expect("the caller found the view");
-        let (coordinate, layer) = self.view_address(&ops[at + 1], &v)?;
+        let (coordinate, layer) = self.view_address(ins.operand(at.saturating_add(1))?, &v)?;
         let kind = v.kind;
-        let value = self.read(&ops[at + 2], 1, kind)?;
+        let value = self.read(ins.operand(at.saturating_add(2))?, 1, kind)?;
         let coordinate = self.b.bitcast_to(coordinate, Kind::I);
         let array_index = layer.map(|l| {
             let layer = Val {
@@ -115,7 +115,7 @@ impl Lift<'_> {
         });
         if let Some(old) = old {
             let bits = self.b.bitcast_to(old, Kind::U);
-            self.write(&ops[0], bits, false)?;
+            self.write(ins.operand(0)?, bits, false)?;
         }
         Ok(())
     }
@@ -125,10 +125,16 @@ impl Lift<'_> {
     fn word_address(&mut self, mem: &Mem, address: &[&Operand]) -> Result<Val> {
         let two = self.b.lit_u(2);
         Ok(match mem.stride {
-            None if mem.typed => self.read(address[0], 1, Kind::U)?,
             None => {
-                let byte = self.read(address[0], 1, Kind::U)?;
-                self.b.binary(Bo::ShiftRight, byte, two)
+                let Some(&first) = address.first() else {
+                    return self.refuse("a memory address of no operands");
+                };
+                if mem.typed {
+                    self.read(first, 1, Kind::U)?
+                } else {
+                    let byte = self.read(first, 1, Kind::U)?;
+                    self.b.binary(Bo::ShiftRight, byte, two)
+                }
             }
             Some(stride) => {
                 let (element, offset) = match address {
@@ -162,12 +168,12 @@ impl Lift<'_> {
         resource: &Operand,
     ) -> Result<()> {
         let mem = self.memory(resource)?;
-        let mask = self.dest_mask(&ins.operands[0]);
+        let mask = self.dest_mask(ins.operand(0)?);
         let word = self.word_address(&mem, address)?;
         let components: Vec<u8> = lanes_of(mask)
             .iter()
             .map(|l| match resource.selection {
-                dxbc_reader::decode::Selection::Swizzle(s) => s[*l as usize],
+                dxbc_reader::decode::Selection::Swizzle(s) => super::operands::of_four(s, *l),
                 dxbc_reader::decode::Selection::Scalar(c) => c,
                 _ => 0,
             })
@@ -179,15 +185,15 @@ impl Lift<'_> {
             lanes.push(self.read_word(&mem, index));
         }
         let result = self.b.compose(&lanes);
-        self.write(&ins.operands[0], result, false)
+        self.write(ins.operand(0)?, result, false)
     }
 
     /// `ld_uav_typed` of a typed buffer: the element's four lanes.
     pub(super) fn load_typed_buffer(&mut self, ins: &Instruction) -> Result<()> {
-        let resource = &ins.operands[2];
+        let resource = ins.operand(2)?;
         let mem = self.memory(resource)?;
-        let mask = self.dest_mask(&ins.operands[0]);
-        let element = self.read(&ins.operands[1], 1, Kind::U)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let element = self.read(ins.operand(1)?, 1, Kind::U)?;
         let row = match mem.atomic {
             None => self.guarded_load(mem.global, element, None, Kind::U, 4),
             // the element is four atomic words: read each, zero past the end
@@ -201,17 +207,17 @@ impl Lift<'_> {
             }
         };
         let picked = self.pick(row, resource, mask);
-        self.write(&ins.operands[0], picked, false)
+        self.write(ins.operand(0)?, picked, false)
     }
 
     /// `store_uav_typed` to a typed buffer: the element's four lanes.
     pub(super) fn store_typed_buffer(&mut self, ins: &Instruction) -> Result<()> {
-        let mem = self.memory(&ins.operands[0])?;
-        if self.dest_mask(&ins.operands[0]) != 15 {
+        let mem = self.memory(ins.operand(0)?)?;
+        if self.dest_mask(ins.operand(0)?) != 15 {
             return self.refuse("a store to a view with a partial write mask");
         }
-        let element = self.read(&ins.operands[1], 1, Kind::U)?;
-        let value = self.read_lanes(&ins.operands[2], &[0, 1, 2, 3], Kind::U)?;
+        let element = self.read(ins.operand(1)?, 1, Kind::U)?;
+        let value = self.read_lanes(ins.operand(2)?, &[0, 1, 2, 3], Kind::U)?;
         let pointer = self.b.global_ptr(mem.global);
         let length = Val {
             expr: self.b.app(E::ArrayLength(pointer)),
@@ -233,7 +239,7 @@ impl Lift<'_> {
                             base: target,
                             index: k,
                         });
-                        let lane = b.lane(value, k as u8);
+                        let lane = b.lane(value, super::operands::lane_u8(k as usize));
                         let lane = b.bitcast_to(lane, mem.kind());
                         b.store(word, lane);
                     }
@@ -273,9 +279,9 @@ impl Lift<'_> {
         address: &[&Operand],
         value: &Operand,
     ) -> Result<()> {
-        let mem = self.memory(&ins.operands[0])?;
-        let mask = self.dest_mask(&ins.operands[0]);
-        let count = lanes_of(mask).len() as u8;
+        let mem = self.memory(ins.operand(0)?)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let count = super::operands::lane_u8(lanes_of(mask).len());
         let word = self.word_address(&mem, address)?;
         let lanes: Vec<u8> = (0..count).collect();
         let data = self.read_lanes(value, &lanes, Kind::U)?;
@@ -331,24 +337,27 @@ impl Lift<'_> {
     pub(super) fn atomic_instruction(&mut self, ins: &Instruction) -> Result<()> {
         let name = ins.name();
         let immediate = name.starts_with("imm_");
-        let ops = &ins.operands;
         // [old,] resource, address, source [, second source]
         let at = usize::from(immediate);
-        let slot = ops[at].indices.first().map_or(0, |i| i.base);
-        if ops[at].register == Register::Uav && self.resources.views.contains_key(&slot) {
+        let resource = ins.operand(at)?;
+        let slot = resource.indices.first().map_or(0, |i| i.base);
+        if resource.register == Register::Uav && self.resources.views.contains_key(&slot) {
             return self.view_atomic(ins, slot);
         }
-        let mem = self.memory(&ops[at])?;
+        let mem = self.memory(resource)?;
         let Some(scalar) = mem.atomic else {
             return self.refuse("an atomic operation on memory the lifter did not make atomic");
         };
-        let word = self.word_address(&mem, &[&ops[at + 1]])?;
+        let word = self.word_address(&mem, &[ins.operand(at.saturating_add(1))?])?;
         let kind = mem.kind();
         let compare = name.ends_with("cmp_exch") || name.ends_with("cmp_store");
         let (first, second) = {
-            let v = self.read(&ops[at + 2], 1, Kind::U)?;
+            let v = self.read(ins.operand(at.saturating_add(2))?, 1, Kind::U)?;
             if compare {
-                (v, Some(self.read(&ops[at + 3], 1, Kind::U)?))
+                (
+                    v,
+                    Some(self.read(ins.operand(at.saturating_add(3))?, 1, Kind::U)?),
+                )
             } else {
                 (v, None)
             }
@@ -379,7 +388,7 @@ impl Lift<'_> {
         });
         if immediate {
             let bits = self.b.bitcast_to(old, Kind::U);
-            self.write(&ops[0], bits, false)?;
+            self.write(ins.operand(0)?, bits, false)?;
         }
         Ok(())
     }

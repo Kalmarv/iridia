@@ -38,7 +38,7 @@ use dxbc_reader::decode::{Decoded, decode};
 
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
-pub const LIFTER_VERSION: u32 = 7;
+pub const LIFTER_VERSION: u32 = 8;
 
 /// Lift a DXBC container's program: Shader Model 4 or 5, any stage. Every instruction or declaration the lifter does
 /// not carry (and every container that holds no such program) is an `Err` naming the word and the reason.
@@ -99,6 +99,8 @@ fn lift_program(bytes: &[u8], bound: &iridia::BoundSizes) -> Result<Program> {
 /// A conditional's `if` or a `loop`, `switch` being lifted.
 struct Frame {
     kind: FrameKind,
+    /// The word of the instruction that opened it, for the refusal of a frame never closed.
+    word: usize,
     condition: Option<Handle<naga::Expression>>,
     accept: Option<naga::Block>,
     selector: Option<Handle<naga::Expression>>,
@@ -170,7 +172,26 @@ impl<'a> Lift<'a> {
         self.b.ty_of(iridia::build::Kind::U, 4)
     }
 
+    /// Refuse a program that ends with an `if`, `loop` or `switch` still open.
+    fn check_closed(&self) -> Result<()> {
+        match self.frames.last() {
+            None => Ok(()),
+            Some(frame) => {
+                let (opener, closer) = match frame.kind {
+                    FrameKind::If => ("if", "endif"),
+                    FrameKind::Loop => ("loop", "endloop"),
+                    FrameKind::Switch => ("switch", "endswitch"),
+                };
+                Err(error(
+                    frame.word,
+                    format!("{opener} is not closed: the program ends without its {closer}"),
+                ))
+            }
+        }
+    }
+
     fn finish(mut self, target: String) -> Result<Program> {
+        self.check_closed()?;
         if !self.returned {
             self.epilogue()?;
         }

@@ -225,3 +225,57 @@ fn a_destination_of_no_lanes_is_refused() {
     });
     assert!(refusal(&bytes).contains("write mask is empty"));
 }
+
+/// The container with the register of the first element of its `tag` signature part set to `register`.
+fn with_signature_register(name: &str, tag: &[u8; 4], register: u32) -> Vec<u8> {
+    let mut bytes = fixture(name);
+    let at = bytes
+        .windows(4)
+        .position(|w| w == tag)
+        .expect("the container has the part");
+    // the part's data follows its tag and size; an element is 24 bytes after the count and flags, its register the fifth word
+    let register_at = at + 8 + 8 + 16;
+    bytes[register_at..register_at + 4].copy_from_slice(&register.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn a_signature_register_past_the_registers_a_stage_has_is_refused() {
+    // the lifter sizes the control point arrays of a hull and domain program by the highest register of its signatures
+    for (name, tag) in [
+        ("tessellation.hs.dxbc", b"ISGN"),
+        ("tessellation.hs.dxbc", b"OSGN"),
+        ("tessellation.ds.dxbc", b"ISGN"),
+        ("tessellation.vs.dxbc", b"OSGN"),
+    ] {
+        for register in [32, 0x7fff_ffff, 0xffff_fffe] {
+            let bytes = with_signature_register(name, tag, register);
+            let detail = refusal(&bytes);
+            assert!(
+                detail.contains(&format!("register {register}")) && detail.contains("32"),
+                "{name} {}: {detail}",
+                String::from_utf8_lossy(tag)
+            );
+        }
+    }
+}
+
+/// The fixture with the byte at `at`, which is `was`, made `now` (found by mutating every fixture and shrinking each panic
+/// to the one byte that causes it).
+fn changed(name: &str, at: usize, was: u8, now: u8) -> Vec<u8> {
+    let mut bytes = fixture(name);
+    assert_eq!(bytes[at], was, "{name} is not the fixture the case was made from");
+    bytes[at] = now;
+    bytes
+}
+
+#[test]
+fn a_control_flow_construct_left_open_is_refused_at_the_word_that_opened_it() {
+    // the opcode of an `endif` changed to another instruction's: its `if` is never closed
+    let bytes = changed("compute_basic.od.dxbc", 796, 0x15, 0x95);
+    let detail = refusal(&bytes);
+    assert!(
+        detail.contains("if is not closed: the program ends without its endif"),
+        "{detail}"
+    );
+}

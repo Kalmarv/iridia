@@ -8,7 +8,51 @@ use super::resources::lanes_of;
 use crate::Result;
 use dxbc_reader::decode::{Index, Operand, Register, Selection};
 
+/// A lane number as a `u8`: a lane is one of at most four.
+pub(super) fn lane_u8(n: usize) -> u8 {
+    u8::try_from(n).unwrap_or(u8::MAX)
+}
+
+/// Component `lane` of four, where a swizzle's lane selectors are two bits wide.
+pub(super) fn of_four<T: Copy + Default>(four: [T; 4], lane: u8) -> T {
+    four.get(usize::from(lane)).copied().unwrap_or_default()
+}
+
+/// An instruction's operand by position. `Lift::instruction` checks the operand count against the opcode's (`arity`) before
+/// any is read, so the error is the guard of a lookup that cannot miss, not a case of the input.
+pub(super) trait OperandAt {
+    fn operand(&self, n: usize) -> Result<&Operand>;
+}
+impl OperandAt for dxbc_reader::decode::Instruction {
+    fn operand(&self, n: usize) -> Result<&Operand> {
+        self.operands.get(n).ok_or_else(|| {
+            crate::error(
+                self.word,
+                format!(
+                    "{}: operand {n}, where the instruction has {}",
+                    self.name(),
+                    self.operands.len()
+                ),
+            )
+        })
+    }
+}
+
 impl Lift<'_> {
+    /// Index `n` of an operand, which the decoder checked the register has the dimensions for.
+    pub(super) fn index_of<'o>(&self, op: &'o Operand, n: usize) -> Result<&'o Index> {
+        op.indices.get(n).ok_or_else(|| {
+            crate::error(
+                self.word,
+                format!(
+                    "{:?} has {} indices, where it is read at index {n}",
+                    op.register,
+                    op.indices.len()
+                ),
+            )
+        })
+    }
+
     /// The index of a register operand: its base plus the relative register, if any.
     pub(super) fn index_expr(&mut self, ix: &Index) -> Result<Val> {
         let base = self.b.lit_u(ix.base);
@@ -33,10 +77,10 @@ impl Lift<'_> {
     /// A register addressed by a computed index: the registers of its `dcl_index_range` as one array, indexed from the
     /// range's first; zero outside the range, as D3D reads past a declared one.
     fn relative_register(&mut self, op: &Operand, output: bool) -> Result<Val> {
-        let Some((first, count)) = self.index_range(output, op.indices[0].base) else {
+        let Some((first, count)) = self.index_range(output, self.index_of(op, 0)?.base) else {
             return self.refuse("a register addressed by a computed index outside any dcl_index_range");
         };
-        let index = self.index_expr(&op.indices[0].clone())?;
+        let index = self.index_expr(&self.index_of(op, 0)?.clone())?;
         let u4 = self.u4();
         let len = std::num::NonZeroU32::new(count).expect("a range holds registers");
         let ty = self.b.ty(naga::TypeInner::Array {
@@ -46,7 +90,7 @@ impl Lift<'_> {
         });
         // the range's registers as a local array the index can address
         let array = self.b.local("range", ty);
-        for (k, r) in (first..first + count).enumerate() {
+        for (k, r) in (0u32..).zip(first..first.saturating_add(count)) {
             let value = match (if output {
                 self.outputs.get(&r)
             } else {
@@ -66,7 +110,7 @@ impl Lift<'_> {
             let pointer = self.b.local_ptr(array);
             let target = self.b.app(E::AccessIndex {
                 base: pointer,
-                index: k as u32,
+                index: k,
             });
             self.b.store(target, value);
         }
@@ -90,7 +134,7 @@ impl Lift<'_> {
     fn reg_value(&mut self, op: &Operand) -> Result<Val> {
         match op.register {
             Register::Temp => {
-                let Some(&local) = self.temps.get(op.indices[0].base as usize) else {
+                let Some(&local) = self.temps.get(self.index_of(op, 0)?.base as usize) else {
                     return self.refuse("a temporary beyond dcl_temps");
                 };
                 let p = self.b.local_ptr(local);
@@ -114,10 +158,10 @@ impl Lift<'_> {
             | Register::ForkInstanceId
             | Register::JoinInstanceId => self.id_register(op.register),
             Register::Input => {
-                if op.indices[0].relative.is_some() {
+                if self.index_of(op, 0)?.relative.is_some() {
                     return self.relative_register(op, false);
                 }
-                let register = op.indices[0].base;
+                let register = self.index_of(op, 0)?.base;
                 let Some(&local) = self.inputs.get(&register) else {
                     return self.refuse(format!("input register v{register} is not in the signature"));
                 };
@@ -125,10 +169,10 @@ impl Lift<'_> {
                 Ok(self.b.load(p, Kind::U, 4))
             }
             Register::Output => {
-                if op.indices[0].relative.is_some() {
+                if self.index_of(op, 0)?.relative.is_some() {
                     return self.relative_register(op, true);
                 }
-                let register = op.indices[0].base;
+                let register = self.index_of(op, 0)?.base;
                 let Some(&local) = self.outputs.get(&register) else {
                     return self.refuse(format!("output register o{register} is read but not declared"));
                 };
@@ -136,10 +180,10 @@ impl Lift<'_> {
                 Ok(self.b.load(p, Kind::U, 4))
             }
             Register::IndexableTemp => {
-                let Some(&(local, _)) = self.indexable.get(&op.indices[0].base) else {
+                let Some(&(local, _)) = self.indexable.get(&self.index_of(op, 0)?.base) else {
                     return self.refuse("an undeclared indexable temporary");
                 };
-                let index = self.index_expr(&op.indices[1].clone())?;
+                let index = self.index_expr(&self.index_of(op, 1)?.clone())?;
                 let p = self.b.local_ptr(local);
                 let element = self.b.app(E::Access {
                     base: p,
@@ -148,12 +192,12 @@ impl Lift<'_> {
                 Ok(self.b.load(element, Kind::U, 4))
             }
             Register::Constant => {
-                let slot = op.indices[0].base;
+                let slot = self.index_of(op, 0)?.base;
                 let Some(&(g, rows)) = self.resources.constant_buffers.get(&slot) else {
                     return self.refuse(format!("cb{slot} is used but not declared"));
                 };
-                let index = self.index_expr(&op.indices[1].clone())?;
-                if op.indices[1].relative.is_some() {
+                let index = self.index_expr(&self.index_of(op, 1)?.clone())?;
+                if self.index_of(op, 1)?.relative.is_some() {
                     return Ok(self.guarded_load(g, index, Some(rows), Kind::U, 4));
                 }
                 let p = self.b.global_ptr(g);
@@ -167,8 +211,8 @@ impl Lift<'_> {
                 let Some((g, rows)) = self.resources.immediate else {
                     return self.refuse("the immediate constant buffer is used but not declared");
                 };
-                let index = self.index_expr(&op.indices[0].clone())?;
-                if op.indices[0].relative.is_some() {
+                let index = self.index_expr(&self.index_of(op, 0)?.clone())?;
+                if self.index_of(op, 0)?.relative.is_some() {
                     return Ok(self.guarded_load(g, index, Some(rows), Kind::U, 4));
                 }
                 let p = self.b.global_ptr(g);
@@ -229,7 +273,7 @@ impl Lift<'_> {
         let components: Vec<u8> = lanes
             .iter()
             .map(|&l| match op.selection {
-                Selection::Swizzle(s) => Ok(s[l as usize]),
+                Selection::Swizzle(s) => Ok(of_four(s, l)),
                 Selection::Scalar(c) => Ok(c),
                 Selection::Mask(_) if op.register == Register::Immediate => Ok(l),
                 _ => Err(()),
@@ -243,7 +287,7 @@ impl Lift<'_> {
         let mut value = if op.register == Register::Immediate {
             let parts: Vec<Val> = components
                 .iter()
-                .map(|&c| self.b.lit_bits(kind, op.immediate[c as usize]))
+                .map(|&c| self.b.lit_bits(kind, of_four(op.immediate, c)))
                 .collect();
             self.b.compose(&parts)
         } else {
@@ -281,7 +325,7 @@ impl Lift<'_> {
         }
         let mut v = v;
         if v.width == 1 && lanes.len() > 1 {
-            v = self.b.splat(v, lanes.len() as u8);
+            v = self.b.splat(v, lane_u8(lanes.len()));
         }
         assert_eq!(
             usize::from(v.width),
@@ -297,20 +341,20 @@ impl Lift<'_> {
         let v = self.b.bitcast(v, Kind::U);
         let pointer = match op.register {
             Register::Temp => {
-                let Some(&local) = self.temps.get(op.indices[0].base as usize) else {
+                let Some(&local) = self.temps.get(self.index_of(op, 0)?.base as usize) else {
                     return self.refuse("a temporary beyond dcl_temps");
                 };
                 self.b.local_ptr(local)
             }
             Register::Output => {
-                if op.indices[0].relative.is_some() {
+                if self.index_of(op, 0)?.relative.is_some() {
                     // a register of the range the index names: each is written where the index is its number
-                    let Some((first, count)) = self.index_range(true, op.indices[0].base) else {
+                    let Some((first, count)) = self.index_range(true, self.index_of(op, 0)?.base) else {
                         return self
                             .refuse("an output addressed by a computed index outside any dcl_index_range");
                     };
-                    let index = self.index_expr(&op.indices[0].clone())?;
-                    for r in first..first + count {
+                    let index = self.index_expr(&self.index_of(op, 0)?.clone())?;
+                    for r in first..first.saturating_add(count) {
                         let Some(&local) = self.outputs.get(&r) else {
                             continue;
                         };
@@ -320,7 +364,7 @@ impl Lift<'_> {
                         self.b.when(here, |b| {
                             let pointer = b.local_ptr(local);
                             for (j, lane) in lanes.iter().enumerate() {
-                                let component = b.lane(v, j as u8);
+                                let component = b.lane(v, lane_u8(j));
                                 let target = b.app(E::AccessIndex {
                                     base: pointer,
                                     index: u32::from(*lane),
@@ -331,17 +375,17 @@ impl Lift<'_> {
                     }
                     return Ok(());
                 }
-                let register = op.indices[0].base;
+                let register = self.index_of(op, 0)?.base;
                 let Some(&local) = self.outputs.get(&register) else {
                     return self.refuse(format!("a write to o{register}, which is not declared"));
                 };
                 self.b.local_ptr(local)
             }
             Register::IndexableTemp => {
-                let Some(&(local, _)) = self.indexable.get(&op.indices[0].base) else {
+                let Some(&(local, _)) = self.indexable.get(&self.index_of(op, 0)?.base) else {
                     return self.refuse("an undeclared indexable temporary");
                 };
-                let index = self.index_expr(&op.indices[1].clone())?;
+                let index = self.index_expr(&self.index_of(op, 1)?.clone())?;
                 let p = self.b.local_ptr(local);
                 self.b.app(E::Access {
                     base: p,
@@ -366,7 +410,7 @@ impl Lift<'_> {
             self.b.store(pointer, v);
         } else {
             for (j, lane) in lanes.iter().enumerate() {
-                let component = self.b.lane(v, j as u8);
+                let component = self.b.lane(v, lane_u8(j));
                 let target = self.b.app(E::AccessIndex {
                     base: pointer,
                     index: u32::from(*lane),

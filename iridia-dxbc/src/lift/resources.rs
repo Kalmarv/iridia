@@ -11,6 +11,7 @@ use naga::{
 };
 
 use super::Lift;
+use super::operands::OperandAt;
 use super::setup::{Declaration, Shared, Texture, UavBuffer, UavKind, View};
 use crate::Result;
 use dxbc_reader::decode::{Instruction, Operand, Selection};
@@ -53,7 +54,9 @@ impl Lift<'_> {
         let u1 = self.b.ty_of(Kind::U, 1);
         let declarations = self.setup.declarations.clone();
         for (i, d) in declarations.iter().enumerate() {
-            let id = ResourceId(i as u32);
+            let Ok(id) = u32::try_from(i).map(ResourceId) else {
+                return self.refuse("more than 4294967295 resources");
+            };
             let (name, space, group, slot, ty) = match d {
                 Declaration::ConstantBuffer { slot, rows } => {
                     let rows = NonZeroU32::new((*rows).max(1)).expect("at least one row");
@@ -243,8 +246,12 @@ impl Lift<'_> {
             self.resources.shared.insert(g.register, (global, g));
         }
         if !self.setup.immediates.is_empty() {
-            let rows = self.setup.immediates.len() as u32;
-            let size = NonZeroU32::new(rows).expect("rows");
+            let Ok(rows) = u32::try_from(self.setup.immediates.len()) else {
+                return self.refuse("more than 4294967295 immediate rows");
+            };
+            let Some(size) = NonZeroU32::new(rows) else {
+                return self.refuse("an immediate constant buffer of no rows");
+            };
             let ty = self.b.ty(TypeInner::Array {
                 base: u4,
                 size: ArraySize::Constant(size),
@@ -335,7 +342,7 @@ impl Lift<'_> {
         let lanes: Vec<u8> = lanes_of(mask)
             .iter()
             .map(|l| match op.selection {
-                Selection::Swizzle(s) => s[*l as usize],
+                Selection::Swizzle(s) => super::operands::of_four(s, *l),
                 Selection::Scalar(c) => c,
                 _ => 0,
             })
@@ -360,7 +367,7 @@ impl Lift<'_> {
         n: usize,
         kinds: &[dxbc_reader::decode::Register],
     ) -> Result<u32> {
-        let operand = &ins.operands[n];
+        let operand = ins.operand(n)?;
         match operand.indices.first() {
             Some(index) if kinds.contains(&operand.register) => Ok(index.base),
             _ => self.refuse(format!(
@@ -380,9 +387,9 @@ impl Lift<'_> {
             return self.refuse("a sample of a multisampled texture");
         }
         let (n, arrayed) = Self::coordinates(&t);
-        let mask = self.dest_mask(&ins.operands[0]);
-        let lanes: Vec<u8> = (0..n + u8::from(arrayed)).collect();
-        let all = self.read_lanes(&ins.operands[1], &lanes, Kind::F)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let lanes: Vec<u8> = (0..n.saturating_add(u8::from(arrayed))).collect();
+        let all = self.read_lanes(ins.operand(1)?, &lanes, Kind::F)?;
         let coordinate = if n == all.width {
             all
         } else {
@@ -400,11 +407,13 @@ impl Lift<'_> {
         };
         let offset = match ins.sample_offset() {
             Some(o) if o != [0, 0, 0] => {
-                let parts: Vec<_> = (0..n as usize)
-                    .map(|c| self.b.app(E::Literal(naga::Literal::I32(o[c]))))
+                let parts: Vec<_> = o
+                    .iter()
+                    .take(usize::from(n))
+                    .map(|&c| self.b.app(E::Literal(naga::Literal::I32(c))))
                     .collect();
-                Some(if n == 1 {
-                    parts[0]
+                Some(if let [only] = parts[..] {
+                    only
                 } else {
                     let ty = self.b.ty_of(Kind::I, n);
                     self.b.app(E::Compose {
@@ -425,37 +434,37 @@ impl Lift<'_> {
             "sample_l" => (
                 None,
                 None,
-                SampleLevel::Exact(self.read(&ins.operands[4], 1, Kind::F)?.expr),
+                SampleLevel::Exact(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
             ),
             "sample_b" => (
                 None,
                 None,
-                SampleLevel::Bias(self.read(&ins.operands[4], 1, Kind::F)?.expr),
+                SampleLevel::Bias(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
             ),
             "sample_d" => {
                 let g: Vec<u8> = (0..n).collect();
-                let x = self.read_lanes(&ins.operands[4], &g, Kind::F)?;
-                let y = self.read_lanes(&ins.operands[5], &g, Kind::F)?;
+                let x = self.read_lanes(ins.operand(4)?, &g, Kind::F)?;
+                let y = self.read_lanes(ins.operand(5)?, &g, Kind::F)?;
                 (None, None, SampleLevel::Gradient { x: x.expr, y: y.expr })
             }
             "sample_c" => (
                 None,
-                Some(self.read(&ins.operands[4], 1, Kind::F)?.expr),
+                Some(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
                 SampleLevel::Auto,
             ),
             "sample_c_lz" => (
                 None,
-                Some(self.read(&ins.operands[4], 1, Kind::F)?.expr),
+                Some(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
                 SampleLevel::Zero,
             ),
             "gather4" => (
-                Some(component(component_of(&ins.operands[3]))),
+                Some(component(component_of(ins.operand(3)?))),
                 None,
                 SampleLevel::Zero,
             ),
             "gather4_c" => (
-                Some(component(component_of(&ins.operands[3]))),
-                Some(self.read(&ins.operands[4], 1, Kind::F)?.expr),
+                Some(component(component_of(ins.operand(3)?))),
+                Some(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
                 SampleLevel::Zero,
             ),
             other => return self.refuse(format!("{other} is not lifted")),
@@ -489,32 +498,32 @@ impl Lift<'_> {
                 self.b.compose(&[result, zero, zero, one])
             };
         }
-        let picked = self.pick(result, &ins.operands[2], mask);
-        self.write(&ins.operands[0], picked, ins.saturate)
+        let picked = self.pick(result, ins.operand(2)?, mask);
+        self.write(ins.operand(0)?, picked, ins.saturate)
     }
 
     pub(super) fn load(&mut self, ins: &Instruction) -> Result<()> {
         let slot = self.slot_of(ins, 2, &[dxbc_reader::decode::Register::Texture])?;
-        let mask = self.dest_mask(&ins.operands[0]);
+        let mask = self.dest_mask(ins.operand(0)?);
         if let Some((g, buffer)) = self.resources.buffers.get(&slot).copied() {
             let Buffer::Typed = buffer else {
                 return self.refuse("ld on a raw or structured buffer");
             };
             self.notes_typed_buffer();
-            let address = self.read(&ins.operands[1], 1, Kind::U)?;
+            let address = self.read(ins.operand(1)?, 1, Kind::U)?;
             let row = self.guarded_load(g, address, None, Kind::U, 4);
-            let picked = self.pick(row, &ins.operands[2], mask);
-            return self.write(&ins.operands[0], picked, false);
+            let picked = self.pick(row, ins.operand(2)?, mask);
+            return self.write(ins.operand(0)?, picked, false);
         }
         let (image, t) = self.texture(slot)?;
         let (n, arrayed) = Self::coordinates(&t);
-        let all = self.read_lanes(&ins.operands[1], &[0, 1, 2, 3], Kind::I)?;
+        let all = self.read_lanes(ins.operand(1)?, &[0, 1, 2, 3], Kind::I)?;
         let cl: Vec<u8> = (0..n).collect();
         let coordinate = self.b.swizzle(all, &cl);
         let array_index = arrayed.then(|| self.b.lane(all, n).expr);
         let level = (!t.multi).then(|| self.b.lane(all, 3).expr);
         let sample = if ins.name() == "ld_ms" {
-            Some(self.read(&ins.operands[3], 1, Kind::I)?.expr)
+            Some(self.read(ins.operand(3)?, 1, Kind::I)?.expr)
         } else {
             None
         };
@@ -539,19 +548,19 @@ impl Lift<'_> {
             result = self.b.compose(&[result, zero, zero, one]);
         }
         let bits = self.b.bitcast(result, Kind::U);
-        let picked = self.pick(bits, &ins.operands[2], mask);
-        self.write(&ins.operands[0], picked, false)
+        let picked = self.pick(bits, ins.operand(2)?, mask);
+        self.write(ins.operand(0)?, picked, false)
     }
 
     /// `sample_info dest, t<n>`: the sample count of a multisampled texture in x (0 for one that is not, and in the
     /// other lanes), as a uint or a float by the instruction's control.
     pub(super) fn sample_info(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[1].register, dxbc_reader::decode::Register::Texture) {
+        if !matches!(ins.operand(1)?.register, dxbc_reader::decode::Register::Texture) {
             return self.refuse("the sample count of the rasterizer is the pipeline's, not the program's");
         }
-        let slot = ins.operands[1].indices[0].base;
+        let slot = self.index_of(ins.operand(1)?, 0)?.base;
         let (image, t) = self.texture(slot)?;
-        let mask = self.dest_mask(&ins.operands[0]);
+        let mask = self.dest_mask(ins.operand(0)?);
         let count = if t.multi {
             let g = self.b.global_ptr(image);
             Val {
@@ -573,8 +582,8 @@ impl Lift<'_> {
             self.b.convert(all, Kind::F)
         };
         let bits = self.b.bitcast(result, Kind::U);
-        let picked = self.pick(bits, &ins.operands[1], mask);
-        self.write(&ins.operands[0], picked, false)
+        let picked = self.pick(bits, ins.operand(1)?, mask);
+        self.write(ins.operand(0)?, picked, false)
     }
 
     pub(super) fn resource_info(&mut self, ins: &Instruction) -> Result<()> {
@@ -587,7 +596,7 @@ impl Lift<'_> {
             ],
         )?;
         // a typed unordered-access view has one level and a size queried without one
-        let (image, t) = if matches!(ins.operands[2].register, dxbc_reader::decode::Register::Uav) {
+        let (image, t) = if matches!(ins.operand(2)?.register, dxbc_reader::decode::Register::Uav) {
             let (g, v) = self.view(slot)?;
             (
                 g,
@@ -603,8 +612,8 @@ impl Lift<'_> {
         } else {
             self.texture(slot)?
         };
-        let mask = self.dest_mask(&ins.operands[0]);
-        let mip = self.read(&ins.operands[1], 1, Kind::U)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let mip = self.read(ins.operand(1)?, 1, Kind::U)?;
         let g = self.b.global_ptr(image);
         let dims = match t.dim {
             naga::ImageDimension::D1 => 1,
@@ -663,8 +672,8 @@ impl Lift<'_> {
                 self.b.binary(Bo::Divide, one, f)
             }
         };
-        let picked = self.pick(result, &ins.operands[2], mask);
-        self.write(&ins.operands[0], picked, false)
+        let picked = self.pick(result, ins.operand(2)?, mask);
+        self.write(ins.operand(0)?, picked, false)
     }
 
     /// The lanes of a raw or structured load: word `word` plus each result lane's source component.
@@ -672,7 +681,7 @@ impl Lift<'_> {
         let components: Vec<u8> = lanes_of(mask)
             .iter()
             .map(|l| match resource.selection {
-                Selection::Swizzle(s) => s[*l as usize],
+                Selection::Swizzle(s) => super::operands::of_four(s, *l),
                 Selection::Scalar(c) => c,
                 _ => 0,
             })
@@ -687,40 +696,39 @@ impl Lift<'_> {
     }
 
     pub(super) fn load_raw(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[2].register, dxbc_reader::decode::Register::Texture) {
-            return self.load_memory(ins, &[&ins.operands[1]], &ins.operands[2]);
+        if !matches!(ins.operand(2)?.register, dxbc_reader::decode::Register::Texture) {
+            return self.load_memory(ins, &[ins.operand(1)?], ins.operand(2)?);
         }
-        let slot = ins.operands[2].indices[0].base;
+        let slot = self.index_of(ins.operand(2)?, 0)?.base;
         let Some((g, Buffer::Words { .. })) = self.resources.buffers.get(&slot).copied() else {
             return self.refuse(format!("t{slot} is not a raw buffer"));
         };
-        let mask = self.dest_mask(&ins.operands[0]);
-        let offset = self.read(&ins.operands[1], 1, Kind::U)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let offset = self.read(ins.operand(1)?, 1, Kind::U)?;
         let two = self.b.lit_u(2);
         let word = self.b.binary(Bo::ShiftRight, offset, two);
-        let result = self.load_words(g, word, &ins.operands[2], mask);
-        self.write(&ins.operands[0], result, false)
+        let result = self.load_words(g, word, ins.operand(2)?, mask);
+        self.write(ins.operand(0)?, result, false)
     }
 
     pub(super) fn load_structured(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[3].register, dxbc_reader::decode::Register::Texture) {
-            let ops = &ins.operands;
-            return self.load_memory(ins, &[&ops[1], &ops[2]], &ops[3]);
+        if !matches!(ins.operand(3)?.register, dxbc_reader::decode::Register::Texture) {
+            return self.load_memory(ins, &[ins.operand(1)?, ins.operand(2)?], ins.operand(3)?);
         }
-        let slot = ins.operands[3].indices[0].base;
+        let slot = self.index_of(ins.operand(3)?, 0)?.base;
         let Some((g, Buffer::Words { stride })) = self.resources.buffers.get(&slot).copied() else {
             return self.refuse(format!("t{slot} is not a structured buffer"));
         };
-        let mask = self.dest_mask(&ins.operands[0]);
-        let element = self.read(&ins.operands[1], 1, Kind::U)?;
-        let offset = self.read(&ins.operands[2], 1, Kind::U)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let element = self.read(ins.operand(1)?, 1, Kind::U)?;
+        let offset = self.read(ins.operand(2)?, 1, Kind::U)?;
         let stride = self.b.lit_u(stride);
         let base = self.b.binary(Bo::Multiply, element, stride);
         let byte = self.b.binary(Bo::Add, base, offset);
         let two = self.b.lit_u(2);
         let word = self.b.binary(Bo::ShiftRight, byte, two);
-        let result = self.load_words(g, word, &ins.operands[3], mask);
-        self.write(&ins.operands[0], result, false)
+        let result = self.load_words(g, word, ins.operand(3)?, mask);
+        self.write(ins.operand(0)?, result, false)
     }
 
     fn view(&self, slot: u32) -> Result<(Handle<GlobalVariable>, View)> {
@@ -733,12 +741,12 @@ impl Lift<'_> {
 
     /// The address lanes of a typed view's texel: its dimensions' coordinates, and an array layer after them.
     pub(super) fn view_address(&mut self, op: &Operand, v: &View) -> Result<(Val, Option<naga::Handle<E>>)> {
-        let n = match v.dim {
+        let n: u8 = match v.dim {
             naga::ImageDimension::D1 => 1,
             naga::ImageDimension::D2 => 2,
             _ => 3,
         };
-        let lanes: Vec<u8> = (0..n + u8::from(v.arrayed)).collect();
+        let lanes: Vec<u8> = (0..n.saturating_add(u8::from(v.arrayed))).collect();
         let all = self.read_lanes(op, &lanes, Kind::U)?;
         let coordinate = if all.width == n {
             all
@@ -755,11 +763,11 @@ impl Lift<'_> {
     pub(super) fn store_view(&mut self, ins: &Instruction) -> Result<()> {
         let slot = self.slot_of(ins, 0, &[dxbc_reader::decode::Register::Uav])?;
         let (global, v) = self.view(slot)?;
-        if self.dest_mask(&ins.operands[0]) != 15 {
+        if self.dest_mask(ins.operand(0)?) != 15 {
             return self.refuse("a store to a view with a partial write mask");
         }
-        let (coordinate, array_index) = self.view_address(&ins.operands[1], &v)?;
-        let value = self.read_lanes(&ins.operands[2], &[0, 1, 2, 3], v.kind)?;
+        let (coordinate, array_index) = self.view_address(ins.operand(1)?, &v)?;
+        let value = self.read_lanes(ins.operand(2)?, &[0, 1, 2, 3], v.kind)?;
         let image = self.b.global_ptr(global);
         self.b.push(naga::Statement::ImageStore {
             image,
@@ -774,8 +782,8 @@ impl Lift<'_> {
     pub(super) fn load_view(&mut self, ins: &Instruction) -> Result<()> {
         let slot = self.slot_of(ins, 2, &[dxbc_reader::decode::Register::Uav])?;
         let (global, v) = self.view(slot)?;
-        let mask = self.dest_mask(&ins.operands[0]);
-        let (coordinate, array_index) = self.view_address(&ins.operands[1], &v)?;
+        let mask = self.dest_mask(ins.operand(0)?);
+        let (coordinate, array_index) = self.view_address(ins.operand(1)?, &v)?;
         let image = self.b.global_ptr(global);
         let expr = self.b.app(E::ImageLoad {
             image,
@@ -790,8 +798,8 @@ impl Lift<'_> {
             width: 4,
         };
         let bits = self.b.bitcast(result, Kind::U);
-        let picked = self.pick(bits, &ins.operands[2], mask);
-        self.write(&ins.operands[0], picked, false)
+        let picked = self.pick(bits, ins.operand(2)?, mask);
+        self.write(ins.operand(0)?, picked, false)
     }
 
     fn notes_typed_buffer(&mut self) {
