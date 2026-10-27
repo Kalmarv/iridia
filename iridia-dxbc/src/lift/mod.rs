@@ -33,8 +33,8 @@ use iridia::build::Builder;
 use iridia::{Conventions, D3dModes, Program, Provenance, ShaderFormat, Stage};
 use naga::{Handle, LocalVariable};
 
-use crate::decode::{Decoded, decode};
 use crate::{Result, error};
+use dxbc_reader::decode::{Decoded, decode};
 
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
@@ -74,15 +74,8 @@ fn lift_program(bytes: &[u8], bound: &iridia::BoundSizes) -> Result<Program> {
     if words.len() > 1_048_576 {
         return Err(error(1, "program exceeds word budget"));
     }
-    let decoded = decode(&words)?;
-    let stage = match decoded.kind {
-        crate::decode::ProgramType::Pixel => Stage::Pixel,
-        crate::decode::ProgramType::Vertex => Stage::Vertex,
-        crate::decode::ProgramType::Compute => Stage::Compute,
-        crate::decode::ProgramType::Hull => Stage::Hull,
-        crate::decode::ProgramType::Geometry => Stage::Geometry,
-        crate::decode::ProgramType::Domain => Stage::Domain,
-    };
+    let decoded = decode(&words).map_err(crate::read)?;
+    let stage = crate::reflection::stage_of(decoded.kind);
     let mut setup = setup::Setup::new(bytes, &decoded, stage)?;
     setup.bind_sizes(bound)?;
     let mut lift = Lift::new(&decoded, stage, setup)?;

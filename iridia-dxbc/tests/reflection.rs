@@ -66,8 +66,8 @@ fn rdef() -> Vec<u8> {
 #[test]
 fn checked_reflection_ranges_and_cycles() {
     let valid = rdef();
-    let r = primase_dxbc::reflection(&fixture(&valid)).unwrap();
-    let r_of_valid = primase_dxbc::reflection(&fixture(&valid)).unwrap();
+    let r = iridia_dxbc::reflection(&fixture(&valid)).unwrap();
+    let r_of_valid = iridia_dxbc::reflection(&fixture(&valid)).unwrap();
     let ResourceKind::ConstantBuffer { layout } = &r.resources[0].kind else {
         panic!("a constant buffer")
     };
@@ -95,7 +95,7 @@ fn checked_reflection_ranges_and_cycles() {
     ] {
         let mut bad = valid.clone();
         set(&mut bad, at, value);
-        let message = primase_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
+        let message = iridia_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
         assert!(message.contains(named), "{named}: {message}");
     }
     // a tbuffer (a layout of type 1 and its binding of type 1: constants read through a shader-resource register) is a
@@ -103,7 +103,7 @@ fn checked_reflection_ranges_and_cycles() {
     let mut tbuffer = valid.clone();
     set(&mut tbuffer, 80, 1);
     set(&mut tbuffer, 180, 1);
-    let r = primase_dxbc::reflection(&fixture(&tbuffer)).unwrap();
+    let r = iridia_dxbc::reflection(&fixture(&tbuffer)).unwrap();
     assert_eq!(
         r.resources[0].kind,
         ResourceKind::Buffer(BufferKind::Typed(Value {
@@ -123,17 +123,17 @@ fn checked_reflection_ranges_and_cycles() {
     // a tbuffer binding whose layout is a constant buffer's has no layout of its own
     let mut bad = valid.clone();
     set(&mut bad, 180, 1);
-    let message = primase_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
+    let message = iridia_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
     assert!(message.contains("tbuffer without its layout"), "{message}");
     // a tbuffer layout whose binding is a constant buffer has no layout to bind
     let mut bad = valid.clone();
     set(&mut bad, 80, 1);
-    let message = primase_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
+    let message = iridia_dxbc::reflection(&fixture(&bad)).unwrap_err().to_string();
     assert!(message.contains("without its layout"), "{message}");
     let mut bad = valid.clone();
     set(&mut bad, 92, 17);
     assert!(
-        primase_dxbc::reflection(&fixture(&bad))
+        iridia_dxbc::reflection(&fixture(&bad))
             .unwrap_err()
             .to_string()
             .contains("exceeds constant buffer")
@@ -145,19 +145,19 @@ fn checked_reflection_ranges_and_cycles() {
     set(&mut bad, 160, 174);
     set(&mut bad, 164, 124);
     assert!(
-        primase_dxbc::reflection(&fixture(&bad))
+        iridia_dxbc::reflection(&fixture(&bad))
             .unwrap_err()
             .to_string()
             .contains("cyclic")
     );
     let mut bad = valid.clone();
     set(&mut bad, 100, 10000);
-    assert!(primase_dxbc::reflection(&fixture(&bad)).is_err());
+    assert!(iridia_dxbc::reflection(&fixture(&bad)).is_err());
     let mut bad = valid.clone();
     set(&mut bad, 40, 31);
-    assert!(primase_dxbc::reflection(&fixture(&bad)).is_err());
+    assert!(iridia_dxbc::reflection(&fixture(&bad)).is_err());
     for n in 0..valid.len() {
-        assert!(primase_dxbc::reflection(&fixture(&valid[..n])).is_err());
+        assert!(iridia_dxbc::reflection(&fixture(&valid[..n])).is_err());
     }
 }
 
@@ -196,7 +196,7 @@ fn reflected_bindings_match_independent_disassembly() -> Result<(), Box<dyn std:
             continue;
         }
         let j: serde_json::Value = serde_json::from_slice(&std::fs::read(oracle)?)?;
-        let r = match primase_dxbc::reflection(&std::fs::read(&path)?) {
+        let r = match iridia_dxbc::reflection(&std::fs::read(&path)?) {
             Ok(r) => r,
             Err(e) => {
                 *refused.entry(common::reason(&e.to_string())).or_default() += 1;
@@ -283,21 +283,21 @@ fn reflected_bindings_match_independent_disassembly() -> Result<(), Box<dyn std:
 #[test]
 fn a_reflection_is_read_where_it_is_one_this_reader_reads() {
     let good = fixture(&rdef());
-    assert!(primase_dxbc::resource_reflection(&good).unwrap().is_some());
+    assert!(iridia_dxbc::resource_reflection(&good).unwrap().is_some());
     let mut compute = rdef();
     set(&mut compute, 16, 0x4353_0500);
     assert!(
-        primase_dxbc::resource_reflection(&fixture(&compute))
+        iridia_dxbc::resource_reflection(&fixture(&compute))
             .unwrap()
             .is_none()
     );
     // the resource records past the chunk's end
     let mut broken = rdef();
     set(&mut broken, 12, 4096);
-    assert!(primase_dxbc::resource_reflection(&fixture(&broken)).is_err());
+    assert!(iridia_dxbc::resource_reflection(&fixture(&broken)).is_err());
     // the RDEF chunk under another tag: none
     let mut without = good.clone();
     let at = without.windows(4).position(|w| w == b"RDEF").unwrap();
     without[at..at + 4].copy_from_slice(b"STAT");
-    assert!(primase_dxbc::resource_reflection(&without).unwrap().is_none());
+    assert!(iridia_dxbc::resource_reflection(&without).unwrap().is_none());
 }

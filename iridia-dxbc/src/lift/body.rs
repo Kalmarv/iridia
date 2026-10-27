@@ -8,7 +8,7 @@ use naga::{
 
 use super::{Frame, FrameKind, Lift};
 use crate::Result;
-use crate::decode::{Instruction, Register};
+use dxbc_reader::decode::{Instruction, Register};
 
 impl Lift<'_> {
     pub(super) fn body(&mut self) -> Result<()> {
@@ -40,10 +40,10 @@ impl Lift<'_> {
 
     /// A source read once, as all four destination lanes, before an instruction with two destinations writes either
     /// (a destination may alias a source: `sincos r0.x, r1.x, r0.x`); `lanes` then takes a destination's own.
-    fn read_whole(&mut self, op: &crate::decode::Operand, kind: Kind) -> Result<Val> {
+    fn read_whole(&mut self, op: &dxbc_reader::decode::Operand, kind: Kind) -> Result<Val> {
         self.read_lanes(op, &[0, 1, 2, 3], kind)
     }
-    fn lanes(&mut self, whole: Val, destination: &crate::decode::Operand) -> Val {
+    fn lanes(&mut self, whole: Val, destination: &dxbc_reader::decode::Operand) -> Val {
         let mask = self.dest_mask(destination);
         self.b.swizzle(whole, &super::resources::lanes_of(mask))
     }

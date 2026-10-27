@@ -8,7 +8,7 @@ use super::Lift;
 use super::resources::lanes_of;
 use super::setup::UavKind;
 use crate::Result;
-use crate::decode::{Instruction, Operand, Register};
+use dxbc_reader::decode::{Instruction, Operand, Register};
 
 /// The memory a word-addressed instruction reaches.
 #[derive(Clone, Copy)]
@@ -167,8 +167,8 @@ impl Lift<'_> {
         let components: Vec<u8> = lanes_of(mask)
             .iter()
             .map(|l| match resource.selection {
-                crate::decode::Selection::Swizzle(s) => s[*l as usize],
-                crate::decode::Selection::Scalar(c) => c,
+                dxbc_reader::decode::Selection::Swizzle(s) => s[*l as usize],
+                dxbc_reader::decode::Selection::Scalar(c) => c,
                 _ => 0,
             })
             .collect();

@@ -93,7 +93,7 @@ fn palette_id(program: &Program) -> ResourceId {
 
 #[test]
 fn a_read_past_the_declaration_is_zero_and_inside_the_bound_is_the_buffers() {
-    let declared = primase_dxbc::lift(PROGRAM).unwrap();
+    let declared = iridia_dxbc::lift(PROGRAM).unwrap();
     assert_eq!(palette_bytes(&declared), 96);
     // joint 1 is rows 3 to 5, inside the declaration; joint 2 is rows 6 to 8, past it
     assert_eq!(rows_of_joint(&declared, 1), [3.0, 4.0, 5.0]);
@@ -102,7 +102,7 @@ fn a_read_past_the_declaration_is_zero_and_inside_the_bound_is_the_buffers() {
     // bound at 256 matrices of three rows: 768 rows
     let mut bound = BoundSizes::new();
     bound.set(palette_id(&declared), 12_288);
-    let wide = primase_dxbc::lift_with(PROGRAM, &bound).unwrap();
+    let wide = iridia_dxbc::lift_with(PROGRAM, &bound).unwrap();
     assert_eq!(palette_bytes(&wide), 12_288);
     assert_eq!(rows_of_joint(&wide, 1), [3.0, 4.0, 5.0]);
     assert_eq!(rows_of_joint(&wide, 2), [6.0, 7.0, 8.0]);
@@ -111,7 +111,7 @@ fn a_read_past_the_declaration_is_zero_and_inside_the_bound_is_the_buffers() {
     assert_eq!(rows_of_joint(&wide, 256), [0.0; 3]);
     // an empty set of sizes is the plain lift
     assert_eq!(
-        primase_dxbc::lift_with(PROGRAM, &BoundSizes::new())
+        iridia_dxbc::lift_with(PROGRAM, &BoundSizes::new())
             .unwrap()
             .interface,
         declared.interface
@@ -120,15 +120,13 @@ fn a_read_past_the_declaration_is_zero_and_inside_the_bound_is_the_buffers() {
 
 #[test]
 fn a_bound_below_the_declaration_or_for_another_resource_is_refused() {
-    let declared = primase_dxbc::lift(PROGRAM).unwrap();
+    let declared = iridia_dxbc::lift(PROGRAM).unwrap();
     let mut below = BoundSizes::new();
     below.set(palette_id(&declared), 48);
-    let err = primase_dxbc::lift_with(PROGRAM, &below).unwrap_err().to_string();
+    let err = iridia_dxbc::lift_with(PROGRAM, &below).unwrap_err().to_string();
     assert!(err.contains("below the 96 its program declares"), "{err}");
     let mut missing = BoundSizes::new();
     missing.set(ResourceId(99), 1024);
-    let err = primase_dxbc::lift_with(PROGRAM, &missing)
-        .unwrap_err()
-        .to_string();
+    let err = iridia_dxbc::lift_with(PROGRAM, &missing).unwrap_err().to_string();
     assert!(err.contains("the program does not have"), "{err}");
 }

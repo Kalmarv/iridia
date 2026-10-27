@@ -9,7 +9,7 @@ use super::resources::{Resources, lanes_of};
 use super::setup::Setup;
 use super::{Frame, Lift};
 use crate::Result;
-use crate::decode::{Declared, Decoded, Register};
+use dxbc_reader::decode::{Declared, Decoded, Register};
 
 fn kind_of(s: ScalarType) -> Kind {
     Kind::of(s)

@@ -7,7 +7,7 @@
     clippy::cast_possible_truncation
 )]
 
-/// The operand count of the instruction `name` (as [`crate::decode::opcode_name`] spells it), for the instructions the
+/// The operand count of the instruction `name` (as [`dxbc_reader::decode::opcode_name`] spells it), for the instructions the
 /// lifter carries; `None` for any other.
 pub(crate) fn operands(name: &str) -> Option<usize> {
     Some(match name {

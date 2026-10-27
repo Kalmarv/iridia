@@ -3,7 +3,7 @@
 //! the interface and resources as worked out from the HLSL, and the D3D behaviours present in the lifted body as
 //! plain operations.
 use iridia::{BufferKind, ResourceKind, ScalarType, Stage, SystemValue};
-use primase_dxbc::lift;
+use iridia_dxbc::lift;
 
 const MODES: &[u8] = include_bytes!("fixtures/modes.dxbc");
 
@@ -78,7 +78,7 @@ fn the_text_form_names_what_the_lift_decided() {
     assert!(
         text.contains(&format!(
             "// source Dxbc ps_5_0 lifted by primase-dxbc {}",
-            primase_dxbc::LIFTER_VERSION
+            iridia_dxbc::LIFTER_VERSION
         )),
         "{text}"
     );

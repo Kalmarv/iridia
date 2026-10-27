@@ -3,10 +3,11 @@
 //! by hand from Direct3D's definition of the instruction (the value, not what a lift or an executor does), lifted and run by
 //! the executor (`iridia_exec::ProgramShader`). The oracle is the hand-worked value; these cases stood for the
 //! legacy evaluator's and now stand for the executor's.
+use dxbc_reader::decode;
+use dxbc_reader::decode::Declared;
+use iridia_dxbc::lift;
 use iridia_exec::ProgramShader;
 use iridia_exec::{Execution, PixelShader, Sample, Sampler};
-use primase_dxbc::decode::Declared;
-use primase_dxbc::{decode, lift};
 
 fn instruction(op: u32, operands: &[u32]) -> Vec<u32> {
     let mut v = vec![op | (((operands.len() + 1) as u32) << 24)];
@@ -105,16 +106,16 @@ fn container_with(
     let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
     for d in &decoded.declarations {
         match &d.kind {
-            Declared::Input { operand, .. } if operand.register == primase_dxbc::Register::Input => {
+            Declared::Input { operand, .. } if operand.register == dxbc_reader::Register::Input => {
                 let register = operand.indices[0].base;
-                let primase_dxbc::Selection::Mask(mask) = operand.selection else {
+                let dxbc_reader::Selection::Mask(mask) = operand.selection else {
                     panic!("an input without a mask")
                 };
                 inputs.push(("TEXCOORD", register, 0, register, mask));
             }
-            Declared::Output { operand, .. } if operand.register == primase_dxbc::Register::Output => {
+            Declared::Output { operand, .. } if operand.register == dxbc_reader::Register::Output => {
                 let register = operand.indices[0].base;
-                let primase_dxbc::Selection::Mask(mask) = operand.selection else {
+                let dxbc_reader::Selection::Mask(mask) = operand.selection else {
                     panic!("an output without a mask")
                 };
                 outputs.push(("SV_Target", register, 64, register, mask));

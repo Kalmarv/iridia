@@ -12,7 +12,7 @@ use super::Lift;
 use super::resources::lanes_of;
 use super::setup::PhaseKind;
 use crate::Result;
-use crate::decode::{Operand, Register};
+use dxbc_reader::decode::{Operand, Register};
 
 /// How many fork or join instances a phase may be unrolled into.
 const MAX_INSTANCES: u32 = 64;

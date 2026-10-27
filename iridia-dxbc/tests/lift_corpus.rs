@@ -35,7 +35,7 @@ fn census(game: Game) {
     for path in &paths {
         let bytes = std::fs::read(path).unwrap();
         c.programs += 1;
-        let program = match primase_dxbc::lift(&bytes) {
+        let program = match iridia_dxbc::lift(&bytes) {
             Ok(p) => p,
             Err(e) => {
                 c.refused

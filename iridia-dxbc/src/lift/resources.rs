@@ -13,7 +13,7 @@ use naga::{
 use super::Lift;
 use super::setup::{Declaration, Shared, Texture, UavBuffer, UavKind, View};
 use crate::Result;
-use crate::decode::{Instruction, Operand, Selection};
+use dxbc_reader::decode::{Instruction, Operand, Selection};
 
 /// Where a buffer's elements are addressed in words.
 #[derive(Clone, Copy)]
@@ -358,7 +358,7 @@ impl Lift<'_> {
         &self,
         ins: &Instruction,
         n: usize,
-        kinds: &[crate::decode::Register],
+        kinds: &[dxbc_reader::decode::Register],
     ) -> Result<u32> {
         let operand = &ins.operands[n];
         match operand.indices.first() {
@@ -372,8 +372,8 @@ impl Lift<'_> {
 
     pub(super) fn sample(&mut self, ins: &Instruction) -> Result<()> {
         let name = ins.name();
-        let texture = self.slot_of(ins, 2, &[crate::decode::Register::Texture])?;
-        let sampler = self.slot_of(ins, 3, &[crate::decode::Register::Sampler])?;
+        let texture = self.slot_of(ins, 2, &[dxbc_reader::decode::Register::Texture])?;
+        let sampler = self.slot_of(ins, 3, &[dxbc_reader::decode::Register::Sampler])?;
         let (image, t) = self.texture(texture)?;
         let sampler = self.sampler(sampler)?;
         if t.multi {
@@ -494,7 +494,7 @@ impl Lift<'_> {
     }
 
     pub(super) fn load(&mut self, ins: &Instruction) -> Result<()> {
-        let slot = self.slot_of(ins, 2, &[crate::decode::Register::Texture])?;
+        let slot = self.slot_of(ins, 2, &[dxbc_reader::decode::Register::Texture])?;
         let mask = self.dest_mask(&ins.operands[0]);
         if let Some((g, buffer)) = self.resources.buffers.get(&slot).copied() {
             let Buffer::Typed = buffer else {
@@ -546,7 +546,7 @@ impl Lift<'_> {
     /// `sample_info dest, t<n>`: the sample count of a multisampled texture in x (0 for one that is not, and in the
     /// other lanes), as a uint or a float by the instruction's control.
     pub(super) fn sample_info(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[1].register, crate::decode::Register::Texture) {
+        if !matches!(ins.operands[1].register, dxbc_reader::decode::Register::Texture) {
             return self.refuse("the sample count of the rasterizer is the pipeline's, not the program's");
         }
         let slot = ins.operands[1].indices[0].base;
@@ -581,10 +581,13 @@ impl Lift<'_> {
         let slot = self.slot_of(
             ins,
             2,
-            &[crate::decode::Register::Texture, crate::decode::Register::Uav],
+            &[
+                dxbc_reader::decode::Register::Texture,
+                dxbc_reader::decode::Register::Uav,
+            ],
         )?;
         // a typed unordered-access view has one level and a size queried without one
-        let (image, t) = if matches!(ins.operands[2].register, crate::decode::Register::Uav) {
+        let (image, t) = if matches!(ins.operands[2].register, dxbc_reader::decode::Register::Uav) {
             let (g, v) = self.view(slot)?;
             (
                 g,
@@ -684,7 +687,7 @@ impl Lift<'_> {
     }
 
     pub(super) fn load_raw(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[2].register, crate::decode::Register::Texture) {
+        if !matches!(ins.operands[2].register, dxbc_reader::decode::Register::Texture) {
             return self.load_memory(ins, &[&ins.operands[1]], &ins.operands[2]);
         }
         let slot = ins.operands[2].indices[0].base;
@@ -700,7 +703,7 @@ impl Lift<'_> {
     }
 
     pub(super) fn load_structured(&mut self, ins: &Instruction) -> Result<()> {
-        if !matches!(ins.operands[3].register, crate::decode::Register::Texture) {
+        if !matches!(ins.operands[3].register, dxbc_reader::decode::Register::Texture) {
             let ops = &ins.operands;
             return self.load_memory(ins, &[&ops[1], &ops[2]], &ops[3]);
         }
@@ -750,7 +753,7 @@ impl Lift<'_> {
     /// `store_uav_typed u, address, value`: the texel's four lanes. D3D writes the lanes the view's mask names; a
     /// partial mask would keep the others, which a store of four lanes cannot, so it is refused.
     pub(super) fn store_view(&mut self, ins: &Instruction) -> Result<()> {
-        let slot = self.slot_of(ins, 0, &[crate::decode::Register::Uav])?;
+        let slot = self.slot_of(ins, 0, &[dxbc_reader::decode::Register::Uav])?;
         let (global, v) = self.view(slot)?;
         if self.dest_mask(&ins.operands[0]) != 15 {
             return self.refuse("a store to a view with a partial write mask");
@@ -769,7 +772,7 @@ impl Lift<'_> {
 
     /// `ld_uav_typed dest, address, u`.
     pub(super) fn load_view(&mut self, ins: &Instruction) -> Result<()> {
-        let slot = self.slot_of(ins, 2, &[crate::decode::Register::Uav])?;
+        let slot = self.slot_of(ins, 2, &[dxbc_reader::decode::Register::Uav])?;
         let (global, v) = self.view(slot)?;
         let mask = self.dest_mask(&ins.operands[0]);
         let (coordinate, array_index) = self.view_address(&ins.operands[1], &v)?;

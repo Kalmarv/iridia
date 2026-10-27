@@ -6,7 +6,7 @@ use naga::{Expression as E, MathFunction as Mf, UnaryOperator as Uo};
 use super::Lift;
 use super::resources::lanes_of;
 use crate::Result;
-use crate::decode::{Index, Operand, Register, Selection};
+use dxbc_reader::decode::{Index, Operand, Register, Selection};
 
 impl Lift<'_> {
     /// The index of a register operand: its base plus the relative register, if any.

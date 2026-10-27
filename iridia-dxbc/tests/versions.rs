@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use iridia::gate;
-use primase_dxbc::{LIFTER_VERSION, lift};
+use iridia_dxbc::{LIFTER_VERSION, lift};
 
 #[test]
 fn what_the_lifter_makes_of_its_fixtures_is_the_versions() {

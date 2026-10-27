@@ -1,6 +1,6 @@
 [package]
-name = "primase-dxbc"
-description = "Bounded Shader Model 4 and 5 pixel-program evaluation"
+name = "iridia-dxbc"
+description = "Lift Direct3D Shader Model 4 and 5 bytecode (DXBC) to naga through iridia"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 iridia.workspace = true
 dxcontainer.workspace = true
+dxbc-reader.workspace = true
 naga.workspace = true
 
 [dev-dependencies]

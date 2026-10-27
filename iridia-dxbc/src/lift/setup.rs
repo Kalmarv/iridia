@@ -13,8 +13,8 @@ use iridia::{
 };
 use naga::ImageDimension;
 
-use crate::decode::{Declared, Decoded, Register, Selection};
-use crate::{Result, error, resource_reflection, signature_elements};
+use crate::{Result, error, read, resource_reflection, varying};
+use dxbc_reader::decode::{Declared, Decoded, Register, Selection};
 
 /// A phase of a hull program: the control-point phase, or a fork or join phase of its patch-constant function, with
 /// the words of the token stream it covers and how many instances it runs.
@@ -252,8 +252,9 @@ impl Setup {
     }
 
     pub(crate) fn new(bytes: &[u8], decoded: &Decoded, stage: Stage) -> Result<Self> {
-        let (signature_stage, input_elements, output_elements) = signature_elements(bytes)?;
-        debug_assert_eq!(signature_stage, stage);
+        let (program_type, input_elements, output_elements) =
+            dxbc_reader::signature_elements(bytes).map_err(read)?;
+        debug_assert_eq!(crate::reflection::stage_of(program_type), stage);
         let mut setup = Self::empty();
         let refuse = |detail: String| error(0, detail);
         let phases = phases_of(decoded)?;
@@ -670,7 +671,7 @@ impl Setup {
                 Declared::Other { opcode, .. } => {
                     return Err(at(format!(
                         "{} ({opcode}) is not lifted",
-                        crate::decode::opcode_name(*opcode)
+                        dxbc_reader::decode::opcode_name(*opcode)
                     )));
                 }
             }
@@ -827,13 +828,13 @@ impl Setup {
                 .is_some_and(|m| m & e.mask != 0);
             // D3D_NAME_PRIMITIVE_ID and _COVERAGE are read as special operands, not through a register
             let special = (e.system_value == 7 && primitive_id) || (e.system_value == 66 && input_coverage);
-            let mut v = e.varying(stage, false)?;
+            let mut v = varying(e, stage, false)?;
             v.used &= declared || special;
             interface.inputs.push(v);
         }
         for e in &output_elements {
             let declared = declared_outputs.get(&e.register).is_some_and(|m| m & e.mask != 0);
-            let mut v = e.varying(stage, true)?;
+            let mut v = varying(e, stage, true)?;
             let keep = match v.system {
                 // a built-in output has a local only when the program declares it
                 Some(SystemValue::Depth | SystemValue::DepthGreaterEqual | SystemValue::DepthLessEqual) => {
@@ -944,12 +945,12 @@ impl Setup {
         if matches!(stage, Stage::Hull | Stage::Domain) {
             let output = stage == Stage::Hull;
             let mut patch_constants = Vec::new();
-            for e in crate::patch_signature_elements(bytes)? {
+            for e in dxbc_reader::patch_signature_elements(bytes).map_err(read)? {
                 let declared = setup
                     .declared_patch
                     .get(&e.register)
                     .is_some_and(|m| m & e.mask != 0);
-                let mut v = e.varying(stage, output)?;
+                let mut v = varying(&e, stage, output)?;
                 v.used = declared;
                 patch_constants.push(v);
             }

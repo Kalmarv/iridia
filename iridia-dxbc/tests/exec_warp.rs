@@ -399,7 +399,7 @@ fn run_program(
 ) {
     let (fxc, warp, scratch) = tools;
     t.programs += 1;
-    let Ok(program) = primase_dxbc::lift(bytes) else {
+    let Ok(program) = iridia_dxbc::lift(bytes) else {
         return;
     };
     if program.stage != iridia::Stage::Pixel {

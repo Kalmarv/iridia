@@ -5,10 +5,10 @@
 //! storing the old words it reads to another).
 use iridia::D3dClass;
 use iridia::ResourceId;
+use iridia_dxbc::lift;
 use iridia_exec::{
     Backend, Element, Executable, ImageAtomic, ImageAtomicOp, ImageSample, ImageStore, Resources,
 };
-use primase_dxbc::lift;
 use std::collections::BTreeMap;
 use std::path::Path;
 
