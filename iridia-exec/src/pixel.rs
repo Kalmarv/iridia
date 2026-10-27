@@ -1,5 +1,5 @@
 //! A [`Program`] lifted from D3D bytecode behind [`PixelShader`]: inputs and outputs by signature register, constant
-//! buffers and samplers by bind slot, as every bake already drives a shader. A vertex program has the same register view
+//! buffers and samplers by bind slot, as a caller that evaluates a shader over many pixels drives it. A vertex program has the same register view
 //! (its inputs the vertex attributes by register, its outputs the varyings by register; the position and clip distances,
 //! which have no output register, are not in it), so a caller can run one per vertex through [`PixelShader::execute`].
 

@@ -8,8 +8,8 @@
 //! [`lines`] reads which, in the value graph, whatever the packing, the side or the bytecode's lowering (a dot product
 //! or the multiplies and adds it is made of).
 //!
-//! The matrix is the one the program applies to column vectors (`M * v`), the form core's matrix roles are stated in:
-//! [`Majorness::Row`] is each line one of its rows ([`MatrixLines::Rows`] in a binding).
+//! The matrix is the one the program applies to column vectors (`M * v`), the form the matrix roles of the interface
+//! vocabulary are stated in: [`Majorness::Row`] is each line one of its rows ([`MatrixLines::Rows`] in a binding).
 use std::collections::{BTreeSet, HashMap};
 
 pub use iridia_interface::Unshown;

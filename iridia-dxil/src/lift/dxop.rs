@@ -6,7 +6,7 @@
 //! The counts are DXC's own: `utils/hct/hctdb.py` of DirectXShaderCompiler (revision 55a61aa, 2026-09-29) defines each
 //! operation's parameter list, the return value first and the opcode second, so an operation's arguments are its
 //! parameters less the return value. The table below is those counts for the operations the lifter dispatches; every one
-//! also equals the count the 69,826 modules of the oracle corpora and the committed fixtures call it with (those that call
+//! also equals the count the 69,826 modules of the real-data shader corpora (see `tests/inputs/README.md`) and the committed fixtures call it with (those that call
 //! it: 150 of the 177), and the operations none of them calls (41 to 45, `Fma`, `LoadOutputControlPoint`, some of the mesh
 //! and ray query operations, `IsNormal` and the hyperbolic functions) are only DXC's word.
 #![deny(

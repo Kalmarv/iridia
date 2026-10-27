@@ -1,6 +1,10 @@
 [package]
 name = "iridia"
-description = "The shader program every bytecode lifts into: interface, validation, builder, WGSL writer"
+description = "Compiled Direct3D shaders as naga modules: the program type the iridia readers produce, with validation, a WGSL writer and analyses"
+readme = "README.md"
+keywords = ["dxbc", "wgsl", "spirv", "shader", "decompiler"]
+categories = ["graphics", "compilers", "game-development"]
+documentation = "https://docs.rs/iridia"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +23,7 @@ sha2.workspace = true
 iridia-dxbc.workspace = true
 iridia-dxil.workspace = true
 # naga's WGSL front end, to read a writer's text back (tests/wgsl_for.rs)
-naga = { workspace = true, features = ["wgsl-in"] }
+naga = { workspace = true, features = ["wgsl-in", "spv-out"] }
 
 [lints]
 workspace = true

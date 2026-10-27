@@ -1,6 +1,6 @@
-// primase's reading of a pixel program's outputs as a surface (`primase_core::shader::surface`), for a composite that
+// The reading of a pixel program's outputs as a surface (`iridia_interface::surface`), for a composite that
 // decodes a G-buffer on the GPU as the CPU reading does. A program's surface is `primase_surface_rows` rows of four
-// words (`primase_shader::surface::rows`), one per term at the index its constant below names:
+// words (`iridia::surface::rows`), one per term at the index its constant below names:
 //
 //   x  the render target the term is in, plus one; 0 where no output has a role for the term (the caller takes its
 //      own default and calls none of these functions with the row)

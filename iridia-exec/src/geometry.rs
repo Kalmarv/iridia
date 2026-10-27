@@ -10,7 +10,7 @@
 //! [`Executable::function`].
 //!
 //! The assembly rules are the ones D3D11's input assembler and stream output follow, measured with the D3D11 reference
-//! of WARP (`geometry_probe` in the WARP oracle; the draw's vertices' numbers streamed out through a geometry shader
+//! of WARP (a probe program streamed the draw's vertices' numbers out through a geometry shader
 //! that writes each input vertex out): a triangle strip's odd primitives swap their last two vertices, so that every
 //! triangle keeps its winding; a triangle strip with adjacency is numbered as [`Topology::TriangleStripAdjacency`]
 //! says; `SV_PrimitiveID` counts the primitives of the draw from 0; the instances of a primitive run in order before the

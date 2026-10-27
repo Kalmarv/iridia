@@ -1,7 +1,7 @@
 //! A draw on the CPU, as Direct3D draws an indexed triangle list: the vertex program for each vertex, each triangle
 //! clipped, mapped through the viewport and rasterized, the pixel program for each pixel it covers, the depth test,
-//! and the render targets written. It is the draw a capture of a running game records, run again on the programs the
-//! capture names, so its pixels can be set against the ones the game wrote.
+//! and the render targets written. It is for re-running a draw recorded from a running game on the programs the record
+//! names, so its pixels can be set against the ones the game wrote.
 //!
 //! The rules are the Direct3D 11 functional specification's (which Direct3D 12 keeps), held to Microsoft's WARP
 //! rasterizer by the `exec_warp_draw` tests:

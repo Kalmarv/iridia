@@ -1,87 +1,66 @@
-# DXBC: reading and lifting
+# iridia-dxbc
 
-Shader Model 4 and 5 programs. `decode` reads a program's token stream into typed declarations and instructions (any
-stage's version token, instructions with their controls and extended tokens) and refuses, by name and word, what is
-not a program; it says nothing about what a consumer supports. `reflection` reads RDEF with the signatures
-(`signatures` alone for a container whose RDEF was stripped, as some engines ship them, leaving the constant layout to
-the caller's own records). `lift` turns a program of any stage into a `iridia::Program`; running one is
-`iridia_exec`'s (`ProgramShader` for a pixel or vertex program). The container itself is read by
-`dxcontainer`: its digest is not verified, this reader does not authenticate shaders.
+Lifts compiled Direct3D Shader Model 4 and 5 programs (DXBC, what `fxc` writes) into [`iridia::Program`](../iridia), a [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga) module with its interface, and reads a container's reflection and signatures.
 
-Sampling belongs to the caller of an execution: it states its footprint/LOD, addressing, filtering and transfer
-policy, and a scalar execution cannot infer derivatives, so the caller states its inputs'.
+Part of [iridia](https://github.com/Kalmarv/iridia), which turns compiled Direct3D shaders into naga modules. The container and token stream are read by [`dxbc-reader`](https://github.com/Kalmarv/dx) and `dxcontainer`; this crate maps what they read.
 
-`reflection` reads SM5.0 pixel-program RDEF, ISGN and OSGN chunks into primase's interface vocabulary
-(`iridia::Interface`, see `iridia/README.md`): resources by kind with their D3D bind points, constant
-buffers with explicit byte offsets, strides and default bytes, and one varying per signature element with its
-register and lanes in provenance. D3D's enum numbers stop there; one the mapping does not know is refused by name.
-It does not flatten arrays, infer their use or assign material parameters; the interpolation a program declares is
-read by `lift`. Record sizes, byte ranges, string lengths, recursion and total type count are bounded; cyclic types and
-variables outside their buffer are refused. Stripped reflection is an explicit error for this API, not an invented
-binding layout. The binary record layout is also cross-checked against the independent
-[RenderDoc DXBC container definitions](https://github.com/baldurk/renderdoc/blob/v1.x/renderdoc/driver/shaders/dxbc/dxbc_container.cpp).
+## What it reads
 
-Format definitions: Microsoft's
-[tokenized program format](https://github.com/microsoft/DirectX-Headers/blob/main/include/directx/D3D12TokenizedProgramFormat.hpp).
-Arithmetic contracts: the
-[D3D11 functional specification](https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm),
-including its instruction reference. Opcode names/numeric values and bit fields are format identifiers; no
-third-party interpreter implementation is included.
+- A DXBC container with a `SHDR` or `SHEX` program of Shader Model 4.0, 4.1 or 5.0 (its fixtures are `fxc` output for `vs_5_0`, `ps_5_0`, `cs_5_0`, `hs_5_0`, `ds_5_0`), of any stage: vertex, pixel, compute, hull, domain and geometry.
+- Its `RDEF` and signature chunks (`ISGN`/`ISG1`, `OSGN`/`OSG1`/`OSG5`), for names, constant buffer layouts and signatures.
 
-## Independent gates
+`lift(bytes)` returns a `Program` whose conventions follow `iridia`'s: every register is four raw 32-bit lanes (`vec4<u32>` locals) and each instruction bitcasts to the type it implies; varyings are unpacked from the signature registers into one entry argument or result member per signature element, with the register and lanes kept in provenance; resources are module globals (`cb<n>` a uniform `array<vec4<u32>, rows>` in group 0, textures and buffer views `t<n>` in group 1, samplers `s<n>` in group 2, typed texture views `u<n>` as storage images of four 32-bit lanes in group 3, binding = slot). Direct3D's results are written out (`D3dModes::ALL`): division by zero, float to integer conversion, `min`/`max`/`saturate` with a NaN, shift counts, and reads out of range of a dynamically indexed buffer (zero, as in D3D). `lift_with` takes the sizes constant buffers are bound at (`iridia::BoundSizes`), for a program that indexes past its declaration.
 
-- `tests/analytic.rs`: programs written as tokens, lifted and run on the executor against values worked out by hand from
-  Direct3D's definition of each instruction (arithmetic and conversion edges, every numeric opcode, flow, derivatives,
-  quads, sample callbacks, relative constant-buffer addressing); nothing is read from data.
-- `tests/disassembly.rs`: `oracles.corpus.general/dxbc` selects a directory of `.ppo` binaries with matching `.ppo.asm`
-  independent disassemblies (Microsoft's fxc `/dumpbin`) and the `.ppo.reflection.json` that
-  `tests/oracles/dxbc_corpus.py` reads from that text: the decoder's complete opcode sequence and count, including
-  ret, against the disassembly; the programs the decoder refuses are counted by reason and held to pinned counts (a new
-  reason, or more, fails). `oracles.d3d-disassembler.riders/shader-pack` (Microsoft's D3D Shader Disassembler text of
-  every container of Riders Republic's pack) gives the opcodes, sample offsets, resource declarations and immediates
-  the decoder reads, one by one. Nothing is copied into the repository.
-- `tests/exec_warp.rs`: the lifted programs rendered by Microsoft's WARP rasterizer (Direct3D 11) and run on the
-  executor, every lane both write compared (needs `tools.warp` and `tools.fxc`).
+A pixel input's interpolation comes from the `dcl_input_ps` declarations; a stage that is not an entry point in WGSL (hull, domain, geometry, a vertex program that feeds a tessellator) lifts as functions (`iridia::stage_functions`), which `iridia-exec` runs.
 
-## Retired evaluator: what it established
+Reflection without a lift: `reflection` (resources and signatures), `signatures` (for a container whose `RDEF` was stripped, as some engines ship them; the constant layout is then the caller's), `resource_reflection` (resources only; `None` for a program whose `RDEF` is not Shader Model 5.0 pixel or vertex, whose resources the lift names from their declarations). A stripped program's resources are named by register.
 
-The bounded pixel-program interpreter (`Shader`, `Program::execute*`) was removed once the executor ran everything it
-did. Its traced value-oracle record stands, for anyone who compares against a text disassembler again: in a controlled
-22-program corpus (constant sampled RGBA, fixed raw inputs and constant buffers), 364 written output components were
-216 exact and 148 within four f32 epsilon of the oracle's, and two things explained all of the difference. (1) Decimal
-literals are lost in a disassembler's text: the first divergent instruction in every trace was a `mul` by binary
-`0x3b808081` (0.003921568859368563) printed as `0.003922`, and the G-buffer bias is printed as `0.500489`; with the
-exact hexadecimal bits supplied, 331 components were exact and 33 within the bound. Binary literals are authoritative.
-(2) Reciprocal square root: for a first divergent `rsq` input `0x3f91d6c7` (1.1393669843673706), f64 sqrt and reciprocal
-rounded once give `0x3f6fd523`, an oracle's f32 sqrt then f32 division gives `0x3f6fd524`; changing only that
-operation of the oracle to f64 intermediates made all 364 components match exactly. A precision choice, not a format
-rule. No residual `mad` contraction, `sqrt`, `log` or `exp` difference was observed in these controls, which does not
-establish equality for other inputs.
+## Example
 
-## Lifting
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let container = std::fs::read("tests/fixtures/modes.dxbc")?; // `fxc /T ps_5_0` output
+    let program = iridia_dxbc::lift(&container)?;
 
-`lift(container)` turns a Shader Model 4 or 5 pixel or vertex program into a `iridia::Program`. It reads the
-program through `decode` (the token-level decoder every consumer shares: any stage's version token, typed
-declarations, instructions with their controls and extended tokens) and the container's signatures and, where there is one, its RDEF (names and constant layouts).
+    assert_eq!(program.stage, iridia::Stage::Pixel);
+    assert_eq!(program.provenance.target, "ps_5_0");
+    // the constant buffer `C : register(b0)` of the HLSL, with the names the container's reflection gives its fields
+    let iridia::ResourceKind::ConstantBuffer { layout } = &program.interface.resources[0].kind else {
+        unreachable!("the only resource is a constant buffer");
+    };
+    let fields: Vec<_> = layout.constants.iter().map(|c| (c.name.as_str(), c.offset)).collect();
+    assert_eq!(fields, [("f", 0), ("u", 16), ("i", 32)]);
 
-A register is four raw lanes (`vec4<u32>` locals); each instruction bitcasts to the type it implies. Varyings are
-unpacked from D3D registers (the register and lanes stay in provenance); every element of the container's signatures is in the interface
-(input layouts and stage linking are matched against the signature), `used` false for one the program does not declare. Resources are `cb<n>` uniform `array<vec4<u32>, rows>` (group 0), `t<n>` textures and buffer
-views (group 1), `s<n>` samplers (group 2), typed texture views `u<n>` as storage images of four 32-bit lanes (group 3; the
-view's real format is the binding's, a note on the program says so), binding = slot. Reads out of range of a dynamically indexed buffer are
-zero, as in D3D. D3D's results are written out (`D3dModes::ALL`). Refused by name, with the instruction word: compute,
-geometry and tessellation programs, unordered-access buffer views (raw, structured, typed) and atomics, a store through a view with a partial write mask, `sample_info`, index ranges, a pixel input of
-`SV_RenderTargetArrayIndex`, a vertex program with no `SV_Position`, doubles, SM5.1 declarations.
+    let wgsl = iridia::emit::wgsl(&program)?;
+    assert!(wgsl.contains("@fragment"));
 
-A malformed program is an `Err`, never a panic or an allocation its declarations ask for: an instruction's operand count is
-its opcode's (`src/arity.rs`, checked once before an operand is read by position), a resource operand is the register class
-the instruction takes, a declaration is read to its last word, and what a declaration states is within D3D11's limits
-(4096 temporaries, 4096 elements in an indexable array, 4096 constant-buffer rows, 32 KiB of thread-group memory, 2048-byte
-structured elements, 1024 geometry output vertices, 32 geometry instances). `tests/malformed.rs` makes each case from a
-committed fixture.
+    // a refusal names where and why
+    let refusal = iridia_dxbc::lift(&container[..40]).unwrap_err();
+    assert_eq!(refusal.bytecode, "DXBC");
+    Ok(())
+}
+```
 
-`tests/lift.rs` lifts our own HLSL fixture (`tests/fixtures/modes.hlsl`, fxc `/T ps_5_0`) and checks its interface,
-layout and the D3D guards in the WGSL. `tests/lift_corpus.rs` (`oracles.corpus.<game>/shaders` for sekiro, riders, sledding)
-lifts a folder of real containers, validates and writes each, and prints the refusals by reason; a lifted program that
-fails validation fails the test. Lifting is checked structurally here; values are checked against WARP and a GPU by the
-batch that runs the executor over the lifted programs.
+## Guarantees
+
+- Unknown things are refused, by name and with the instruction word: an opcode the lifter does not carry, an operand of a register type it does not know, a store through a view with a partial write mask, `sample_info`... Nothing is approximated silently; what is approximated is a note on the program.
+- A malformed program is an `Err`, not a panic or an allocation its declarations ask for: an instruction's operand count is its opcode's (`src/arity.rs`, checked once before an operand is read by position), a resource operand is the register class the instruction takes, a declaration is read to its last word, and what a declaration states is within Direct3D 11's limits (4096 temporaries, 4096 elements in an indexable array, 4096 constant buffer rows, 32 KiB of thread group memory, 2048-byte structured elements, 1024 geometry output vertices, 32 geometry instances). `tests/malformed.rs` makes each case from a committed fixture.
+- The container's digest is not verified: this reader does not authenticate shaders.
+
+## What it does not carry
+
+Refused by name: double precision (the global flag), Shader Model 5.1 constant buffer declarations, mono samplers, append and consume buffer counters, geometry output to a stream other than 0, a store through a view with a partial write mask, a sample of a multisampled texture and any opcode not in its table. The sample count of the rasterizer is the pipeline's, not the program's, and is refused for the same reason. Sampling is not part of lifting: it is the caller's when a lifted program runs (`iridia-exec`).
+
+## Tests
+
+`cargo test -p iridia-dxbc` needs nothing else. What the tests check, and the real-data inputs they read when `GAME_DATA` names them (listed in [`tests/inputs/README.md`](tests/inputs/README.md)):
+
+- `tests/lift.rs` lifts `tests/fixtures/modes.hlsl` (our own HLSL, `fxc /T ps_5_0`) and checks its interface, layout and the Direct3D guards in the WGSL; `tests/reflection.rs`, `tests/bound_size.rs`, `tests/malformed.rs` and `tests/versions.rs` (the version gate against `tests/lifted.hashes`) use the other fixtures.
+- `tests/analytic.rs`: programs written as tokens, lifted and run on the executor against values worked out by hand from Direct3D's definition of each instruction (arithmetic and conversion edges, every numeric opcode, flow, derivatives, quads, sample callbacks, relative constant buffer addressing); nothing is read from data.
+- `tests/disassembly.rs` and `tests/reflection.rs` against Microsoft's disassembly of real programs (`GAME_DATA`, `oracles.corpus.general/dxbc`, made by `tests/oracles/dxbc_corpus.py`, and `oracles.d3d-disassembler.riders/shader-pack`): the decoder's opcode sequence and count, and the reflection read from the binary, against the text.
+- `tests/lift_corpus.rs` lifts folders of real containers (`oracles.corpus.<game>/shaders`), validates and writes each, and prints the refusals by reason; a program that lifts but fails validation fails.
+- `tests/exec_warp.rs` and `tests/exec_warp_tess.rs` render lifted programs on Microsoft's WARP rasterizer and run them on the executor, comparing every lane written; they need `tools.warp` (a host program this repository does not contain) and `tools.fxc`.
+
+## Licence
+
+GPL-3.0-or-later.

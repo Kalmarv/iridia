@@ -1,6 +1,10 @@
 [package]
 name = "iridia-dxil"
-description = "Lift Direct3D Shader Model 6 programs (DXIL) to naga through iridia"
+description = "Translate Direct3D Shader Model 6 bytecode (DXIL, dxc output) to naga modules, for WGSL or SPIR-V output"
+readme = "README.md"
+keywords = ["dxil", "hlsl", "wgsl", "shader", "direct3d"]
+categories = ["graphics", "compilers", "game-development"]
+documentation = "https://docs.rs/iridia-dxil"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

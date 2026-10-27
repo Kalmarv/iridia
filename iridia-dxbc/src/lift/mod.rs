@@ -1,9 +1,9 @@
-//! Lifting a Shader Model 4 or 5 program (pixel, vertex or compute) to primase's shader representation
-//! ([`iridia::Program`]).
+//! Lifting a Shader Model 4 or 5 program of any stage (vertex, pixel, hull, domain, geometry or compute) to an
+//! [`iridia::Program`].
 //!
 //! A DXBC register is four untyped 32-bit lanes, so the body keeps every register as a `vec4<u32>` local and each
 //! instruction bitcasts its operands to the type the instruction implies; the typed values of the module are the
-//! instruction results. Structured flow lifts to structured flow. The conventions are the shader design's:
+//! instruction results. Structured flow lifts to structured flow. The conventions:
 //!
 //! - **Varyings** are unpacked: one entry argument per input signature element, one result member per output element
 //!   ([`iridia::entry_io`] says which), the D3D register packing undone by the prologue and epilogue and
@@ -40,8 +40,8 @@ use dxbc_reader::decode::{Decoded, decode};
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
 pub const LIFTER_VERSION: u32 = 6;
 
-/// Lift a DXBC container's program. A pixel or vertex program of Shader Model 4 or 5 is the scope; everything else,
-/// and every instruction or declaration the lifter does not carry, is an `Err` naming the word and the reason.
+/// Lift a DXBC container's program: Shader Model 4 or 5, any stage. Every instruction or declaration the lifter does
+/// not carry (and every container that holds no such program) is an `Err` naming the word and the reason.
 pub fn lift(bytes: &[u8]) -> Result<Program> {
     lift_with(bytes, &iridia::BoundSizes::new())
 }

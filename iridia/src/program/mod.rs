@@ -1,10 +1,10 @@
-//! A shader program as primase understands it: a [`naga::Module`] (the typed body, structured control flow, the
-//! resources as globals) together with what the module cannot say: the interface in primase's vocabulary (labels, system
-//! values, interpolation), the pipeline conventions the program was written for, which D3D behaviours its body spells
-//! out, and where it came from.
+//! A shader program: a [`naga::Module`] (the typed body, structured control flow, the resources as globals) together
+//! with what the module cannot say: the interface in the [`iridia_interface`] vocabulary (labels, system values,
+//! interpolation), the pipeline conventions the program was written for, which D3D behaviours its body spells out, and
+//! where it came from.
 //!
-//! A program is derived, never stored: `core.shader` keeps the bytecode as it was, and a lifter (`iridia-dxbc`'s
-//! `lift`) builds this on demand. The rules for differences between APIs are the shader design's:
+//! A program is derived, never stored: the bytecode stays as it was, and a lifter (`iridia-dxbc`'s `lift`) builds this
+//! from it on demand. The rules for differences between APIs are:
 //!
 //! - **Conventions are normalized.** D3D register packing is unpacked into one varying per label, constant buffers
 //!   become explicit layouts, registers become bindings; the source's own addresses stay in provenance.
@@ -12,7 +12,7 @@
 //!   by zero, float to integer conversion of NaN and overflow, `min`/`max` with a NaN, saturation of a NaN), the lifter
 //!   writes D3D's result out as plain operations in the body, and [`D3dModes`] says it did. Nothing silently takes
 //!   one API's answer.
-//! - **Unknowns are refused by name** by the lifter, and counted by whoever runs it over a corpus.
+//! - **Unknowns are refused by name** by the lifter ([`crate::Refusal`]), and can be counted by reason over a corpus.
 //!
 //! # How the module carries the interface
 //!
@@ -129,7 +129,7 @@ pub struct Provenance {
     /// The hash of the bytes the lifter was given (`sha256:` and the digits, [`crate::source_hash`]), which the lifter
     /// computes: a program a lifter made has it, one built by hand may not.
     pub source_hash: Option<String>,
-    /// Source instruction records counted while decoding, before lowering expands them into IR.
+    /// Source instruction records counted while decoding, before they are expanded into IR.
     pub instruction_count: Option<iridia_interface::InstructionCount>,
 }
 
@@ -152,8 +152,8 @@ pub struct Program {
 }
 
 impl Program {
-    /// Reuse this lift's facts; no parsing, lifting, graph building or GPU work. Material resolvers add output roles
-    /// with ProgramFacts::bound once they have resolved the stage binding.
+    /// Reuse this lift's facts; no parsing, lifting, graph building or GPU work. A caller that assigns output roles adds them
+    /// with [`iridia_interface::ProgramFacts::bound`] once they have resolved the stage binding.
     pub fn facts<H>(&self, name: impl Into<String>) -> iridia_interface::ProgramFacts<H> {
         iridia_interface::ProgramFacts {
             name: name.into(),

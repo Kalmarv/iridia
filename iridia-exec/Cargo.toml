@@ -1,6 +1,10 @@
 [package]
 name = "iridia-exec"
-description = "Bounded CPU execution of a shader program, whatever bytecode it was lifted from"
+description = "CPU reference executor for lifted Direct3D shaders: run a program on explicit inputs to check a translation"
+readme = "README.md"
+keywords = ["shader", "interpreter", "wgsl", "dxbc", "reference"]
+categories = ["graphics", "game-development", "simulation"]
+documentation = "https://docs.rs/iridia-exec"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

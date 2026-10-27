@@ -11,7 +11,7 @@
 //! hit group a hit index selects, which program a miss index and a callable index select. The hit group index of a hit
 //! is DXR's: the ray's offset, plus its stride times the geometry's index in the bottom level, plus the instance's
 //! contribution (section "Indexing into shader tables" of the specification,
-//! https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html).
+//! <https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html>).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

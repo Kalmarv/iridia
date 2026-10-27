@@ -1,6 +1,10 @@
 [package]
 name = "iridia-d3d9"
-description = "Raw Direct3D 9 shader reflection and lifting"
+description = "Read raw Direct3D 9 ps_3_0 and vs_3_0 shader tokens and translate them to naga modules, for WGSL or SPIR-V output"
+readme = "README.md"
+keywords = ["direct3d9", "shader", "wgsl", "hlsl", "bytecode"]
+categories = ["graphics", "compilers", "game-development"]
+documentation = "https://docs.rs/iridia-d3d9"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

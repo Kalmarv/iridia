@@ -206,7 +206,7 @@ pub struct FunctionSig {
 /// - A vertex program whose outputs feed a tessellator: `main(inputs) -> Out`.
 /// - A hull program: `main(inputs as arrays of the input control points, SV_OutputControlPointID: u32) -> Out`, the
 ///   control-point phase, run for each output control point; and `patch_constant(inputs as arrays of the input
-///   control points, outputs as arrays of the output control points under `out_<name>`, SV_PrimitiveID: u32) -> Out`,
+///   control points, outputs as arrays of the output control points under `out_` and the name, SV_PrimitiveID: u32) -> Out`,
 ///   the patch-constant phase, run once for a patch, its result the patch constants.
 /// - A domain program: `main(patch constants, inputs as arrays of the input control points, SV_DomainLocation:
 ///   vec3<f32>, SV_PrimitiveID: u32) -> Out`.

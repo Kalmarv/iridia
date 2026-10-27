@@ -28,7 +28,7 @@ fn error(detail: impl Into<String>) -> Error {
 /// Evaluate `shader` as a texture that tiles with period `cells` (K, at least 2) cells of `texels` pixels each
 /// (module documentation): each requested target is (K * texels)^2 values in row-major order, or `None` when the
 /// program does not write it. The evaluation grid, (K + 1) * texels pixels per axis, is at most 4096. `textures`,
-/// `inputs` and `targets` are as [`evaluate`] takes them; the grid's U and V ([`crate::Lane::U`], `V`) run one per
+/// `inputs` and `targets` are as [`crate::evaluate()`] takes them; the grid's U and V ([`crate::Lane::U`], `V`) run one per
 /// cell. The instruction and sample counts are the grid's.
 pub fn evaluate_periodic(
     shader: &dyn PixelShader,

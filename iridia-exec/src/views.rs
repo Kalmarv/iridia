@@ -1,6 +1,6 @@
 //! Resource views bound by slot ([`Views`]), answering a program's requests. Where nothing is bound or an address falls
 //! outside a view, they answer as their policy states ([`Absent`]): as Direct3D answers ([`Absent::Zero`], the rules
-//! below), or by refusing, naming the slot or address ([`Absent::Refuse`]: a bake runs on no value it was not given).
+//! below), or by refusing, naming the slot or address ([`Absent::Refuse`]: an evaluation runs on no value it was not given).
 //! The rules are the D3D11.3 functional specification's, stated here once:
 //!
 //! - **Nothing bound.** A sample from a slot with no texture bound returns 0 in all components (7.18.17), and so does a
@@ -90,7 +90,7 @@ pub struct Views {
 }
 
 impl Views {
-    /// `views` with no sampler states, refusing what they hold nothing for ([`Absent::Refuse`]): a bake's table.
+    /// `views` with no sampler states, refusing what they hold nothing for ([`Absent::Refuse`]): a grid evaluation's table.
     pub fn refusing(views: BTreeMap<u32, View>) -> Self {
         Views {
             views,
@@ -516,7 +516,7 @@ mod tests {
         }
     }
 
-    /// A bake's table ([`Views::refusing`]): a constant answers every sample and load, an image its own samples at the
+    /// A grid evaluation's table ([`Views::refusing`]): a constant answers every sample and load, an image its own samples at the
     /// level the program states, a buffer its elements; what it holds nothing for is refused by name, and no buffer's
     /// length is stated (the executor would answer zero past it).
     #[test]

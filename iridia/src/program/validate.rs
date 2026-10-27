@@ -1,5 +1,5 @@
 //! The program validator: naga's own validation of the module, then the rules naga cannot know because they are about
-//! primase's vocabulary: the interface against the entry point, the resources against the globals.
+//! the interface vocabulary: the interface against the entry point, the resources against the globals.
 
 use std::collections::BTreeSet;
 use std::fmt;

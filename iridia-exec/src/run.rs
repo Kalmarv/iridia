@@ -27,7 +27,7 @@ enum Words<'a> {
     Backend,
 }
 
-/// The buffers a program reads, ready for runs: built once per material and reused for every pixel.
+/// The buffers a program reads, ready for runs: built once per program and reused for every pixel.
 #[derive(Debug)]
 pub struct Bound<'a> {
     data: Vec<Words<'a>>,

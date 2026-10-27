@@ -3,7 +3,7 @@
 //! and the filtering a caller states ([`Filtering`]).
 //!
 //! The filtering is the caller's policy: what a source states of its sampler's filter may be absent or not modelled, so
-//! a bake says how it filters (the base level bilinear, point or bilinear at the nearest level, or trilinear) and
+//! a caller says how it filters (the base level bilinear, point or bilinear at the nearest level, or trilinear) and
 //! reports it. The addressing and the bias are the binding's data: an axis whose addressing the sampler state leaves
 //! unstated is the caller's stated assumption ([`Unstated`]), never a silent wrap, and a stated bias is applied where
 //! the level of detail is computed, or named as not applied ([`SampledTexture::unhonoured`]).

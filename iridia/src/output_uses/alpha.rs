@@ -414,7 +414,7 @@ pub struct AlphaTest {
 }
 
 /// Every comparison of a discard's condition against a constant-buffer word, as the program's graph states it, normalized
-/// to `tested < word` ([`comparison`]'s forms). The caller picks the ones it means by what they are made of; this names
+/// to `tested < word` (the forms the walk recognizes). The caller picks the ones it means by what they are made of; this names
 /// no resource.
 pub fn alpha_tests(graph: &ProgramGraph) -> Vec<AlphaTest> {
     let v = &graph.values;

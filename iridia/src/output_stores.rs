@@ -3,8 +3,7 @@
 //! lanes, in every branch. [`OutputStores`] gives a colour target's lanes (`SV_Target<n>`) and the constant rows an
 //! output is made of, and tests how a stored value is made (`x * 0.5 + 0.5`, `floor(x) / 256`, a square root, the
 //! constant 0), seeing through the bit casts the lifters write every output word with and the loads of a local variable
-//! assigned once. Nothing here is read from a program's name or a local's name; what the lanes of a source's G-buffer
-//! are is that source's reading (its crate's `gbuffer`).
+//! assigned once. Nothing here is read from a program's name or a local's name; what the lanes mean is for the caller to say.
 use std::collections::{BTreeMap, BTreeSet};
 
 use naga::{BinaryOperator, Expression, Function, Handle, Literal, MathFunction, Statement};
@@ -248,7 +247,7 @@ fn output_variables(
 }
 
 /// A function and what is stored into its local variables as a whole (`v = value`), so that the load of a variable
-/// assigned once reads as the value assigned: the programs that compute a G-buffer lane before a conditional discard
+/// assigned once reads as the value assigned: the programs that compute an output lane before a conditional discard
 /// keep it in a variable.
 #[derive(Debug)]
 struct Reading<'a> {

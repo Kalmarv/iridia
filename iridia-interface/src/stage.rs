@@ -1,9 +1,9 @@
 //! What a program is and where it runs: its encoding and its pipeline stage.
 use serde::Serialize;
 
-/// How a shader program's bytes are encoded, for every game and target (the way [`crate::TexFormat`] is for texture
-/// bytes). Only the encoding lives here; reading one is the job of the crate that knows it (`iridia-dxbc`,
-/// `iridia-dxil`), and the program's meaning is lifted from it on demand.
+/// How a shader program's bytes are encoded. Only the encoding lives here; reading one is the job of the crate that
+/// knows it (`iridia-dxbc`, `iridia-dxil`, `iridia-d3d9`, `iridia-mojo`), and the program's meaning is lifted from it on
+/// demand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -29,14 +29,14 @@ pub enum Stage {
     /// A compute program: no varyings, system inputs naming the invocation, a thread group size.
     Compute,
     /// A hull program: the control-point phase and the patch-constant function of a tessellated patch (see
-    /// [`StageFacts::Hull`]).
+    /// [`crate::StageFacts::Hull`]).
     Hull,
-    /// A domain program: a vertex of a tessellated patch from its domain location (see [`StageFacts::Domain`]).
+    /// A domain program: a vertex of a tessellated patch from its domain location (see [`crate::StageFacts::Domain`]).
     Domain,
     /// A geometry program.
     Geometry,
     /// A mesh program: a thread group that writes the vertices and primitives of one meshlet (see
-    /// [`StageFacts::Mesh`]); its outputs are the per-vertex varyings of the interface.
+    /// [`crate::StageFacts::Mesh`]); its outputs are the per-vertex varyings of the interface.
     Mesh,
     /// A ray generation program: the start of a ray tracing dispatch, one invocation per dispatched ray position.
     RayGeneration,
@@ -53,8 +53,7 @@ pub enum Stage {
 }
 impl Stage {
     /// Whether this is one of the ray tracing pipeline's stages: a program of it is functions that read the ray's
-    /// system values and carry a payload, not an entry point (see [`crate::shader`]'s `stage_functions` in
-    /// iridia).
+    /// system values and carry a payload, not an entry point (see `iridia::stage_functions`).
     pub fn is_ray_tracing(self) -> bool {
         matches!(
             self,

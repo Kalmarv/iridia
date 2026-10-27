@@ -1,6 +1,6 @@
 # Microsoft's D3D11 reference tessellator (CHWTessellator, tessellator.cpp of DirectX-Specs d3d/archive/images/d3d11; MIT) on 480 cases:
 # <domain> <partitioning> <output primitive> <edge0..edge3 factor bits> <inside0 inside1 factor bits> <points> <indices> <FNV-1a 64 of the points (u, v as f32 bits) then the indices, each as 4 little-endian bytes>
-# made with dumps/tess-ref (primase-oracles): gen_cases.py 7 12 | ref.exe digest; isoline cases use only the first two factors
+# made by a small driver program that links the reference tessellator and prints these lines for a generated list of cases; isoline cases use only the first two factors
 tri integer triangle_cw 40800000 3fc00000 40200000 3fc00000 41e00000 42810000 556 3303 0ffd6049f66549ca
 tri integer triangle_cw 42810000 40400000 41000000 41cfed4d 40c00000 41163d7f 94 333 3e471143c3a4083e
 tri integer triangle_cw 4213dec9 422fdd5c 40e00000 40000000 421ffd8c 4209fe56 1229 7104 dd27d5447be34378

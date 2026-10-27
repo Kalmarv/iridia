@@ -1,4 +1,4 @@
-//! Evaluate a pixel shader over a UV grid: the generic part of a material bake. The caller states everything the
+//! Evaluate a pixel shader over a UV grid, to bake a procedural material to textures. The caller states everything the
 //! program reads (constant layout and values, a texture per sampled slot, a value per used input) and which output
 //! registers it wants; the evaluator has no game names and no policy, and refuses what it is not given.
 
@@ -226,8 +226,8 @@ impl Input {
     }
 }
 
-/// Pixel (x, y) of a size x size grid is evaluated at U = (x + 0.5) / size * period[0], V likewise with y and
-/// period[1], in f32. The grid is the screen: an input lane taking U steps by period[0] / size along x (its d/dx) and
+/// Pixel (x, y) of a size x size grid is evaluated at U = (x + 0.5) / size * `period[0]`, V likewise with y and
+/// `period[1]`, in f32. The grid is the screen: an input lane taking U steps by `period[0]` / size along x (its d/dx) and
 /// not along y; V likewise along y; other lanes are constant.
 #[derive(Clone, Copy, Debug)]
 pub struct Grid {

@@ -1,6 +1,10 @@
 [package]
 name = "iridia-dxbc"
-description = "Lift Direct3D Shader Model 4 and 5 bytecode (DXBC) to naga through iridia"
+description = "Translate Direct3D Shader Model 4 and 5 bytecode (DXBC, fxc output) to naga modules, for WGSL or SPIR-V output"
+readme = "README.md"
+keywords = ["dxbc", "hlsl", "wgsl", "shader", "direct3d"]
+categories = ["graphics", "compilers", "game-development"]
+documentation = "https://docs.rs/iridia-dxbc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

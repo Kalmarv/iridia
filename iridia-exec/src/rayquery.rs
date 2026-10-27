@@ -5,7 +5,7 @@
 //! primitives: axis-aligned boxes the program intersects itself) and a top level of instances of them, each with a
 //! transform, a mask and the ids a hit reports.
 //!
-//! The rules taken from the DXR specification (https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html) are cited
+//! The rules taken from the DXR specification (<https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html>) are cited
 //! where they apply: the ray extents (section "Ray extents": a triangle hit needs TMin < t < TMax, a procedural one
 //! TMin <= t <= TMax), what the program must do when it commits a procedural hit (section "RayQuery
 //! CommitProceduralPrimitiveHit") and the flags (section "Ray flags").

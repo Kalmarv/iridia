@@ -1,10 +1,10 @@
 //! A tessellated patch on the CPU: the hull program for each output control point and for the patch's constants, the
 //! fixed-function tessellator ([`super::tessellator`]) over the factors the hull program wrote, and the domain program
-//! for each point it made. WGSL has no tessellation stages, so this is how the lab draws a patch.
+//! for each point it made. WGSL has no tessellation stages, so this is how to draw a patch from lifted programs.
 //!
 //! The programs are the function-form [`Program`]s of [`iridia::stage_functions`], run one invocation at a time with
 //! [`Executable::function`]. A control point (the vertex program's output, the hull program's input) is a
-//! [`Vertex`](super::geometry::Vertex): one register per input varying of the hull program, in the order of its
+//! [`Vertex`]: one register per input varying of the hull program, in the order of its
 //! interface ([`TessellationShader::inputs`]). The hull program's outputs reach the domain program by label (the
 //! control points' varyings and the patch constants), so the two programs need not number them alike.
 

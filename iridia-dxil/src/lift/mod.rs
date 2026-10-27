@@ -1,5 +1,5 @@
-//! Lifting a Shader Model 6 pixel or vertex program (DXIL) to primase's shader representation
-//! ([`iridia::Program`]), with the same conventions as the DXBC lift (`iridia-dxbc`): varyings unpacked from
+//! Lifting a Shader Model 6 program of any stage but amplification (DXIL) to an [`iridia::Program`], with the same
+//! conventions as the DXBC lift (`iridia-dxbc`): varyings unpacked from
 //! D3D registers, resources as module globals (constant buffer `cb<n>` a uniform `array<vec4<u32>, rows>` in group 0,
 //! textures and buffer views group 1, samplers group 2, typed texture views group 3, the hidden counters of unordered-access
 //! views group 4, binding = register), D3D's
@@ -40,9 +40,10 @@ use dxil_reader::reflection;
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
 pub const LIFTER_VERSION: u32 = 6;
 
-/// Lift a DXIL container's entry function. A pixel or vertex program is the scope; every construct the lifter does not
-/// carry (a wide integer, a resource array, an irreducible loop, an operation it has no meaning for) is an `Err` naming
-/// the bit offset of the instruction and the reason.
+/// Lift a DXIL container's entry function: Shader Model 6, any stage but amplification (vertex, pixel, hull, domain,
+/// geometry, compute, mesh and the ray tracing stages). Every construct the lifter does not carry (a double, a 64-bit
+/// integer division, an irreducible loop, an operation it has no meaning for) is an `Err` naming the bit offset and the
+/// reason.
 pub fn lift(container: &[u8]) -> Result<Program> {
     lift_with(container, &iridia::BoundSizes::new())
 }

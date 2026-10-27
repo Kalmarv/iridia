@@ -1,5 +1,5 @@
-//! The real-data inputs this crate's tests read, each with what it is, where it comes from and whether the
-//! landing gate needs it (`primase_testdata::inputs!`; README.md here lists them). Integration tests reach it
+//! The real-data inputs this crate's tests read, each with what it is, where it comes from and whether a full run
+//! needs it (`primase_testdata::inputs!`; README.md here lists them). Integration tests reach it
 //! with `mod inputs;`, unit tests with `#[cfg(test)] #[path = "../tests/inputs/mod.rs"] mod inputs;` in the
 //! crate root, and tests/real_data_inputs.rs checks that every query the crate's sources write is declared
 //! here. Declare an input here when a test first asks for it.
@@ -23,7 +23,7 @@ primase_testdata::inputs! {
         },
         Warp = "warp" {
             about: "the WARP oracle program that runs a shader on Microsoft's WARP rasterizer",
-            source: "third-party: Microsoft's WARP rasterizer, through a thin host program kept with the private oracle tools",
+            source: "third-party: Microsoft's WARP rasterizer, through a thin host program that is not part of this repository",
             gate: true,
         },
     }
@@ -42,42 +42,42 @@ primase_testdata::inputs! {
             status: Live,
             gate: false,
             about: r#"a folder (searched recursively) of the DXIL containers of Elden Ring's Shader Model 6 shader bundles (one file per container), lifted, validated and written as WGSL, the refusals counted by reason with an example program; iridia-dxil/tests/lift_corpus.rs"#,
-            source: r#"the user's own install: the containers of its `/shader/*.shaderbnd.dcx` binders and `/shader/*.shaderbdlebnd.dcx` bundles (ray-tracing `[rt]` bundles included), worlds/fromsoft/examples/corpus_elden_shaders.rs"#,
+            source: r#"the user's own install: the containers of its `/shader/*.shaderbnd.dcx` binders and `/shader/*.shaderbdlebnd.dcx` bundles (ray-tracing `[rt]` bundles included); primase's [corpus_elden_shaders example](https://github.com/Kalmarv/primase/tree/main/worlds/fromsoft/examples/corpus_elden_shaders.rs) extracts them"#,
         },
         Query::Oracle(OracleSet::Corpus, Game::General, "dxbc") => {
             status: Live,
             gate: true,
-            about: r#"Sekiro's 390 pixel programs (`.ppo`), Microsoft's disassembly of each (`.ppo.asm`) and the bindings, inputs and constant layout read from that text (`.ppo.reflection.json`); toolkit/dxbc/tests/disassembly.rs, reflection.rs; schema in toolkit/dxbc/README.md"#,
-            source: r#"independent: the game's own programs (`corpus.sekiro/shaders`) disassembled by Microsoft's fxc 10.0.26100 (`fxc /nologo /dumpbin`), the reflection read from the disassembly's text by toolkit/dxbc/tests/oracles/dxbc_corpus.py"#,
+            about: r#"Sekiro's 390 pixel programs (`.ppo`), Microsoft's disassembly of each (`.ppo.asm`) and the bindings, inputs and constant layout read from that text (`.ppo.reflection.json`); iridia-dxbc/tests/disassembly.rs, reflection.rs; schema in iridia-dxbc/README.md"#,
+            source: r#"independent: the game's own programs (`corpus.sekiro/shaders`) disassembled by Microsoft's fxc 10.0.26100 (`fxc /nologo /dumpbin`), the reflection read from the disassembly's text by iridia-dxbc/tests/oracles/dxbc_corpus.py"#,
         },
         Query::Oracle(OracleSet::Corpus, Game::Riders, "shaders") => {
             status: Live,
             gate: false,
-            about: r#"a folder (searched recursively) of the DXBC containers of Riders Republic's shader pack (ShaderDataDX11.bin, split at its containers), lifted, validated and written as WGSL, the refusals counted by reason; toolkit/dxbc/tests/lift_corpus.rs"#,
+            about: r#"a folder (searched recursively) of the DXBC containers of Riders Republic's shader pack (ShaderDataDX11.bin, split at its containers), lifted, validated and written as WGSL, the refusals counted by reason; iridia-dxbc/tests/lift_corpus.rs"#,
             source: r#"the user's own install: the programs split from its shader pack"#,
         },
         Query::Oracle(OracleSet::Corpus, Game::Sekiro, "shaders") => {
             status: Live,
             gate: false,
-            about: r#"a folder (searched recursively) of the DXBC containers of Sekiro's extracted pixel and vertex programs (`.ppo`, `.vpo`), lifted, validated and written as WGSL, the refusals counted by reason; toolkit/dxbc/tests/lift_corpus.rs; the detail-blend programs' equations derived and proven, worlds/fromsoft/tests/detail_derive.rs"#,
+            about: r#"a folder (searched recursively) of the DXBC containers of Sekiro's extracted pixel and vertex programs (`.ppo`, `.vpo`), lifted, validated and written as WGSL, the refusals counted by reason; iridia-dxbc/tests/lift_corpus.rs; the same programs are used in primase's [detail_derive test](https://github.com/Kalmarv/primase/tree/main/worlds/fromsoft/tests/detail_derive.rs)"#,
             source: r#"the user's own install: the programs extracted from its shader archives"#,
         },
         Query::Oracle(OracleSet::Corpus, Game::Skate, "shaders") => {
             status: Live,
             gate: false,
             about: r#"a folder (searched recursively) of the DXIL containers of skate.'s CompiledBytecode resources (one file per container), lifted, validated and written as WGSL, the refusals counted by reason with an example program; iridia-dxil/tests/lift_corpus.rs"#,
-            source: r#"the user's own install: the containers of its superbundles' CompiledBytecode resources, worlds/reskate/examples/corpus_skate_shaders.rs"#,
+            source: r#"the user's own install: the containers of its superbundles' CompiledBytecode resources; primase's [corpus_skate_shaders example](https://github.com/Kalmarv/primase/tree/main/worlds/reskate/examples/corpus_skate_shaders.rs) extracts them"#,
         },
         Query::Oracle(OracleSet::Corpus, Game::Sledding, "shaders") => {
             status: Live,
             gate: false,
-            about: r#"a folder (searched recursively) of the DXBC containers of a Unity player's compiled pixel programs, as primase-unity extracts them, lifted, validated and written as WGSL, the refusals counted by reason; toolkit/dxbc/tests/lift_corpus.rs"#,
+            about: r#"a folder (searched recursively) of the DXBC containers of a Unity player's compiled pixel programs, read out of its shader assets, lifted, validated and written as WGSL, the refusals counted by reason; iridia-dxbc/tests/lift_corpus.rs"#,
             source: r#"the user's own install: the programs read from its shader assets"#,
         },
         Query::Oracle(OracleSet::D3dDisassembler, Game::Riders, "shader-pack") => {
             status: Live,
             gate: false,
-            about: r#"a folder of DXBC containers `NNNN.dxbc` (Riders Republic's ShaderDataDX11.bin, Steam build 25394987, split at its containers: 2,443) each with `NNNN.txt`, Microsoft's D3D Shader Disassembler text of it; toolkit/dxbc/tests/disassembly.rs"#,
+            about: r#"a folder of DXBC containers `NNNN.dxbc` (Riders Republic's ShaderDataDX11.bin, Steam build 25394987, split at its containers: 2,443) each with `NNNN.txt`, Microsoft's D3D Shader Disassembler text of it; iridia-dxbc/tests/disassembly.rs"#,
             source: r#"independent: Microsoft's D3D Shader Disassembler, run over the user's own install's pack (kept in a private cache)"#,
         },
     }

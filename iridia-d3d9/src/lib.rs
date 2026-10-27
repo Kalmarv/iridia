@@ -1,20 +1,65 @@
-//! Raw Direct3D 9 `ps_3_0` and `vs_3_0` tokens, their CTAB reflection, and lifting to the shared shader IR.
+//! Read raw Direct3D 9 `ps_3_0` and `vs_3_0` shader tokens and their CTAB constant table, and lift them to an
+//! [`iridia::Program`].
 //!
-//! This is a bounded shader reader: straight-line float arithmetic, declarations, immediate constants,
-//! 2D/cube/volume sampling and discard. Vertex programs additionally keep input/output declarations and clip position. Vertex texture fetch, point size,
-//! other models, control flow, relative addressing and modifiers outside
-//! this subset are refused by name and word offset. No translated text or native compiler is needed at runtime.
-//! [`read`] preserves comments and CTAB's type/default metadata; [`lift`] normalizes registers into varyings and
-//! a float constant bank (raw words in `cb0`, register `cN` at byte `16*N`). A `def` overrides that bank locally.
+//! The input is the token stream a Direct3D 9 compiler writes, version token to `END` (no container). [`read`] decodes
+//! it into declarations, instructions, immediate definitions, every comment and the CTAB (creator, target, flags, named
+//! register allocations, types and raw defaults). [`lift`] turns it into a `naga::Module` with an interface, which can
+//! then be validated and written as WGSL ([`iridia::emit::wgsl`]). No translated text and no native compiler is needed.
+//!
+//! The reader is bounded: straight-line float arithmetic (`mov`, `add`, `sub`, `mad`, `mul`, `rcp`, `rsq`, `dp3`, `dp4`,
+//! `min`, `max`, `exp`, `log`, `lrp`, `frc`, `pow`, `abs`, `nrm`), `nop`, `dcl` and `def`; pixel programs also have
+//! `cmp`, `dp2add`, `texld` (plain, projected or biased) and `texkill`, with 2D, cube or volume textures; vertex programs
+//! keep their declared inputs and outputs and the clip position. Source swizzles, negation, absolute value and
+//! destination masks and saturation are kept. Vertex texture fetch, point size, other models, control flow,
+//! relative addressing, predication and modifiers outside this subset are refused by name and word offset
+//! ([`Error`]).
+//!
+//! The float constant bank is `cb0`, an array of raw `vec4<u32>` rows: register `cN` is byte offset `16 * N`, and a
+//! `def` overrides it locally. Sampler `sN` becomes a texture at `tN` and a sampler at `sN`. Vertex register banks are
+//! bounded to 16 inputs, 32 temporaries, 12 outputs and 256 float constants.
+//!
+//! Beyond [`lift`]: [`frame`] finds the program in a buffer that holds more than one, [`sampler_states`] maps a sampler
+//! state (`D3DSAMP` state/value pairs) to the interface vocabulary, and [`project`], [`reencode`] and
+//! [`project_vertex_output`] derive new programs from the original (a register's value at a chosen instruction, a
+//! vertex output as a pixel program).
+//!
+//! # Example
+//!
+//! A `ps_3_0` program written as tokens: `def c0, 1, 2, 3, 4` and `mov oC0, c0`.
+//!
+//! ```
+//! let words: [u32; 11] = [
+//!     0xffff_0300,                                    // ps_3_0
+//!     0x0500_0051, 0xa00f_0000, 0x3f80_0000, 0x4000_0000, 0x4040_0000, 0x4080_0000, // def c0, 1, 2, 3, 4
+//!     0x0200_0001, 0x800f_0800, 0xa0e4_0000,          // mov oC0, c0
+//!     0x0000_ffff,                                    // end
+//! ];
+//! let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+//!
+//! let program = iridia_d3d9::lift(&bytes)?;
+//! assert_eq!(program.stage, iridia::Stage::Pixel);
+//! program.validate().expect("a lifted program validates");
+//! assert!(iridia::emit::wgsl(&program)?.contains("@fragment"));
+//!
+//! // anything outside the subset is refused, with its word offset
+//! let mut other_model = bytes.clone();
+//! other_model[..4].copy_from_slice(&0xffff_0200u32.to_le_bytes()); // ps_2_0
+//! assert!(iridia_d3d9::lift(&other_model).is_err());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 //!
 //! Token layout: Microsoft's [instruction](https://learn.microsoft.com/windows-hardware/drivers/display/instruction-token),
 //! [source](https://learn.microsoft.com/windows-hardware/drivers/display/source-parameter-token) and
-//! [destination](https://learn.microsoft.com/windows-hardware/drivers/display/destination-parameter-token) tokens.
-//! Vertex register banks are bounded to 16 inputs, 32 temporaries, 12 declared outputs and 256 float constants;
+//! [destination](https://learn.microsoft.com/windows-hardware/drivers/display/destination-parameter-token) tokens;
 //! [the VS register reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-vs-registers-vs-3-0)
-//! and [output declarations](https://learn.microsoft.com/windows/win32/direct3dhlsl/dcl-usage-outut-register---vs) define their layout.
-//! Arithmetic follows the [ps_3_0 instruction reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-instructions-ps-3-0).
+//! and [output declarations](https://learn.microsoft.com/windows/win32/direct3dhlsl/dcl-usage-outut-register---vs) define
+//! their layout. Arithmetic follows the [ps_3_0 instruction reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-instructions-ps-3-0).
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+
+// Run the examples in the README as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
 
 mod ctab;
 mod lower;

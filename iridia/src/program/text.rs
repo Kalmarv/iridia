@@ -1,4 +1,4 @@
-//! The stable text form of a program, for a reader (the lab's program panel, a diff in review): a header with
+//! The stable text form of a program, for a reader (a diff in review, a log): a header with
 //! everything the module cannot say, then the module as WGSL (or, for a program WGSL cannot express, as naga's IR dump).
 
 use std::fmt::Write;

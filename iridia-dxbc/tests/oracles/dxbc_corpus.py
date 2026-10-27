@@ -1,4 +1,4 @@
-"""The corpus oracle set's general/dxbc: the game's pixel programs with Microsoft's disassembly and what it states.
+"""Reference data for the DXBC tests: a game's pixel programs with Microsoft's disassembly and what it states.
 
 Reads a staging folder of `<name>.ppo` (a program as the game ships it) and `<name>.ppo.asm` (Microsoft's
 disassembly of it: `fxc /nologo /dumpbin /Fc <name>.ppo.asm <name>.ppo`, d3dcompiler's D3DDisassemble) pairs and
@@ -6,12 +6,12 @@ writes, for every pair whose program is a ps_4_0, ps_4_1 or ps_5_0 pixel program
 `<name>.ppo.reflection.json` into the output folder. The reflection is read from the disassembly's own text, not
 from the binary: the Resource Bindings table (each texture's and constant buffer's register), the Input signature
 (each input's register, keyed by its upper-case name and index) and the Buffer Definitions (each constant's byte
-offset and array count, by its leaf name). Nothing of primase reads the text; the tests hold primase's binary
-reader to it (toolkit/dxbc/tests/program.rs, reflection.rs).
+offset and array count, by its leaf name). Nothing of iridia reads the text; the tests hold the binary reader to it
+(iridia-dxbc/tests/disassembly.rs, reflection.rs).
 
-python3 -I toolkit/dxbc/tests/oracles/dxbc_corpus.py <staging> <oracles.root>/corpus/general/dxbc
+python3 -I iridia-dxbc/tests/oracles/dxbc_corpus.py <staging> <oracles.root>/corpus/general/dxbc
 
-Standard library only; it runs on the Linux build machine over the pairs copied there.
+Standard library only; it needs no installation.
 """
 
 import json

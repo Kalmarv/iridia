@@ -1,6 +1,10 @@
 [package]
 name = "iridia-mojo"
-description = "Lifts the GLSL dialect MojoShader writes from Shader Model 2 and 3 programs to primase's shader representation"
+description = "Translate the GLSL that MojoShader writes from Direct3D 9 shaders to naga modules, for WGSL or SPIR-V output"
+readme = "README.md"
+keywords = ["mojoshader", "glsl", "shader", "wgsl", "direct3d9"]
+categories = ["graphics", "compilers", "game-development"]
+documentation = "https://docs.rs/iridia-mojo"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

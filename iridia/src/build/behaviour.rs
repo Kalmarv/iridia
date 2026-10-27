@@ -3,7 +3,7 @@
 //! the DXBC and DXIL lifters share them.
 //!
 //! A NaN is tested on its bits, never as `x != x`: drivers that assume finite math fold that comparison away, which
-//! the spike measured on a real GPU (a float to integer guard that vanished).
+//! was measured on a real GPU (a float to integer guard that vanished).
 
 use naga::{BinaryOperator as Bo, MathFunction as Mf};
 

@@ -1,6 +1,6 @@
 //! What each thing a shader program reads and writes stands for: input, constant, texture, buffer and output roles,
-//! their encodings, and render state. It states roles, never frozen values: a bake or a renderer decides what a role is worth (a camera position,
-//! the time, the frame's exposure) and says so.
+//! their encodings, and render state. It states roles, never frozen values: whoever evaluates or renders the program (an
+//! offline baker, a renderer) decides what a role is worth (a camera position, the time, the frame's exposure) and says so.
 
 use serde::Serialize;
 
@@ -205,7 +205,7 @@ pub enum ConstantRole {
     Object(ObjectParameter),
     Frame(FrameParameter),
     /// A reference confirmed by the program's discard graph. `compared` states whether a portable cutoff on output
-    /// alpha is the same test or an approximation. A bake freezes the reference below the alpha's range, and must
+    /// alpha is the same test or an approximation. A baking consumer freezes the reference below the alpha's range, and must
     /// also neutralize any stated dither perturbation; the draw uses the material's original `value`.
     AlphaReference {
         value: f32,
@@ -228,7 +228,7 @@ pub enum AlphaComparison {
     /// buffer. A hard cutoff on output alpha approximates the game's stochastic, pre-transform test.
     Dithered { scale_word: u32 },
     /// The discard compares a value made of texture samples and constants that reaches no target's alpha (a G-buffer
-    /// program writes none: `t1.w * t0.w + scale * (noise - 0.5) < reference`). A bake freezes the reference
+    /// program writes none: `t1.w * t0.w + scale * (noise - 0.5) < reference`). A baking consumer freezes the reference
     /// below the range as for the others. The test is the program's own expression, read exactly from its graph
     /// (`iridia::output_uses::alpha_tests`); a cutoff on any output alpha is not it, and a consumer that cuts
     /// evaluates that expression with the values its binding states, or does not cut.
@@ -444,7 +444,7 @@ pub enum BufferSource {
     /// A table of the draw's own data, by what it holds: the consumer fills it from the draw it makes.
     Table(BufferTable),
     /// Nothing is known of the contents and the source says why: a consumer states the stand-in it uses, and never
-    /// reads the buffer as zeros without saying so (as [`TextureSource::Missing`] for a texture, or an unknown
+    /// reads the buffer as zeros without saying so (as a texture with no known source, or an unknown
     /// constant).
     Unknown { why: String },
 }
@@ -469,7 +469,7 @@ pub enum BufferTable {
     /// a zero header gave the position back), not something the engine documents.
     HeaderedMatrices { rows: u8 },
     /// The block of an instance whose program skins, in a table of elements of four floats each (the shape every one of
-    /// the five skinned vertex programs of the hat's materials reads, measured by running each against tables filled to
+    /// the five skinned vertex programs of one game's hat materials reads, measured by running each against tables filled to
     /// tell the parts apart):
     ///
     /// - a header element, as [`BufferTable::HeaderedMatrices`] (the instance record names it);
@@ -1088,7 +1088,7 @@ pub enum Fill {
 }
 /// Fixed-function state as the source stores it; each `None` where it states none. D3D12-shaped: `blend` is render
 /// target 0's blend (what a consumer with one render target reads), and `targets` has every render target's blend
-/// and write mask where the source states them, with `targets[0]`'s blend equal to `blend` ([`ShaderBinding`]'s
+/// and write mask where the source states them, with `targets[0]`'s blend equal to `blend` (a consumer's
 /// verification checks it).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct RenderState {

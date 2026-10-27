@@ -33,8 +33,8 @@ pub struct Value {
 }
 
 /// A varying's name in its source: the semantic name and its index (DXBC `TEXCOORD` and 5, SPIR-V `Location` and 3,
-/// GLSL `vUv` and 0). Labels are not interpreted: games put anything in `TEXCOORDn`, and what a label means is a
-/// game resolve pass's business. Stages match by label.
+/// GLSL `vUv` and 0). Labels are not interpreted: games put anything in `TEXCOORDn`, and what a label means is
+/// the consumer's business. Stages match by label.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Label {
     pub name: String,

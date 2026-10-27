@@ -1,8 +1,8 @@
 //! One reading of a pixel program's outputs as a surface: which output and lanes hold each term a lighting pass takes
 //! (the albedo, the normal, the roughness, the metallic, the reflectance, the specular strength, the emission and the
 //! occlusion) and how a lane's stored value decodes to the term, from the roles the program's binding states
-//! ([`OutputRole`]). Every consumer that lights a program's outputs takes them through this one reading: a material bake
-//! that evaluates the program on the CPU decodes with [`Surface`]'s terms, and a viewer's composite that decodes a
+//! ([`OutputRole`]). Every consumer that lights a program's outputs takes them through this one reading: a baker that
+//! evaluates the program on the CPU decodes with [`Surface`]'s terms, and a viewer's composite that decodes a
 //! G-buffer on the GPU uses the same reading written as WGSL (`iridia::surface`), so the two cannot disagree on
 //! what a lane means.
 //!

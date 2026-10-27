@@ -2,8 +2,8 @@
 //! The fixed-function tessellator against the output of Microsoft's reference tessellator (`CHWTessellator`, which it is a
 //! port of): 480 cases over every domain, partitioning and output primitive, with factors from fractions, integers, the
 //! limits, zero, negative, NaN and infinity. For each case the reference gave the number of points and of indices and a
-//! digest of them (`tests/fixtures/tessellator_reference.txt`, made by the reference program of `dumps/tess-ref` in
-//! primase-oracles); the port must agree on all three. The point positions are 16.16 fixed-point numbers, so the
+//! digest of them (`tests/fixtures/tessellator_reference.txt`, made by a small driver program linked with the reference
+//! tessellator, which is not part of this repository); the port must agree on all three. The point positions are 16.16 fixed-point numbers, so the
 //! digest is of the float bits: there is no tolerance.
 use iridia::Partitioning;
 use iridia_exec::tessellator::{

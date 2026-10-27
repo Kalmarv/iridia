@@ -1,13 +1,13 @@
 //! What a pixel program's own discards and its targets' stated blend show an output lane is used for: the evidence that
 //! binds a lane its source states no role for ([`OutputRole::Unknown`]) to [`OutputRole::Coverage`] or
-//! [`OutputRole::Opacity`]. A world's output bindings call it after stating their own roles; a lane with a role keeps
+//! [`OutputRole::Opacity`]. A caller that states roles for the outputs of a program calls it after stating its own; a lane with a role keeps
 //! it, and nothing is read from a program's or a target's name.
 use iridia_interface::{BlendFactor, OutputBinding, OutputRole, RenderState};
 
 use crate::flow::Node;
 use crate::{Interface, ProgramGraph, SystemValue};
 
-/// The lanes [`bind_output_uses`] bound, for a pass's log.
+/// The lanes [`bind_output_uses`] bound, for a log.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputUses {
     pub coverage: u32,

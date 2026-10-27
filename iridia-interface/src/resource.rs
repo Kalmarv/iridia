@@ -184,7 +184,7 @@ pub struct BufferLayout {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     /// Constants by explicit byte offset. A program whose source states no names (a stripped one) has none here;
-    /// a game's resolve pass names fields by offset.
+    /// the consumer names fields by offset.
     ConstantBuffer { layout: BufferLayout },
     Texture {
         dim: TextureDim,

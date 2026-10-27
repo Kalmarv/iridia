@@ -1,20 +1,55 @@
-//! Executing a [`iridia::Program`] on the CPU: the one executor for a shader whatever bytecode it was lifted from, and the
-//! pixel-shader evaluation interface built on it ([`PixelShader`], [`Sampler`]).
+//! A CPU reference executor for [`iridia::Program`]s: run a lifted shader on explicit inputs, whatever bytecode it came
+//! from, and read back exactly what it wrote. It is for checking a translation, not for rendering: it is bounded,
+//! deterministic and slow.
 //!
 //! [`Executable::new`] checks a program and compiles it once into a flat form (typed operations on four-lane word
 //! registers, pointers folded to word offsets, dead operations dropped). [`Executable::bind`] flattens the buffers a
-//! material reads once for all its pixels, and a [`Runner`] executes the program for one invocation or a 2 x 2 quad in
-//! lockstep, asking its [`Backend`] for everything outside the program: texture samples, loads and queries, and the
-//! effects of writes to unordered-access views. [`ProgramShader`] puts a program behind [`PixelShader`], in
-//! the register vocabulary of the D3D bytecode it came from.
+//! program reads once for many runs, and a [`Runner`] executes the program for one invocation, a 2 x 2 quad, or several
+//! invocations in lockstep (masked where they diverge, each with its own steps and budget), asking its [`Backend`] for
+//! everything outside the program: texture samples, loads and queries, and the effects of writes to unordered-access
+//! views. [`ProgramShader`] puts a vertex or pixel program behind [`PixelShader`], in the register vocabulary of the D3D
+//! bytecode it came from. The other stages have their own drivers: [`mesh`], [`geometry`], [`tessellation`] and
+//! [`tessellator`] (a model of the fixed-function tessellator), [`Pipeline`] (a ray tracing pipeline over a [`Scene`]),
+//! [`draw`] (a small software rasterizer over vertex and pixel programs) and [`probe`].
 //!
 //! What a run does follows the program's [`iridia::D3dModes`]: a program that says its body spells out D3D's integer
 //! division, conversions and `min`/`max` runs as written, and one that expects denormals flushed to zero has every
 //! 32-bit float operation flush its operands and result (sign kept). Anything the program does that the module cannot
 //! make valid (an index past the end of a local array, an integer division by zero in the module) is an error of the
-//! run, never a silent value.
+//! run, never a silent value. Every run has a step budget ([`STEP_LIMIT`]).
+//!
+//! Sampling belongs to the caller: texture samples are answered by a [`Sampler`] callback (a closure answers 2D
+//! samples), because a scalar execution cannot infer derivatives, filtering or addressing, and the caller states them.
+//! [`evaluate()`] runs a pixel shader over a grid of UVs and [`evaluate_periodic`] over a tiling block.
+//!
+//! # Example
+//!
+//! Lift a pixel shader and run it once. Its constant buffer holds `f = (0.25, 2, 4, 8)` and `u = (7, 2, 0, 0)`; the
+//! HLSL computes `min(f.x, f.y)`, `max(f.x, f.y)` into target 0 and `u.x / u.y`, `u.x % u.y` into target 1:
+//!
+//! ```
+//! use iridia_exec::{PixelShader, ProgramShader, Sample};
+//!
+//! let program = iridia_dxbc::lift(include_bytes!("../../iridia-dxbc/tests/fixtures/modes.dxbc"))?;
+//! let shader = ProgramShader::new(program)?;
+//!
+//! let bits = |v: [f32; 4]| v.map(f32::to_bits);
+//! let constants = [bits([0.25, 2.0, 4.0, 8.0]), [7, 2, 0, 0], [0; 4]];
+//! let inputs = vec![[0u32; 4]; shader.input_count()]; // SV_Position, which the program never reads
+//! let run = shader.execute(&inputs, &[(0, &constants)], &mut |_: Sample| Err("no textures".into()))?;
+//!
+//! assert_eq!(f32::from_bits(run.outputs[0][0]), 0.25); // min(f.x, f.y)
+//! assert_eq!(f32::from_bits(run.outputs[0][1]), 2.0); // max(f.x, f.y)
+//! assert_eq!(&run.outputs[1][..2], &[3, 1]); // 7 / 2, 7 % 2
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
 
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+
+// Run the examples in the README as doc tests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
 
 pub mod draw;
 pub mod evaluate;
@@ -70,8 +105,8 @@ pub(crate) fn error(detail: impl Into<String>) -> Error {
 }
 
 impl Executable {
-    /// Check `program` (its module and its interface) and compile it. A construct the executor does not run (a
-    /// 64-bit value, an atomic other than add, an image atomic) is refused here, by name.
+    /// Check `program` (its module and its interface) and compile it. A construct the executor does not run is
+    /// refused here, by name.
     pub fn new(program: &Program) -> Result<Self, Error> {
         if iridia::stage_functions(&program.interface)
             .map_err(error)?
@@ -404,7 +439,7 @@ pub struct Error {
 
 /// A checked pixel shader that can be evaluated.
 pub trait PixelShader: std::fmt::Debug + Sync {
-    /// The program's varyings and resources, in primase's vocabulary.
+    /// The program's varyings and resources, in the [`iridia::Interface`] vocabulary.
     fn interface(&self) -> &Interface;
     /// Input registers an evaluation needs.
     fn input_count(&self) -> usize;

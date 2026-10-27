@@ -1,4 +1,4 @@
-//! Small, owned facts recorded by a resolver while it already has a lifted program. No bytecode or IR is retained.
+//! Small, owned facts a consumer records about a program while it already has it lifted. No bytecode or IR is retained.
 use crate::{D3dBinding, OutputBinding, ResourceId, Stage, Surface, Varying};
 use serde::Serialize;
 
@@ -17,7 +17,7 @@ pub struct InstructionCount {
     pub unit: InstructionUnit,
 }
 
-/// Just the declared resource's source address; bulk buffer layouts/default constants remain on core.shader.
+/// Just the declared resource's source address; bulk buffer layouts and default constants stay in the lifted program.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProgramResourceFacts {
     pub id: ResourceId,
@@ -25,7 +25,7 @@ pub struct ProgramResourceFacts {
     pub d3d: Option<D3dBinding>,
 }
 
-/// A resolver's measured facts about one program: what it reads and writes and how large it is. `H` is the handle the
+/// A consumer's measured facts about one program: what it reads and writes and how large it is. `H` is the handle the
 /// consumer keeps the program by (`None` until [`ProgramFacts::bound`]).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ProgramFacts<H> {
@@ -63,7 +63,7 @@ impl<H> ProgramFacts<H> {
             not_lifted: Some(reason.into()),
         }
     }
-    /// Material output roles are resolved after the lift; the surface is always the shared core interpretation.
+    /// Output roles are resolved after the lift; the surface is always the shared reading ([`Surface::read`]).
     pub fn bound(mut self, shader: H, outputs: &[OutputBinding]) -> Self {
         self.shader = Some(shader);
         self.outputs = outputs.to_vec();

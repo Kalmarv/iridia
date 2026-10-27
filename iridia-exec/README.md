@@ -1,52 +1,53 @@
-# Shader execution
+# iridia-exec
 
-Bounded CPU execution of a `iridia::Program`, whatever bytecode it was lifted from (`iridia` holds the
-program, its validation and the lifters' builder; this crate depends on it, the lifters do not). `Executable::new` checks
-and compiles an entry-point program, `Executable::functions` the functions of a hull, domain, geometry or ray tracing
-program; a `Runner` executes one invocation, a 2 x 2 quad, or several invocations of their own in lockstep (masked
-where they diverge, each with its own steps and budget) against a `Backend` that answers what is outside the program
-(samples, loads, queries, unordered-access effects); `Pipeline` runs a ray tracing pipeline; `mesh`, `geometry`,
-`tessellation` and `tessellator` run those stages. The crate documentation has the run rules.
+A bounded CPU reference executor for [`iridia::Program`](../iridia): it runs a lifted shader on explicit inputs, whatever bytecode it was lifted from, and returns exactly what it wrote. It is for checking a translation (against values worked out by hand, or against Microsoft's WARP rasterizer), not for rendering: it is deterministic and slow.
 
-`PixelShader` is what a bake evaluates, whatever the bytecode: `interface()` (the program's varyings and resources in
-primase's own vocabulary, `iridia/README.md`), `input_count()`, `constant_buffers()` (bind slot and rows of four lanes),
-`textures()` and `samplers()` (bind slots), and `execute(inputs, buffers, sampler)`. `iridia_exec::ProgramShader` puts a lifted program (`iridia-dxbc`, Shader Model 5; `iridia-dxil`, Shader Model 6) behind it.
-`execute_lanes` evaluates invocations that share their inputs' derivatives, each as it evaluates alone (outputs,
-instructions, samples; on an error, the first failing one's): `ProgramShader` runs them 16 at a time in lockstep, and
-runs a group that stops again one invocation after another, so the error is the one alone gives.
+Part of [iridia](https://github.com/Kalmarv/iridia), which turns compiled Direct3D shaders into naga modules. This crate depends on `iridia`; the readers (`iridia-dxbc`, `iridia-dxil`, `iridia-d3d9`, `iridia-mojo`) do not depend on it.
 
-Sampling is the caller's `Sampler` callback (texture and sampler slots, UV): a scalar evaluation has no
-derivatives, so the caller states its footprint, addressing, filtering and transfer. An `Execution` holds the
-output registers, the mask of lanes the shader wrote, and instruction and sample counts. Errors name their
-bytecode and location.
+## What it runs
 
-## Evaluating over a grid
+- **Entry-point programs** (pixel, vertex, compute, mesh). `Executable::new` checks a program and compiles it once into a flat form (typed operations on four-lane word registers, pointers folded to word offsets, dead operations dropped). A `Runner` executes one invocation, a 2 x 2 quad, or several invocations in lockstep (masked where they diverge, each with its own steps and budget) against a `Backend`, which answers what is outside the program: texture samples, loads, queries, unordered-access effects. `ProgramShader` puts a vertex or pixel program behind the `PixelShader` trait, in the register vocabulary of the D3D bytecode it came from: inputs and outputs by signature register, constant buffers and samplers by bind slot.
+- **Stages WGSL has no entry point for.** Their programs lift as functions, which `Executable::functions` compiles: `geometry` (the input assembler's topologies and a geometry program's strips), `tessellation` and `tessellator` (hull and domain programs over a port of Microsoft's reference fixed-function tessellator), `mesh` (a thread group's meshlet), `Pipeline` with `Scene` (a ray tracing pipeline: `DispatchRays`, `TraceRay`, hit groups, miss and callable programs, over acceleration structures the caller builds; inline ray queries too).
+- **`draw`**: a small software rasterizer for an indexed triangle list (vertex program, clipping, viewport, rasterization, pixel program, depth test, render targets), for re-running a recorded draw on its programs and setting its pixels against the game's.
+- **`evaluate`**: a pixel shader over a grid of UVs, to bake a procedural material to textures. The caller states everything the program reads (the constant layout and values, a texture per sampled slot, a value per used input) and which outputs it wants; the evaluator has no policy of its own and refuses what it is not given. `evaluate_periodic` bakes to a texture that tiles.
+- **`probe`**: runs one vertex of a vertex program with chosen constants to see what it does with them (what a matrix or a table is).
+- **`texture`** and **`views`**: a 2D texture as the executor samples it (levels, colour transfer, the sampler state's addressing and bias, the filtering the caller chooses) and resource views bound by slot.
 
-`evaluate` runs a `PixelShader` once per pixel of a UV grid: the generic part of a material bake. The caller states
-everything the program reads and the evaluator adds no policy of its own:
+## Example
 
-- `Layout`: the buffers the program reads (bind slot, words) and where each named constant lives (`Field`: buffer,
-  word offset, words). `Layout::of` builds it from the interface, struct members flattened to their own names (a name
-  that occurs twice, or a field off a word boundary, is an error); a caller whose bytecode carries no reflection
-  builds it from its own records. A field's words are its type's extent (`ConstantType::size()`).
-- `Constants`: the words, zero until set. `set(field, values)` writes a field's leading words (`Ok(false)` for an
-  unknown name, an error for more values than the field has); `set_words(buffer, offset, bits)` writes raw words at
-  a stated offset; words past the rows the program reads are not stored. `unset_words` counts what stays zero.
-- `Texture` per bind slot: an `Image` the caller samples by its own policy, or a constant. A slot the program
-  samples without one is an error.
-- `Input` per (semantic, index), compared case-insensitively: lanes of raw bits, the grid's U or V, a constant, or
-  `GridUv`. Lane k is the element's k-th component wherever the signature places it (a float2 packed into `.zw`
-  receives lanes 0 and 1 there). A used input without one is an error. The evaluation still runs on D3D's register
-  model, so it reads each input's register and lanes from `provenance.d3d`.
-- `Grid`: pixel (x, y) of size x size is evaluated at U = (x + 0.5) / size * period[0], V likewise, in f32. A scalar
-  evaluation runs each row's pixels through `execute_lanes` (their derivatives are the grid's steps).
-- Targets: (output register, component mask). Each comes back as size x size values, or None when the program does
-  not write those components; a program that writes them at some pixels only is an error.
+Lift a pixel shader and run it once. Its constant buffer holds `f = (0.25, 2, 4, 8)` and `u = (7, 2, 0, 0)`; the HLSL computes `min(f.x, f.y)` and `max(f.x, f.y)` into target 0 and `u.x / u.y` and `u.x % u.y` into target 1:
 
-Tests: `tests/interface.rs` reads two HLSL fixtures (`tests/fixtures/resources.hlsl`, `varyings.hlsl`) compiled with
-fxc (SM5) and dxc (SM6) and holds the vocabulary read from either to the same values worked out from the HLSL and fxc's
-own listing of the buffer layouts. `tests/evaluate.rs` evaluates `tests/fixtures/evaluate.hlsl` through both
-implementations against outputs worked out from the HLSL, the refusals, and constant packing worked out from D3D's
-rules. `tests/lanes.rs` runs `tests/fixtures/lanes.hlsl`, whose pixels diverge (a branch with a sample, loops of their
-own lengths, a discard, a pixel past the step limit), in lockstep against one pixel after another.
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use iridia_exec::{PixelShader, ProgramShader, Sample};
 
+    let program = iridia_dxbc::lift(&std::fs::read("../iridia-dxbc/tests/fixtures/modes.dxbc")?)?;
+    let shader = ProgramShader::new(program)?;
+
+    let bits = |v: [f32; 4]| v.map(f32::to_bits);
+    let constants = [bits([0.25, 2.0, 4.0, 8.0]), [7, 2, 0, 0], [0; 4]];
+    let inputs = vec![[0u32; 4]; shader.input_count()]; // SV_Position, which the program never reads
+    let run = shader.execute(&inputs, &[(0, &constants)], &mut |_: Sample| Err("no textures".into()))?;
+
+    assert_eq!(f32::from_bits(run.outputs[0][0]), 0.25); // min(f.x, f.y)
+    assert_eq!(f32::from_bits(run.outputs[0][1]), 2.0); // max(f.x, f.y)
+    assert_eq!(&run.outputs[1][..2], &[3, 1]); // 7 / 2, 7 % 2
+    Ok(())
+}
+```
+
+## Guarantees and limits
+
+- What a run does follows the program's `D3dModes`: a program that says its body spells out D3D's integer division, conversions and `min`/`max` runs as written, and one that expects denormals flushed to zero has every 32-bit float operation flush its operands and result (sign kept). Anything the program does that its module cannot make valid (an index past the end of a local array, an integer division by zero in the module) is an error of the run, never a silent value. Errors name their bytecode and location.
+- Every run has a step budget (`STEP_LIMIT`).
+- Sampling belongs to the caller: a scalar execution cannot infer derivatives, filtering or addressing, so a `Sampler` callback answers texture samples and the caller states the footprint, addressing, filtering and transfer. A quad run supplies the derivatives of its four invocations.
+- A construct the executor does not run is refused by `Executable::new` with its name. A ray tracing program is not an entry point; it runs inside a `Pipeline`.
+- The tessellator is a port of the reference tessellator Microsoft published with the Direct3D 11.3 functional specification (MIT licence; the notice is kept in `src/tessellator.rs`). Its output is held against that reference's recorded output in `tests/fixtures/tessellator_reference.txt`.
+
+## Tests
+
+`cargo test -p iridia-exec` needs no game files: it runs fixtures through both `iridia-dxbc` and `iridia-dxil` (development dependencies, a cycle cargo allows), holding the interface read from either to the values worked out from the HLSL (`tests/interface.rs`), the evaluator to outputs worked out by hand (`tests/evaluate.rs`), lockstep lanes against one pixel after another with diverging control flow (`tests/lanes.rs`), and the stage drivers to hand-worked meshes, strips, patches and scenes. The comparisons against WARP live in `iridia-dxbc` and `iridia-dxil` (`tests/exec_warp*.rs`).
+
+## Licence
+
+GPL-3.0-or-later, apart from the tessellator port noted above.
