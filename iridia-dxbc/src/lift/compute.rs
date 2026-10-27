@@ -1,7 +1,7 @@
 //! What a compute program does that the other stages do not: reads, writes and atomic operations on unordered-access
 //! buffers and thread-group shared memory, and barriers.
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{AtomicFunction, BinaryOperator as Bo, Expression as E, GlobalVariable, Handle, Statement};
 
 use super::Lift;
@@ -99,7 +99,7 @@ impl Lift<'_> {
             let layer = Val {
                 expr: l,
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             };
             self.b.bitcast_to(layer, Kind::I).expr
         });
@@ -155,7 +155,7 @@ impl Lift<'_> {
 
     /// The word `index` of `mem` as unsigned bits, zero past its end (D3D's answer for a buffer).
     fn read_word(&mut self, mem: &Mem, index: Val) -> Val {
-        let word = self.guarded_load(mem.global, index, mem.len, mem.kind(), 1);
+        let word = self.guarded_load(mem.global, index, mem.len, mem.kind(), Width::One);
         self.b.bitcast_to(word, Kind::U)
     }
 
@@ -195,7 +195,7 @@ impl Lift<'_> {
         let mask = self.dest_mask(ins.operand(0)?);
         let element = self.read(ins.operand(1)?, 1, Kind::U)?;
         let row = match mem.atomic {
-            None => self.guarded_load(mem.global, element, None, Kind::U, 4),
+            None => self.guarded_load(mem.global, element, None, Kind::U, Width::Four),
             // the element is four atomic words: read each, zero past the end
             Some(_) => {
                 let mut lanes = Vec::new();
@@ -222,7 +222,7 @@ impl Lift<'_> {
         let length = Val {
             expr: self.b.app(E::ArrayLength(pointer)),
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         };
         let inside = self.b.binary(Bo::Less, element, length);
         self.b.when(inside, |b| {
@@ -255,7 +255,7 @@ impl Lift<'_> {
         let length = Val {
             expr: self.b.app(E::ArrayLength(pointer)),
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         };
         let inside = self.b.binary(Bo::Less, element, length);
         let zero = self.b.lit_u(0);
@@ -266,7 +266,7 @@ impl Lift<'_> {
             index: safe.expr,
         });
         let word = self.b.app(E::AccessIndex { base: row, index: k });
-        let value = self.b.load(word, mem.kind(), 1);
+        let value = self.b.load(word, mem.kind(), Width::One);
         let bits = self.b.bitcast_to(value, Kind::U);
         self.b.select(inside, bits, zero)
     }
@@ -302,7 +302,7 @@ impl Lift<'_> {
             None => Val {
                 expr: self.b.app(E::ArrayLength(pointer)),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             },
         };
         let inside = self.b.binary(Bo::Less, at, length);
@@ -374,7 +374,7 @@ impl Lift<'_> {
             None => Val {
                 expr: self.b.app(E::ArrayLength(pointer)),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             },
         };
         let inside = self.b.binary(Bo::Less, word, length);

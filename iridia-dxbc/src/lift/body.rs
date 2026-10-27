@@ -400,7 +400,7 @@ impl Lift<'_> {
                 let mask = self.dest_mask(ins.operand(0)?);
                 let a = self.read(ins.operand(1)?, mask, Kind::F)?;
                 let mut parts = Vec::new();
-                for i in 0..a.width {
+                for i in a.width.lanes() {
                     let x = self.b.lane(a, i);
                     let z = self.b.lit_f(0.0);
                     let pair = self.b.compose(&[x, z]);
@@ -415,7 +415,7 @@ impl Lift<'_> {
                 let mask = self.dest_mask(ins.operand(0)?);
                 let a = self.read(ins.operand(1)?, mask, Kind::U)?;
                 let mut parts = Vec::new();
-                for i in 0..a.width {
+                for i in a.width.lanes() {
                     let x = self.b.lane(a, i);
                     let low = self.b.lit_u(0xffff);
                     let x = self.b.binary(And, x, low);

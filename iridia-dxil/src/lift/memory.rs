@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{ArraySize, Expression as E, GlobalVariable, Handle, LocalVariable, TypeInner};
 
 use iridia::ResourceKind;
@@ -74,16 +74,17 @@ impl Lift<'_> {
     }
 
     /// The kind and width of a value of this type: a scalar, or a vector of up to four lanes.
-    pub(super) fn value_shape(&self, ty: TypeId) -> Result<(Kind, u8)> {
+    pub(super) fn value_shape(&self, ty: TypeId) -> Result<(Kind, Width)> {
         match self.m.types.get(ty) {
             Some(Type::Vector(n, e)) => {
-                let n = u8::try_from(*n)
+                let n = usize::try_from(*n)
                     .ok()
-                    .filter(|n| (2..=4).contains(n))
+                    .and_then(Width::of_count)
+                    .filter(|&n| n > Width::One)
                     .map_or_else(|| self.refuse("a vector of this width"), Ok)?;
                 Ok((self.kind_of_type(*e)?, n))
             }
-            _ => Ok((self.kind_of_type(ty)?, 1)),
+            _ => Ok((self.kind_of_type(ty)?, Width::One)),
         }
     }
 
@@ -196,18 +197,19 @@ impl Lift<'_> {
             }
             Type::Float | Type::Integer(1) | Type::Integer(32) => {
                 let kind = self.kind_of_type(ty)?;
-                Ok((self.b.ty_of(kind, 1), 4, 4))
+                Ok((self.b.ty_of(kind, Width::One), 4, 4))
             }
             Type::Vector(n, e) => {
                 let kind = self.kind_of_type(e)?;
-                let n = u8::try_from(n)
+                let n = usize::try_from(n)
                     .ok()
-                    .filter(|n| (2..=4).contains(n))
+                    .and_then(Width::of_count)
+                    .filter(|&n| n > Width::One)
                     .map_or_else(|| self.refuse("a vector of this width"), Ok)?;
                 Ok((
                     self.b.ty_of(kind, n),
-                    u32::from(n) * 4,
-                    if n == 2 { 8 } else { 16 },
+                    u32::from(n.get()) * 4,
+                    if n == Width::Two { 8 } else { 16 },
                 ))
             }
             Type::Array(n, e) => {
@@ -423,7 +425,7 @@ impl Lift<'_> {
         for s in &p.steps {
             steps.push(match s {
                 Step::Dynamic(Index::Expr(v)) => {
-                    let t = self.b.ty_of(v.kind, 1);
+                    let t = self.b.ty_of(v.kind, Width::One);
                     let local = self.b.local("index", t);
                     let ptr = self.b.local_ptr(local);
                     self.b.store(ptr, *v);
@@ -458,7 +460,7 @@ impl Lift<'_> {
                 }
                 Step::Dynamic(Index::Local(l)) => {
                     let lp = self.b.local_ptr(*l);
-                    let index = self.b.load(lp, Kind::U, 1);
+                    let index = self.b.load(lp, Kind::U, Width::One);
                     self.b.app(E::Access {
                         base: e,
                         index: index.expr,

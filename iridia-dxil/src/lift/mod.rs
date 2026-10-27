@@ -28,7 +28,7 @@ mod wide;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{Conventions, D3dModes, Program, Provenance, ShaderFormat, Stage, StageFacts};
 use naga::{Handle, LocalVariable};
 
@@ -211,7 +211,7 @@ enum Stored {
     Scalar {
         local: Handle<LocalVariable>,
         kind: Kind,
-        width: u8,
+        width: Width,
     },
     Agg(Vec<Stored>),
     /// Not stored: handles and the like, which are the same wherever they are read.
@@ -266,6 +266,11 @@ pub(crate) struct Lift<'m> {
 impl<'m> Lift<'m> {
     pub(crate) fn refuse<T>(&self, detail: impl Into<String>) -> Result<T> {
         Err(error(self.at, detail))
+    }
+
+    /// The width of an interface value, refused unless it is one to four lanes.
+    pub(crate) fn width_of(&self, v: &iridia::Value) -> Result<Width> {
+        Width::try_from(v.width).or_else(|e| self.refuse(format!("a value of {e}")))
     }
 
     /// Argument `n` of a call. An operation's argument count is checked against its table (`dxop::arguments`) before it is
@@ -472,7 +477,7 @@ impl<'m> Lift<'m> {
         let declared = self.b.declare_entry(&io).map_err(|detail| error(0, detail))?;
         self.arguments = declared.arguments;
         self.result_type = declared.result;
-        let u4 = self.b.ty_of(Kind::U, 4);
+        let u4 = self.b.ty_of(Kind::U, Width::Four);
         for v in &self.setup.interface.outputs {
             if let Some(d3d) = v.provenance.d3d
                 && d3d.register != u32::MAX
@@ -563,7 +568,7 @@ impl<'m> Lift<'m> {
             .declare_function_with(sig, &structures)
             .map_err(|detail| error(0, detail))?;
         // the registers its results are made of
-        let u4 = self.b.ty_of(Kind::U, 4);
+        let u4 = self.b.ty_of(Kind::U, Width::Four);
         for v in self.result_varyings() {
             if let Some(d3d) = v.provenance.d3d
                 && d3d.register != u32::MAX
@@ -587,7 +592,9 @@ impl<'m> Lift<'m> {
         }
         self.define_phis()?;
         self.structure_and_lower()?;
-        self.b.end_function(sig.name, decl);
+        self.b
+            .end_function(sig.name, decl)
+            .map_err(|detail| error(self.at, detail))?;
         Ok(())
     }
 
@@ -602,7 +609,8 @@ impl<'m> Lift<'m> {
     fn finish_functions(mut self, target: String) -> Result<Program> {
         self.b.check().map_err(|detail| error(self.at, detail))?;
         let stage = self.setup.interface.stage;
-        let module = self.b.finish_functions();
+        let at = self.at;
+        let module = self.b.finish_functions().map_err(|detail| error(at, detail))?;
         let mut limit_notes = iridia::compute_limit_notes(&module);
         let interface = self.setup.interface.clone();
         limit_notes.extend(iridia::interface_notes(&interface));
@@ -638,6 +646,7 @@ impl<'m> Lift<'m> {
         self.b.check().map_err(|detail| error(self.at, detail))?;
         let stage = self.setup.interface.stage;
         let early = false;
+        let at = self.at;
         let module = if let Some((output, facts)) = &self.mesh {
             self.b.finish_mesh(self.arguments, facts, output)
         } else {
@@ -652,7 +661,8 @@ impl<'m> Lift<'m> {
                 self.result_type,
                 early,
             )
-        };
+        }
+        .map_err(|detail| error(at, detail))?;
         let mut limit_notes = iridia::compute_limit_notes(&module);
         let interface = self.setup.interface.clone();
         limit_notes.extend(iridia::interface_notes(&interface));

@@ -4,7 +4,7 @@
 //! D3D cannot have is refused.
 use std::num::NonZeroU32;
 
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{
     Access, BufferKind, Conventions, D3dBinding, D3dClass, D3dModes, Interface, Label, Program, Provenance,
     Resource, ResourceId, ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, StorageTarget,
@@ -17,7 +17,7 @@ use naga::{
 
 fn program(size: [u32; 3]) -> Program {
     let mut b = Builder::new();
-    let u1 = b.ty_of(Kind::U, 1);
+    let u1 = b.ty_of(Kind::U, Width::One);
     let atomic = b.ty(TypeInner::Atomic(Scalar::U32));
     let shared_ty = b.ty(TypeInner::Array {
         base: atomic,
@@ -57,7 +57,7 @@ fn program(size: [u32; 3]) -> Program {
         base: shared_ptr,
         index: 0,
     });
-    let old_ty = b.ty_of(Kind::U, 1);
+    let old_ty = b.ty_of(Kind::U, Width::One);
     let old = b.result_expr(Expression::AtomicResult {
         ty: old_ty,
         comparison: false,
@@ -75,7 +75,7 @@ fn program(size: [u32; 3]) -> Program {
         Val {
             expr: index,
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         },
         zero,
     );
@@ -85,7 +85,7 @@ fn program(size: [u32; 3]) -> Program {
             base: shared_ptr,
             index: 0,
         });
-        let total = b.load(slot, Kind::U, 1);
+        let total = b.load(slot, Kind::U, Width::One);
         let words_ptr = b.global_ptr(words);
         let zero = b.lit_u(0);
         let target = b.app(Expression::Access {
@@ -95,17 +95,19 @@ fn program(size: [u32; 3]) -> Program {
         b.store(target, total);
     });
     b.workgroup_size = size;
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Compute,
-        vec![naga::FunctionArgument {
-            name: Some("SV_GroupIndex0".into()),
-            ty: index_ty,
-            binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::LocalInvocationIndex)),
-        }],
-        None,
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Compute,
+            vec![naga::FunctionArgument {
+                name: Some("SV_GroupIndex0".into()),
+                ty: index_ty,
+                binding: Some(naga::Binding::BuiltIn(naga::BuiltIn::LocalInvocationIndex)),
+            }],
+            None,
+            false,
+        )
+        .expect("the module finishes");
     let words = module.global_variables.iter().nth(1).unwrap().0;
     Program {
         module,

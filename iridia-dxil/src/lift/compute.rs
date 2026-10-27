@@ -1,7 +1,7 @@
 //! What a compute program does that the other stages do not: barriers, atomic operations (on thread-group variables
 //! and on unordered-access buffers), and writes to unordered-access buffers.
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use iridia::{BufferKind, ResourceKind, StorageTarget};
 use naga::{AtomicFunction, BinaryOperator as Bo, Expression as E, Handle, Statement};
 
@@ -165,7 +165,7 @@ impl Lift<'_> {
             let length = Val {
                 expr: self.b.app(E::ArrayLength(words)),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             };
             let inside = self.b.binary(Bo::Less, at, length);
             self.b.when(inside, |b| {
@@ -214,7 +214,7 @@ impl Lift<'_> {
             let layer = Val {
                 expr: l,
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             };
             self.b.bitcast_to(layer, Kind::I).expr
         });
@@ -247,7 +247,7 @@ impl Lift<'_> {
         let length = Val {
             expr: self.b.app(E::ArrayLength(words)),
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         };
         self.b.binary(Bo::Less, word, length)
     }
@@ -318,7 +318,7 @@ const WAVE_MAX: i64 = 3;
 impl Lift<'_> {
     /// A subgroup operation's result of `kind`, made before the statement that fills it.
     fn subgroup_result(&mut self, kind: Kind) -> Handle<E> {
-        let ty = self.b.ty_of(kind, 1);
+        let ty = self.b.ty_of(kind, Width::One);
         self.b.result_expr(E::SubgroupOperationResult { ty })
     }
 
@@ -338,7 +338,7 @@ impl Lift<'_> {
         Val {
             expr: result,
             kind: argument.kind,
-            width: 1,
+            width: Width::One,
         }
     }
 
@@ -352,7 +352,7 @@ impl Lift<'_> {
         Val {
             expr: result,
             kind: argument.kind,
-            width: 1,
+            width: Width::One,
         }
     }
 
@@ -366,7 +366,7 @@ impl Lift<'_> {
         Val {
             expr: result,
             kind: Kind::U,
-            width: 4,
+            width: Width::Four,
         }
     }
 

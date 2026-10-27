@@ -126,7 +126,9 @@ fn mesh_with(vertices: u32, triangle: [u32; 3]) -> Program {
     let triangle = b.compose(&[i0, i1, i2]);
     b.store(indices, triangle);
     b.push(Statement::Return { value: None });
-    let module = b.finish_mesh(declared.arguments, &facts, &output);
+    let module = b
+        .finish_mesh(declared.arguments, &facts, &output)
+        .expect("the module finishes");
     Program {
         module,
         stage: Stage::Mesh,

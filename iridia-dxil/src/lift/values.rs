@@ -2,7 +2,7 @@
 //! aggregates, phis.
 
 use half::f16;
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{BinaryOperator as Bo, Expression as E, MathFunction as Mf, UnaryOperator as Uo};
 
 use super::setup::const_int;
@@ -296,7 +296,7 @@ impl Lift<'_> {
             self.at = inst.at;
             let local = self.local_index(v)?;
             let name = format!("phi{local}");
-            let t = self.b.ty_of(Kind::U, 1);
+            let t = self.b.ty_of(Kind::U, Width::One);
             let stored = if self.is_wide_type(ty) {
                 let (lo, hi) = (
                     self.b.local(&format!("{name}_lo"), t),
@@ -305,17 +305,17 @@ impl Lift<'_> {
                 let word = |local| Stored::Scalar {
                     local,
                     kind: Kind::U,
-                    width: 1,
+                    width: Width::One,
                 };
                 Stored::Agg(vec![word(lo), word(hi)])
             } else {
                 let kind = self.kind_of_type(ty)?;
-                let t = self.b.ty_of(kind, 1);
+                let t = self.b.ty_of(kind, Width::One);
                 let local = self.b.local(&name, t);
                 Stored::Scalar {
                     local,
                     kind,
-                    width: 1,
+                    width: Width::One,
                 }
             };
             if let Some(entry) = self.slots.get_mut(local) {
@@ -466,7 +466,9 @@ impl Lift<'_> {
             Op::ExtractElement { vector, index } => {
                 let v = self.scalar(*vector)?;
                 let r = match const_int(self.m, self.f, *index) {
-                    Some(k) if (0..i64::from(v.width)).contains(&k) => self.b.lane(v, super::lane_u8(k)),
+                    Some(k) if (0..i64::from(v.width.get())).contains(&k) => {
+                        self.b.lane(v, super::lane_u8(k))
+                    }
                     Some(_) => return self.refuse("a vector lane outside the vector"),
                     None => {
                         let at = self.uint(*index)?;
@@ -476,7 +478,7 @@ impl Lift<'_> {
                                 index: at.expr,
                             }),
                             kind: v.kind,
-                            width: 1,
+                            width: Width::One,
                         }
                     }
                 };
@@ -486,9 +488,9 @@ impl Lift<'_> {
                 let v = self.scalar(*vector)?;
                 let new = self.scalar(*value)?;
                 let new = self.b.bitcast_to(new, v.kind);
-                let lanes: Vec<Val> = (0..v.width).map(|k| self.b.lane(v, k)).collect();
+                let lanes: Vec<Val> = v.width.lanes().map(|k| self.b.lane(v, k)).collect();
                 let lanes = match const_int(self.m, self.f, *index) {
-                    Some(k) if (0..i64::from(v.width)).contains(&k) => {
+                    Some(k) if (0..i64::from(v.width.get())).contains(&k) => {
                         let mut lanes = lanes;
                         if let Some(lane) = usize::try_from(k).ok().and_then(|k| lanes.get_mut(k)) {
                             *lane = new;
@@ -513,8 +515,8 @@ impl Lift<'_> {
             Op::ShuffleVector { first, second, mask } => {
                 let (a, b) = (self.scalar(*first)?, self.scalar(*second)?);
                 let b = self.b.bitcast_to(b, a.kind);
-                let mut source: Vec<Val> = (0..a.width).map(|k| self.b.lane(a, k)).collect();
-                source.extend((0..b.width).map(|k| self.b.lane(b, k)));
+                let mut source: Vec<Val> = a.width.lanes().map(|k| self.b.lane(a, k)).collect();
+                source.extend(b.width.lanes().map(|k| self.b.lane(b, k)));
                 let picks = self.vector_mask(*mask)?;
                 let mut lanes = Vec::new();
                 for pick in picks {

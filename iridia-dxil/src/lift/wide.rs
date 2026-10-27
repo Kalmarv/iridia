@@ -4,7 +4,7 @@
 //! counts are written out on the pair; a division and a conversion to or from a float are refused by name (a division
 //! would be a loop, and a conversion's rounding would be a guess).
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::BinaryOperator as Bo;
 use naga::MathFunction as Mf;
 
@@ -99,7 +99,7 @@ impl Lift<'_> {
     /// Unsigned division of 64-bit integers by restoring long division, a loop of 64 passes: the quotient and the
     /// remainder; a zero divisor gives all ones for both, as D3D's 32-bit division does.
     fn divide_wide(&mut self, n: Wide, d: Wide) -> Result<(Wide, Wide)> {
-        let u = self.b.ty_of(Kind::U, 1);
+        let u = self.b.ty_of(Kind::U, Width::One);
         let q = [self.b.local("q_lo", u), self.b.local("q_hi", u)];
         let r = [self.b.local("r_lo", u), self.b.local("r_hi", u)];
         let zero = self.b.lit_u(0);
@@ -116,7 +116,7 @@ impl Lift<'_> {
         let bit = self.b.binary(Bo::And, bit, one);
         let load = |lift: &mut Self, l| {
             let p = lift.b.local_ptr(l);
-            lift.b.load(p, Kind::U, 1)
+            lift.b.load(p, Kind::U, Width::One)
         };
         let rest = (load(self, r[0]), load(self, r[1]));
         let doubled = self.shift_wide(BinaryOp::Shl, rest, one);

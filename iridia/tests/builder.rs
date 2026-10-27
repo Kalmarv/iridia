@@ -1,6 +1,6 @@
 //! What the builder does when a lifter hands it values that cannot do what it is asked: the fault waits for the lifter to
 //! ask for it, and the builder is never left to panic on a program's account.
-use iridia::build::{Builder, Kind};
+use iridia::build::{Builder, Kind, Width};
 use naga::{BinaryOperator, MathFunction};
 
 fn vector(b: &mut Builder, width: usize) -> iridia::build::Val {
@@ -41,14 +41,44 @@ fn a_vector_of_no_lanes_or_too_many_and_a_function_of_no_arguments_are_faults() 
     assert!(b.check().unwrap_err().contains("no arguments"));
     b.swizzle(one, &[]);
     assert!(b.check().is_err());
-    assert_eq!(b.ty_of(Kind::F, 1), b.ty_of(Kind::F, 1));
+    assert_eq!(b.ty_of(Kind::F, Width::One), b.ty_of(Kind::F, Width::One));
 }
 
+/// A fault nobody checked, or control flow left open, is an error of the finishers, not a panic.
 #[test]
-#[should_panic(expected = "without checking it")]
 fn a_builder_with_a_fault_nobody_asked_for_cannot_be_finished() {
     let mut b = Builder::new();
     let (two, three) = (vector(&mut b, 2), vector(&mut b, 3));
     b.binary(BinaryOperator::Add, two, three);
-    b.finish_functions();
+    let error = b.finish_functions().unwrap_err();
+    assert!(
+        error.contains("did not check") && error.contains("lanes"),
+        "{error}"
+    );
+    let mut open = Builder::new();
+    open.blocks.push(naga::Block::new());
+    let error = open.finish_functions().unwrap_err();
+    assert!(error.contains("control flow left open"), "{error}");
+}
+
+/// A width is one to four lanes and nothing else: every way of naming one agrees, and any other count is refused.
+#[test]
+fn a_width_is_one_to_four_lanes() {
+    for (n, width) in (1u8..).zip(Width::ALL) {
+        assert_eq!(Width::new(n), Some(width));
+        assert_eq!(Width::of_count(usize::from(n)), Some(width));
+        assert_eq!(Width::try_from(u32::from(n)), Ok(width));
+        assert_eq!((u8::from(width), width.count()), (n, usize::from(n)));
+        assert!(width.lanes().eq(0..n));
+        assert_eq!(
+            width.vector_size().map(Width::of_vector),
+            (n > 1).then_some(width)
+        );
+    }
+    for n in [0u8, 5, u8::MAX] {
+        assert_eq!(Width::new(n), None);
+        let error = Width::try_from(n).unwrap_err();
+        assert!(error.contains(&format!("{n} lanes")), "{error}");
+    }
+    assert!(Width::try_from(u32::MAX).is_err() && Width::try_from(usize::MAX).is_err());
 }

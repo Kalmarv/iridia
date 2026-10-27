@@ -45,15 +45,129 @@ impl Kind {
     }
 }
 
-/// An expression with its kind and width (1 for a scalar, 2 to 4 for a vector).
+/// How many lanes a value has: one (a scalar) to four. There is no other width, so every type and vector the builder
+/// is asked for is one naga has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Width {
+    /// A scalar.
+    One = 1,
+    /// A vector of two lanes.
+    Two = 2,
+    /// A vector of three lanes.
+    Three = 3,
+    /// A vector of four lanes.
+    Four = 4,
+}
+impl Width {
+    /// Every width, from one lane to four.
+    pub const ALL: [Width; 4] = [Width::One, Width::Two, Width::Three, Width::Four];
+
+    /// The width of `lanes` lanes, `None` unless it is 1 to 4.
+    pub const fn new(lanes: u8) -> Option<Width> {
+        match lanes {
+            1 => Some(Width::One),
+            2 => Some(Width::Two),
+            3 => Some(Width::Three),
+            4 => Some(Width::Four),
+            _ => None,
+        }
+    }
+
+    /// The width of a count of lanes, `None` unless it is 1 to 4.
+    pub fn of_count(lanes: usize) -> Option<Width> {
+        u8::try_from(lanes).ok().and_then(Width::new)
+    }
+
+    /// The width of a naga vector of `size`.
+    pub const fn of_vector(size: VectorSize) -> Width {
+        match size {
+            VectorSize::Bi => Width::Two,
+            VectorSize::Tri => Width::Three,
+            VectorSize::Quad => Width::Four,
+        }
+    }
+
+    /// The number of lanes, 1 to 4.
+    pub const fn get(self) -> u8 {
+        self as u8
+    }
+
+    /// The number of lanes, 1 to 4, as a count.
+    pub const fn count(self) -> usize {
+        self as usize
+    }
+
+    /// The naga vector size of the width, `None` for a scalar.
+    pub const fn vector_size(self) -> Option<VectorSize> {
+        match self {
+            Width::One => None,
+            Width::Two => Some(VectorSize::Bi),
+            Width::Three => Some(VectorSize::Tri),
+            Width::Four => Some(VectorSize::Quad),
+        }
+    }
+
+    /// The lanes of the width, 0 to one less than it.
+    pub fn lanes(self) -> std::ops::Range<u8> {
+        0..self.get()
+    }
+}
+impl From<Width> for u8 {
+    fn from(w: Width) -> u8 {
+        w.get()
+    }
+}
+impl From<Width> for u32 {
+    fn from(w: Width) -> u32 {
+        u32::from(w.get())
+    }
+}
+impl From<Width> for usize {
+    fn from(w: Width) -> usize {
+        w.count()
+    }
+}
+impl From<VectorSize> for Width {
+    fn from(size: VectorSize) -> Width {
+        Width::of_vector(size)
+    }
+}
+impl TryFrom<u8> for Width {
+    type Error = String;
+    fn try_from(lanes: u8) -> Result<Width, String> {
+        Width::new(lanes).ok_or_else(|| format!("a width of {lanes} lanes (a value has 1 to 4)"))
+    }
+}
+impl TryFrom<u32> for Width {
+    type Error = String;
+    fn try_from(lanes: u32) -> Result<Width, String> {
+        u8::try_from(lanes)
+            .ok()
+            .and_then(Width::new)
+            .ok_or_else(|| format!("a width of {lanes} lanes (a value has 1 to 4)"))
+    }
+}
+impl TryFrom<usize> for Width {
+    type Error = String;
+    fn try_from(lanes: usize) -> Result<Width, String> {
+        Width::of_count(lanes).ok_or_else(|| format!("a width of {lanes} lanes (a value has 1 to 4)"))
+    }
+}
+impl std::fmt::Display for Width {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get())
+    }
+}
+
+/// An expression with its kind and width.
 #[derive(Clone, Copy, Debug)]
 pub struct Val {
     /// The expression holding the value.
     pub expr: Handle<Expression>,
     /// The scalar kind of every lane.
     pub kind: Kind,
-    /// Number of lanes, 1 to 4.
-    pub width: u8,
+    /// The number of lanes.
+    pub width: Width,
 }
 
 /// `offset` rounded up to a multiple of `align`, or the reason it does not fit in 32 bits.
@@ -66,22 +180,6 @@ pub(crate) fn align_up(offset: u32, align: u32) -> Result<u32, String> {
 /// `value`, or the reason a layout size does not fit in 32 bits.
 pub(crate) fn fits(value: Option<u32>) -> Result<u32, String> {
     value.ok_or_else(|| "a layout of over 4294967295 bytes".to_owned())
-}
-
-/// A count of lanes as a width (a vector has at most 4; a larger count is a width that [`vector_size`] refuses).
-fn width_of(lanes: usize) -> u8 {
-    u8::try_from(lanes).unwrap_or(u8::MAX)
-}
-
-/// The naga vector size of `width` lanes.\n\n# Panics\n\nPanics unless `width` is 2, 3 or 4: a lifter asks for vectors
-/// only of the widths a value can have.
-pub fn vector_size(width: u8) -> VectorSize {
-    match width {
-        2 => VectorSize::Bi,
-        3 => VectorSize::Tri,
-        4 => VectorSize::Quad,
-        _ => panic!("vector width {width} (a lifter bug: widths are 2 to 4)"),
-    }
 }
 
 /// The swizzle component for lane 0 (x) to 3 (w); any larger lane is w.
@@ -99,10 +197,10 @@ pub fn component(lane: u8) -> SwizzleComponent {
 /// What a lifter reads decides the shapes of the values it hands the builder, so an operation asked of values that cannot
 /// do it (a vector of 2 lanes added to one of 3) is not a bug of the builder and does not panic: it records the first such
 /// fault and returns a value of the shape asked for. The contract is the lifter's: it calls [`Builder::check`] where it
-/// can name what it was reading (after each instruction or statement) and before it finishes the module, and turns a fault
-/// into a refusal. `finish`, `finish_mesh`, `finish_functions` and `end_function` panic on a fault nobody checked, which a
-/// lifter that follows the contract cannot reach from its input; that panic, and the one on control flow left open, are
-/// for a lifter's own bugs.
+/// can name what it was reading (after each instruction or statement), and turns a fault into a refusal. `finish`,
+/// `finish_mesh`, `finish_functions` and `end_function` give back a fault nobody checked, or control flow left open, as an
+/// error: a lifter that follows the contract does not see one from its input, but a lifter's own bug is an error to
+/// refuse the program with, not a panic.
 #[derive(Debug)]
 pub struct Builder {
     /// The module being built.
@@ -146,12 +244,16 @@ impl Builder {
         self.error.take().map_or(Ok(()), Err)
     }
 
-    fn assert_checked(&self) {
-        assert!(
-            self.error.is_none(),
-            "a lifter finished a builder without checking it: {}",
-            self.error.as_deref().unwrap_or_default()
-        );
+    /// Whether the builder can be finished: its control flow closed, and no fault left unchecked.
+    fn finishable(&mut self) -> Result<(), String> {
+        if self.blocks.len() != 1 {
+            return Err(format!(
+                "control flow left open: {} blocks open where the function's own is the one (a lifter bug)",
+                self.blocks.len()
+            ));
+        }
+        self.check()
+            .map_err(|fault| format!("a fault the lifter did not check before finishing: {fault}"))
     }
 
     /// The type `inner` in the module (types equal to an earlier one are shared).
@@ -160,16 +262,14 @@ impl Builder {
             .types
             .insert(Type { name: None, inner }, Span::UNDEFINED)
     }
-    /// The type of a value of `kind` and `width` lanes: a scalar for 1.\n\n# Panics\n\nPanics unless `width` is 1 to 4
-    /// (see [`vector_size`]).
-    pub fn ty_of(&mut self, kind: Kind, width: u8) -> Handle<Type> {
-        if width == 1 {
-            self.ty(TypeInner::Scalar(kind.scalar()))
-        } else {
-            self.ty(TypeInner::Vector {
-                size: vector_size(width),
+    /// The type of a value of `kind` and `width` lanes: a scalar for one.
+    pub fn ty_of(&mut self, kind: Kind, width: Width) -> Handle<Type> {
+        match width.vector_size() {
+            None => self.ty(TypeInner::Scalar(kind.scalar())),
+            Some(size) => self.ty(TypeInner::Vector {
+                size,
                 scalar: kind.scalar(),
-            })
+            }),
         }
     }
 
@@ -216,13 +316,13 @@ impl Builder {
     /// Open `for i in 0..count { .. }` as a loop (not unrolled): what is appended until [`Self::end_repeat`] is its
     /// body, and the value returned is `i`, read at the top of each pass.
     pub fn begin_repeat(&mut self, count: u32) -> (Val, Handle<LocalVariable>) {
-        let ty = self.ty_of(Kind::U, 1);
+        let ty = self.ty_of(Kind::U, Width::One);
         let counter = self.local("i", ty);
         let ptr = self.local_ptr(counter);
         let zero = self.lit_u(0);
         self.store(ptr, zero);
         self.blocks.push(Block::new());
-        let i = self.load(ptr, Kind::U, 1);
+        let i = self.load(ptr, Kind::U, Width::One);
         let limit = self.lit_u(count);
         let done = self.binary(BinaryOperator::GreaterEqual, i, limit);
         self.when(done, |b| b.push(Statement::Break));
@@ -231,7 +331,7 @@ impl Builder {
     /// Close the loop [`Self::begin_repeat`] opened: count the pass and go round.
     pub fn end_repeat(&mut self, counter: Handle<LocalVariable>) {
         let ptr = self.local_ptr(counter);
-        let again = self.load(ptr, Kind::U, 1);
+        let again = self.load(ptr, Kind::U, Width::One);
         let one = self.lit_u(1);
         let next = self.binary(BinaryOperator::Add, again, one);
         self.store(ptr, next);
@@ -269,7 +369,7 @@ impl Builder {
         self.app(Expression::GlobalVariable(g))
     }
     /// A load through `ptr`, typed by the `kind` and `width` the caller states the pointee has.
-    pub fn load(&mut self, ptr: Handle<Expression>, kind: Kind, width: u8) -> Val {
+    pub fn load(&mut self, ptr: Handle<Expression>, kind: Kind, width: Width) -> Val {
         Val {
             expr: self.app(Expression::Load { pointer: ptr }),
             kind,
@@ -317,7 +417,7 @@ impl Builder {
         Val {
             expr: self.app(Expression::Literal(l)),
             kind,
-            width: 1,
+            width: Width::One,
         }
     }
     /// The literal of `kind` whose 32 bits are `bits` (a bool is whether they are nonzero).
@@ -330,21 +430,18 @@ impl Builder {
         }
     }
 
-    /// `v` repeated across `width` lanes; `v` itself when it already has that many. A `v` that is not a scalar, or a
-    /// `width` outside 2 to 4, records a fault ([`Builder::check`]) and gives `v` back.
-    pub fn splat(&mut self, v: Val, width: u8) -> Val {
+    /// `v` repeated across `width` lanes; `v` itself when it already has that many. A `v` that is not a scalar
+    /// records a fault ([`Builder::check`]) and gives `v` back.
+    pub fn splat(&mut self, v: Val, width: Width) -> Val {
         if v.width == width {
             return v;
         }
-        if v.width != 1 || !(2..=4).contains(&width) {
+        let Some(size) = width.vector_size().filter(|_| v.width == Width::One) else {
             self.fail(format!("a value of {} lanes where {width} are needed", v.width));
             return v;
-        }
+        };
         Val {
-            expr: self.app(Expression::Splat {
-                size: vector_size(width),
-                value: v.expr,
-            }),
+            expr: self.app(Expression::Splat { size, value: v.expr }),
             kind: v.kind,
             width,
         }
@@ -358,15 +455,18 @@ impl Builder {
             self.fail("a vector of no lanes");
             return self.lit_u(0);
         };
-        if parts.len() > 4 || parts.iter().any(|p| p.width != 1 || p.kind != first.kind) {
+        let Some(width) = Width::of_count(parts.len()).filter(|_| {
+            parts
+                .iter()
+                .all(|p| p.width == Width::One && p.kind == first.kind)
+        }) else {
             self.fail(format!(
                 "a vector of {} parts that are not scalars of one kind",
                 parts.len()
             ));
             return *first;
-        }
+        };
         let kind = first.kind;
-        let width = width_of(parts.len());
         let ty = self.ty_of(kind, width);
         Val {
             expr: self.app(Expression::Compose {
@@ -379,11 +479,11 @@ impl Builder {
     }
     /// Lane `i` of a vector.
     pub fn lane(&mut self, v: Val, i: u8) -> Val {
-        if i >= v.width {
+        if i >= v.width.get() {
             self.fail(format!("lane {i} of a value of {} lanes", v.width));
             return v;
         }
-        if v.width == 1 {
+        if v.width == Width::One {
             return v;
         }
         Val {
@@ -392,7 +492,7 @@ impl Builder {
                 index: u32::from(i),
             }),
             kind: v.kind,
-            width: 1,
+            width: Width::One,
         }
     }
     /// Lanes `lanes` of a vector, in that order, repeats allowed; a scalar is splat.
@@ -400,25 +500,30 @@ impl Builder {
         if let [one] = lanes {
             return self.lane(v, *one);
         }
-        if lanes.is_empty() || lanes.len() > 4 || lanes.iter().any(|l| *l >= v.width) {
+        let Some(width) = Width::of_count(lanes.len()).filter(|_| lanes.iter().all(|l| *l < v.width.get()))
+        else {
             self.fail(format!("lanes {lanes:?} of a value of {} lanes", v.width));
             return v;
+        };
+        if v.width == Width::One {
+            return self.splat(v, width);
         }
-        if v.width == 1 {
-            return self.splat(v, width_of(lanes.len()));
-        }
+        let Some(size) = width.vector_size() else {
+            // one lane is `lane`'s
+            return self.lane(v, lanes.first().copied().unwrap_or(0));
+        };
         let mut pattern = [SwizzleComponent::X; 4];
         for (slot, lane) in pattern.iter_mut().zip(lanes) {
             *slot = component(*lane);
         }
         Val {
             expr: self.app(Expression::Swizzle {
-                size: vector_size(width_of(lanes.len())),
+                size,
                 vector: v.expr,
                 pattern,
             }),
             kind: v.kind,
-            width: width_of(lanes.len()),
+            width,
         }
     }
     /// Reinterpret the bits as another kind (u32, i32 or f32), width unchanged.
@@ -515,9 +620,9 @@ impl Builder {
         let kind = first.kind;
         let arg = |i: usize| args.get(i).map(|a| a.expr);
         let (width, kind) = match fun {
-            MathFunction::Dot => (1, kind),
-            MathFunction::Pack2x16float => (1, Kind::U),
-            MathFunction::Unpack2x16float => (2, Kind::F),
+            MathFunction::Dot => (Width::One, kind),
+            MathFunction::Pack2x16float => (Width::One, Kind::U),
+            MathFunction::Unpack2x16float => (Width::Two, Kind::F),
             _ => (width, kind),
         };
         Val {
@@ -554,20 +659,16 @@ impl Builder {
         self.select(cond, ones, zero)
     }
 
-    /// Finish the module: the function built so far becomes the one entry point `name` of `stage`, with these
-    /// arguments (each bound or a structure with bound members) and result structure. All control flow must be
-    /// closed.
     /// Close the function being built as the module's function `name` with these arguments and result, and start an
     /// empty one: a program of a stage with no entry point is several of them (see [`crate::stage_functions`]).
-    pub fn end_function(&mut self, name: &str, decl: FunctionDecl) -> Handle<naga::Function> {
-        assert_eq!(self.blocks.len(), 1, "unclosed control flow (a lifter bug)");
-        self.assert_checked();
+    pub fn end_function(&mut self, name: &str, decl: FunctionDecl) -> Result<Handle<naga::Function>, String> {
+        self.finishable()?;
         let mut function = std::mem::take(&mut self.function);
         function.name = Some(name.to_owned());
         function.arguments = decl.arguments;
         function.result = decl.result.map(|ty| naga::FunctionResult { ty, binding: None });
         function.body = self.blocks.first_mut().map(std::mem::take).unwrap_or_default();
-        self.module.functions.append(function, Span::UNDEFINED)
+        Ok(self.module.functions.append(function, Span::UNDEFINED))
     }
 
     /// Declare a function with no body, the module's name for an operation the pipeline does (see [`crate::rt`]); one
@@ -584,7 +685,7 @@ impl Builder {
             ..Function::default()
         };
         if returns_bool {
-            let ty = self.ty_of(Kind::B, 1);
+            let ty = self.ty_of(Kind::B, Width::One);
             function.result = Some(naga::FunctionResult { ty, binding: None });
             let value = function
                 .expressions
@@ -596,17 +697,17 @@ impl Builder {
         self.module.functions.append(function, Span::UNDEFINED)
     }
 
-    /// Finish a module that has functions and no entry point.
-    pub fn finish_functions(self) -> Module {
-        assert_eq!(self.blocks.len(), 1, "unclosed control flow (a lifter bug)");
-        self.assert_checked();
-        self.module
+    /// Finish a module that has functions and no entry point; an error where the builder cannot be finished (a fault
+    /// nobody checked, control flow left open).
+    pub fn finish_functions(mut self) -> Result<Module, String> {
+        self.finishable()?;
+        Ok(self.module)
     }
 
     /// Finish a module whose one entry point `name` runs in `stage` with these `arguments` and `result`;
-    /// `early_depth_test` forces early depth testing. The entry's workgroup size is [`Builder::workgroup_size`].\n\n#
-    /// Panics\n\nPanics on a fault nobody checked ([`Builder::check`]) or on control flow left open: both are a lifter's
-    /// own bugs.
+    /// `early_depth_test` forces early depth testing. The entry's workgroup size is [`Builder::workgroup_size`]. An
+    /// error where the builder cannot be finished: a fault nobody checked ([`Builder::check`]) or control flow left open,
+    /// both a lifter's own bugs.
     pub fn finish(
         mut self,
         name: &str,
@@ -614,14 +715,13 @@ impl Builder {
         arguments: Vec<naga::FunctionArgument>,
         result: Option<Handle<Type>>,
         early_depth_test: bool,
-    ) -> Module {
-        assert_eq!(self.blocks.len(), 1, "unclosed control flow (a lifter bug)");
-        self.assert_checked();
+    ) -> Result<Module, String> {
+        self.finishable()?;
         let mut function = self.function;
         function.name = Some(name.to_owned());
         function.arguments = arguments;
         function.result = result.map(|ty| naga::FunctionResult { ty, binding: None });
-        function.body = self.blocks.pop().expect("one block");
+        function.body = self.blocks.pop().unwrap_or_default();
         self.module.entry_points.push(naga::EntryPoint {
             name: name.to_owned(),
             stage,
@@ -633,6 +733,6 @@ impl Builder {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        self.module
+        Ok(self.module)
     }
 }

@@ -5,7 +5,7 @@ use iridia::{
     Interface, InterpMode, InterpSampling, Interpolation, Label, Majorness, Program, Provenance, Resource,
     ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType, ShaderFormat, Stage, StageFacts,
     SystemValue, TextureDim, Value, Varying, VaryingProvenance,
-    build::{Builder, Kind, Val},
+    build::{Builder, Kind, Val, Width},
     entry_io,
 };
 use naga::{
@@ -278,7 +278,7 @@ fn lower(
                 let arg = Val {
                     expr: l.b.app(E::FunctionArgument(argument(index, cut.after_word)?)),
                     kind: Kind::F,
-                    width: 3,
+                    width: Width::Three,
                 };
                 let mut parts = (0..4).map(|n| l.b.lane(value, n)).collect::<Vec<_>>();
                 for (n, &lane) in (0u8..).zip(&cut.lanes) {
@@ -415,7 +415,8 @@ impl Lower<'_> {
             let arg = Val {
                 expr: self.b.app(E::FunctionArgument(argument(index, self.at)?)),
                 kind: Kind::F,
-                width: v.value.width,
+                width: Width::try_from(v.value.width)
+                    .map_err(|e| error(self.at, format!("an input of {e}")))?,
             };
             let zero = self.b.lit_f(0.0);
             let mut parts = [zero; 4];
@@ -489,7 +490,7 @@ impl Lower<'_> {
             }
         }
         if let Some(rows) = NonZeroU32::new(rows) {
-            let u4 = self.b.ty_of(Kind::U, 4);
+            let u4 = self.b.ty_of(Kind::U, Width::Four);
             let ty = self.b.ty(TypeInner::Array {
                 base: u4,
                 size: ArraySize::Constant(rows),
@@ -595,7 +596,7 @@ impl Lower<'_> {
                     .ok_or_else(|| error(self.at, "constant bank not allocated"))?;
                 let base = self.b.global_ptr(g);
                 let p = self.b.app(E::AccessIndex { base, index: n });
-                let v = self.b.load(p, Kind::U, 4);
+                let v = self.b.load(p, Kind::U, Width::Four);
                 Ok(self.b.bitcast(v, Kind::F))
             }
             Register::Temporary(_) => {
@@ -610,7 +611,7 @@ impl Lower<'_> {
                     ));
                 }
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::F, 4))
+                Ok(self.b.load(p, Kind::F, Width::Four))
             }
             _ => Err(error(self.at, format!("not a readable float register: {r:?}"))),
         }
@@ -636,7 +637,7 @@ impl Lower<'_> {
             v = self.b.d3d_saturate(v);
         }
         let (local, mask) = *self.locals.entry(d.register).or_insert_with(|| {
-            let ty = self.b.ty_of(Kind::F, 4);
+            let ty = self.b.ty_of(Kind::F, Width::Four);
             (self.b.local(&format!("{:?}", d.register), ty), 0)
         });
         let p = self.b.local_ptr(local);
@@ -704,7 +705,7 @@ impl Lower<'_> {
                 clamp_to_edge: false,
             }),
             kind: Kind::F,
-            width: 4,
+            width: Width::Four,
         })
     }
     fn instruction(&mut self, i: &Instruction) -> Result<()> {
@@ -744,7 +745,7 @@ impl Lower<'_> {
                     argument: negative.expr,
                 }),
                 kind: Kind::B,
-                width: 1,
+                width: Width::One,
             };
             self.b.when(any, |b| b.push(Statement::Kill));
             return Ok(());
@@ -814,7 +815,7 @@ impl Lower<'_> {
                     let z = self.b.lane(arg(2)?, 0);
                     dot = self.b.binary(Bo::Add, dot, z);
                 }
-                self.b.splat(dot, 4)
+                self.b.splat(dot, Width::Four)
             }
             Nrm => {
                 let xyz = self.b.swizzle(a, &[0, 1, 2]);
@@ -844,7 +845,7 @@ impl Lower<'_> {
                         self.b.math(Mf::Pow, &[x, y])
                     }
                 };
-                self.b.splat(scalar, 4)
+                self.b.splat(scalar, Width::Four)
             }
             _ => {
                 return Err(error(
@@ -915,7 +916,7 @@ impl Lower<'_> {
             v.used = true;
             self.interface.outputs.push(v);
             let ptr = self.b.local_ptr(local);
-            let v = self.b.load(ptr, Kind::F, 4);
+            let v = self.b.load(ptr, Kind::F, Width::Four);
             let lanes: Vec<_> = (0..4).filter(|n| mask & (1 << n) != 0).collect();
             outputs.push(self.b.swizzle(v, &lanes).expr);
         }
@@ -929,17 +930,21 @@ impl Lower<'_> {
         });
         self.b.push(Statement::Return { value: result });
         self.b.check().map_err(|e| error(self.at, e))?;
-        let module = self.b.finish(
-            "main",
-            if self.source.stage == Stage::Vertex {
-                naga::ShaderStage::Vertex
-            } else {
-                naga::ShaderStage::Fragment
-            },
-            decl.arguments,
-            decl.result,
-            false,
-        );
+        let at = self.at;
+        let module = self
+            .b
+            .finish(
+                "main",
+                if self.source.stage == Stage::Vertex {
+                    naga::ShaderStage::Vertex
+                } else {
+                    naga::ShaderStage::Fragment
+                },
+                decl.arguments,
+                decl.result,
+                false,
+            )
+            .map_err(|e| error(at, e))?;
         self.notes.extend(iridia::interface_notes(&self.interface));
         self.notes.sort();
         self.notes.dedup();

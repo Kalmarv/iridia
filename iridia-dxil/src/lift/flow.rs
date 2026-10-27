@@ -2,7 +2,7 @@
 //! ([`iridia::build::structure`]) and the callbacks that write each block, edge and branch.
 
 use iridia::build::structure::{self, Cfg, Emit, Term};
-use iridia::build::{Builder, Kind};
+use iridia::build::{Builder, Kind, Width};
 use naga::{Expression, Handle, SwitchValue};
 
 use super::Lift;
@@ -141,7 +141,7 @@ impl<'m> Lift<'m> {
     pub(super) fn structure_and_lower(&mut self) -> Result<()> {
         let cfg = self.cfg()?;
         let code = structure::structure(&cfg).map_err(|e| error(0, e.to_string()))?;
-        let u1 = self.b.ty_of(Kind::U, 1);
+        let u1 = self.b.ty_of(Kind::U, Width::One);
         let jump = self.b.local("jump", u1);
         // the lowering writes into a builder of its own; each callback swaps the lift's in
         let mut writing = Builder::new();

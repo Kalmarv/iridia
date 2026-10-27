@@ -2,7 +2,7 @@
 //! writes no position (see [`iridia::stage_functions`]). What builds their arguments into registers, reads
 //! the registers only they have, and returns their results.
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use iridia::{
     Conventions, D3dModes, FunctionSig, IoType, Program, Provenance, ShaderFormat, StageFacts, Varying,
 };
@@ -141,7 +141,7 @@ impl Lift<'_> {
                     let value = Val {
                         expr,
                         kind: Kind::of(v.scalar),
-                        width: 1,
+                        width: Width::One,
                     };
                     self.gs_instance = Some(self.id_local("vGSInstanceID", value));
                 }
@@ -149,7 +149,7 @@ impl Lift<'_> {
                     let value = Val {
                         expr,
                         kind: Kind::of(v.scalar),
-                        width: 1,
+                        width: Width::One,
                     };
                     self.point_id = Some(self.id_local("vOutputControlPointID", value));
                 }
@@ -157,7 +157,7 @@ impl Lift<'_> {
                     let value = Val {
                         expr,
                         kind: Kind::of(v.scalar),
-                        width: 1,
+                        width: Width::One,
                     };
                     self.primitive_id = Some(self.id_local("vPrim", value));
                 }
@@ -167,10 +167,13 @@ impl Lift<'_> {
                     let value = Val {
                         expr,
                         kind: Kind::of(v.scalar),
-                        width: v.width,
+                        width: match Width::try_from(v.width) {
+                            Ok(width) => width,
+                            Err(e) => return self.refuse(format!("SV_DomainLocation of {e}")),
+                        },
                     };
                     let pointer = self.b.local_ptr(local);
-                    for lane in 0..v.width {
+                    for lane in value.width.lanes() {
                         let component = self.b.lane(value, lane);
                         let bits = self.b.bitcast_to(component, Kind::U);
                         let target = self.b.app(E::AccessIndex {
@@ -225,19 +228,23 @@ impl Lift<'_> {
         let Some(d3d) = v.provenance.d3d.filter(|d| d.register != u32::MAX) else {
             return Ok(());
         };
-        let bits_of = |lift: &mut Self, base: Handle<E>, carried: iridia::Value| -> Val {
+        let bits_of = |lift: &mut Self, base: Handle<E>, carried: iridia::Value| -> Result<Val> {
+            let width = match Width::try_from(carried.width) {
+                Ok(width) => width,
+                Err(e) => return lift.refuse(format!("a varying of {e}")),
+            };
             let value = Val {
                 expr: base,
                 kind: Kind::of(carried.scalar),
-                width: carried.width,
+                width,
             };
-            if value.kind == Kind::B {
+            Ok(if value.kind == Kind::B {
                 let ones = lift.b.lit_u(u32::MAX);
                 let zero = lift.b.lit_u(0);
                 lift.b.select(value, ones, zero)
             } else {
                 lift.b.bitcast(value, Kind::U)
-            }
+            })
         };
         match item.ty {
             IoType::Array(carried, n) => {
@@ -249,7 +256,7 @@ impl Lift<'_> {
                         base: expr,
                         index: point,
                     });
-                    let bits = bits_of(self, element, carried);
+                    let bits = bits_of(self, element, carried)?;
                     for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
                         let component = self.b.lane(bits, super::operands::lane_u8(j));
                         self.store_register_lane(
@@ -262,7 +269,7 @@ impl Lift<'_> {
                 }
             }
             IoType::Value(carried) => {
-                let bits = bits_of(self, expr, carried);
+                let bits = bits_of(self, expr, carried)?;
                 if is_patch_constant {
                     if let Some((array, _)) = array {
                         for (j, lane) in lanes_of(d3d.mask).into_iter().enumerate() {
@@ -292,7 +299,7 @@ impl Lift<'_> {
     /// A geometry program's output locals: an array per output varying, the count, the strip starts.
     fn start_geometry(&mut self, max: u32) -> Result<()> {
         let one = std::num::NonZeroU32::new(max).expect("verified with the facts");
-        let u1 = self.b.ty_of(Kind::U, 1);
+        let u1 = self.b.ty_of(Kind::U, Width::One);
         let strips_ty = self.b.ty(naga::TypeInner::Array {
             base: u1,
             size: naga::ArraySize::Constant(one),
@@ -350,18 +357,18 @@ impl Lift<'_> {
         };
         let count = {
             let p = self.b.local_ptr(gs.count);
-            self.b.load(p, Kind::U, 1)
+            self.b.load(p, Kind::U, Width::One)
         };
         let max = self.b.lit_u(gs.max);
         let inside = self.b.binary(naga::BinaryOperator::Less, count, max);
         self.b.when(inside, |b| {
             let index = {
                 let p = b.local_ptr(gs.count);
-                b.load(p, Kind::U, 1)
+                b.load(p, Kind::U, Width::One)
             };
             for (array, register, lanes, carried) in &gs.outputs {
                 let p = b.local_ptr(*register);
-                let row = b.load(p, Kind::U, 4);
+                let row = b.load(p, Kind::U, Width::Four);
                 let picked = b.swizzle(row, lanes);
                 let value = b.bitcast(picked, Kind::of(carried.scalar));
                 let a = b.local_ptr(*array);
@@ -373,7 +380,7 @@ impl Lift<'_> {
             }
             let pending = {
                 let p = b.local_ptr(gs.pending);
-                b.load(p, Kind::U, 1)
+                b.load(p, Kind::U, Width::One)
             };
             let s = b.local_ptr(gs.strips);
             let target = b.app(E::Access {
@@ -410,12 +417,12 @@ impl Lift<'_> {
         let mut parts = Vec::new();
         for (array, ..) in &gs.outputs {
             let p = self.b.local_ptr(*array);
-            parts.push(self.b.load(p, Kind::U, 1).expr);
+            parts.push(self.b.load(p, Kind::U, Width::One).expr);
         }
         let p = self.b.local_ptr(gs.count);
-        parts.push(self.b.load(p, Kind::U, 1).expr);
+        parts.push(self.b.load(p, Kind::U, Width::One).expr);
         let p = self.b.local_ptr(gs.strips);
-        parts.push(self.b.load(p, Kind::U, 1).expr);
+        parts.push(self.b.load(p, Kind::U, Width::One).expr);
         let composed = self.b.app(E::Compose {
             ty: result,
             components: parts,
@@ -459,7 +466,7 @@ impl Lift<'_> {
                 _ => lanes_of(d3d.mask),
             };
             let p = self.b.local_ptr(local);
-            let row = self.b.load(p, Kind::U, 4);
+            let row = self.b.load(p, Kind::U, Width::Four);
             let picked = self.b.swizzle(row, &lanes);
             parts.push(self.b.bitcast(picked, Kind::of(carried.scalar)).expr);
         }
@@ -549,14 +556,20 @@ impl Lift<'_> {
             }
         }
         let decl = self.pending_decl.take().expect("declared in the prologue");
-        self.b.end_function(sig.name, decl);
+        self.b
+            .end_function(sig.name, decl)
+            .map_err(|detail| crate::error(self.word, detail))?;
         Ok(())
     }
 
     pub(super) fn finish_functions(mut self, target: String) -> Result<Program> {
         self.b.check().map_err(|detail| crate::error(self.word, detail))?;
         let stage = self.setup.interface.stage;
-        let module = self.b.finish_functions();
+        let word = self.word;
+        let module = self
+            .b
+            .finish_functions()
+            .map_err(|detail| crate::error(word, detail))?;
         let mut limit_notes = iridia::compute_limit_notes(&module);
         let interface = self.setup.interface.clone();
         limit_notes.extend(iridia::interface_notes(&interface));
@@ -607,7 +620,7 @@ impl Lift<'_> {
             base: pointer,
             index: at.expr,
         });
-        Ok(self.b.load(element, Kind::U, 4))
+        Ok(self.b.load(element, Kind::U, Width::Four))
     }
 
     /// The register `vpc[register]` of a domain program's patch constants.
@@ -621,7 +634,7 @@ impl Lift<'_> {
             base: pointer,
             index: index.expr,
         });
-        Ok(self.b.load(element, Kind::U, 4))
+        Ok(self.b.load(element, Kind::U, Width::Four))
     }
 
     /// A register that is one local of four lanes: `vDomain`, `vOutputControlPointID`, the phase numbers.
@@ -637,6 +650,6 @@ impl Lift<'_> {
             return self.refuse(format!("{register:?} is used where the function has none"));
         };
         let p = self.b.local_ptr(local);
-        Ok(self.b.load(p, Kind::U, 4))
+        Ok(self.b.load(p, Kind::U, Width::Four))
     }
 }

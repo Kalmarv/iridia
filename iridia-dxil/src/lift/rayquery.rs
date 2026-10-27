@@ -1,7 +1,7 @@
 //! Inline ray tracing: the `rayQuery_*` operations as naga's ray query (a local `RayQuery` object, `Initialize`,
 //! `Proceed`, `Terminate`, the confirmed hit and the intersection a query returns). Capability `RAY_QUERY`.
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{Expression as E, Handle, LocalVariable, RayQueryFunction, Statement};
 
 use super::setup::const_int;
@@ -117,7 +117,7 @@ impl Lift<'_> {
                 let more = Val {
                     expr: result,
                     kind: Kind::B,
-                    width: 1,
+                    width: Width::One,
                 };
                 self.define_result(inst.result, Lv::Scalar(more))
             }
@@ -160,7 +160,7 @@ impl Lift<'_> {
         // the structure the intersection is
         self.b.module.generate_ray_intersection_type();
         let intersection = self.b.app(E::RayQueryGetIntersection { query, committed });
-        let field = |lift: &mut Self, index: u32, kind: Kind, width: u8| Val {
+        let field = |lift: &mut Self, index: u32, kind: Kind, width: Width| Val {
             expr: lift.b.app(E::AccessIndex {
                 base: intersection,
                 index,
@@ -178,46 +178,46 @@ impl Lift<'_> {
                 )
         };
         // one field of the ray the query was traced with: RayDesc's flags, t_min, origin or direction
-        let traced = |lift: &mut Self, index: u32, kind: Kind, width: u8| {
+        let traced = |lift: &mut Self, index: u32, kind: Kind, width: Width| {
             let ptr = lift.b.local_ptr(ray);
             let field = lift.b.app(E::AccessIndex { base: ptr, index });
             lift.b.load(field, kind, width)
         };
         let value = match code {
-            195 => traced(self, RAY_FLAGS, Kind::U, 1),
-            198 => traced(self, RAY_T_MIN, Kind::F, 1),
+            195 => traced(self, RAY_FLAGS, Kind::U, Width::One),
+            198 => traced(self, RAY_T_MIN, Kind::F, Width::One),
             196 | 197 => {
                 let n = component(self, 2)?;
                 let vector = traced(
                     self,
                     if code == 196 { RAY_ORIGIN } else { RAY_DIRECTION },
                     Kind::F,
-                    3,
+                    Width::Three,
                 );
                 self.b.lane(vector, super::lane_u8(n))
             }
             // the status of the committed hit: nothing (0), a triangle (1) or a procedural primitive (2), as naga's kind
-            184 => field(self, KIND, Kind::U, 1),
+            184 => field(self, KIND, Kind::U, Width::One),
             // the candidate: a non-opaque triangle (0) or a procedural primitive (1); naga's kind is 1 and 3
             185 => {
-                let kind = field(self, KIND, Kind::U, 1);
+                let kind = field(self, KIND, Kind::U, Width::One);
                 let triangle = self.b.lit_u(1);
                 let is_triangle = self.b.binary(naga::BinaryOperator::Equal, kind, triangle);
                 let (zero, one) = (self.b.lit_u(0), self.b.lit_u(1));
                 self.b.select(is_triangle, zero, one)
             }
-            191 | 192 => field(self, FRONT_FACE, Kind::B, 1),
+            191 | 192 => field(self, FRONT_FACE, Kind::B, Width::One),
             193 | 194 => {
                 let n = component(self, 2)?;
-                let pair = field(self, BARYCENTRICS, Kind::F, 2);
+                let pair = field(self, BARYCENTRICS, Kind::F, Width::Two);
                 self.b.lane(pair, super::lane_u8(n))
             }
-            199 | 200 => field(self, T, Kind::F, 1),
-            201 | 207 => field(self, INSTANCE_INDEX, Kind::U, 1),
-            202 | 208 => field(self, INSTANCE_CUSTOM_DATA, Kind::U, 1),
-            203 | 209 => field(self, GEOMETRY_INDEX, Kind::U, 1),
-            204 | 210 => field(self, PRIMITIVE_INDEX, Kind::U, 1),
-            214 | 215 => field(self, SBT_RECORD_OFFSET, Kind::U, 1),
+            199 | 200 => field(self, T, Kind::F, Width::One),
+            201 | 207 => field(self, INSTANCE_INDEX, Kind::U, Width::One),
+            202 | 208 => field(self, INSTANCE_CUSTOM_DATA, Kind::U, Width::One),
+            203 | 209 => field(self, GEOMETRY_INDEX, Kind::U, Width::One),
+            204 | 210 => field(self, PRIMITIVE_INDEX, Kind::U, Width::One),
+            214 | 215 => field(self, SBT_RECORD_OFFSET, Kind::U, Width::One),
             // a 3 by 4 matrix, row `r` column `c`: naga's is four columns of three rows
             186..=189 => {
                 let (row, column) = (component(self, 2)?, component(self, 3)?);
@@ -226,7 +226,7 @@ impl Lift<'_> {
                 } else {
                     WORLD_TO_OBJECT
                 };
-                let matrix = field(self, index, Kind::F, 1);
+                let matrix = field(self, index, Kind::F, Width::One);
                 let column = self.b.app(E::AccessIndex {
                     base: matrix.expr,
                     index: column,
@@ -237,7 +237,7 @@ impl Lift<'_> {
                         index: row,
                     }),
                     kind: Kind::F,
-                    width: 1,
+                    width: Width::One,
                 }
             }
             other => {

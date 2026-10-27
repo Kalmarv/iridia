@@ -13,7 +13,7 @@ It reads vertex, pixel, hull, domain, geometry, compute, mesh and ray tracing pr
 | [`iridia-dxil`](iridia-dxil) | Reads Direct3D Shader Model 6 bytecode (DXIL containers, `dxc` output) of every stage but amplification, with its reflection and a ray tracing library's subobjects. |
 | [`iridia-d3d9`](iridia-d3d9) | Reads raw Direct3D 9 `ps_3_0` and `vs_3_0` token streams and their CTAB constant table. |
 | [`iridia-mojo`](iridia-mojo) | Reads the GLSL dialect that MojoShader writes when it translates Shader Model 2 and 3 programs for OpenGL. |
-| [`iridia-interface`](iridia-interface) | The plain, serializable data that describes a program's interface: varyings, resources, constant layouts, binding roles and render state. No dependency on naga. |
+| [`iridia-interface`](iridia-interface) | The plain, serializable data that describes a program's interface (varyings, resources, constant layouts), Direct3D's fixed-function state, and what iridia's analyses observe of a program's code. No dependency on naga. |
 | [`iridia-exec`](iridia-exec) | A bounded CPU executor for lifted programs, with drivers for the stages WGSL has no entry point for (geometry, tessellation, mesh, ray tracing) and a small software rasterizer. |
 
 ## Example

@@ -161,40 +161,6 @@ pub struct Program {
     pub notes: Vec<String>,
 }
 
-impl Program {
-    /// Reuse this lift's facts; no parsing, lifting, graph building or GPU work. A caller that assigns output roles adds them
-    /// with [`iridia_interface::ProgramFacts::bound`] once they have resolved the stage binding.
-    pub fn facts<H>(&self, name: impl Into<String>) -> iridia_interface::ProgramFacts<H> {
-        iridia_interface::ProgramFacts {
-            name: name.into(),
-            hash: self.provenance.source_hash.clone(),
-            stage: self.stage,
-            shader: None,
-            instruction_count: self.provenance.instruction_count,
-            inputs: self
-                .interface
-                .inputs
-                .iter()
-                .filter(|input| input.used)
-                .cloned()
-                .collect(),
-            resources: self
-                .interface
-                .resources
-                .iter()
-                .map(|resource| iridia_interface::ProgramResourceFacts {
-                    id: resource.id,
-                    name: resource.provenance.name.clone(),
-                    d3d: resource.provenance.d3d,
-                })
-                .collect(),
-            outputs: Vec::new(),
-            surface: Default::default(),
-            not_lifted: None,
-        }
-    }
-}
-
 /// What can go wrong building, checking or writing a program.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

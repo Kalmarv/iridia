@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{
     BufferLayout, Constant as LayoutConstant, ConstantType, Conventions, D3dBinding, D3dClass, D3dModes,
     D3dSignature, Interface, InterpMode, InterpSampling, Interpolation, Label, Program, Provenance, Resource,
@@ -24,7 +24,7 @@ use crate::{Hints, LIFTER_VERSION, Result, error};
 #[derive(Clone, Debug)]
 enum Sym {
     /// A register or a varying written: a local of this kind and width.
-    Local(Handle<LocalVariable>, Kind, u8),
+    Local(Handle<LocalVariable>, Kind, Width),
     /// A constant (`const vec4 ps_c5 = vec4(...)`): its value, and its lanes where they are integer literals (a loop's
     /// count is read from them).
     Const(Val, Option<[i64; 4]>),
@@ -215,12 +215,12 @@ impl Lower<'_> {
     /// A pixel program writes `gl_FragColor` or `gl_FragData[n]`, which it never declares: the targets it writes are
     /// found in its text. A vertex program writes `gl_Position`.
     fn prepare_outputs(&mut self) -> Result<()> {
-        let v4 = self.b.ty_of(Kind::F, 4);
+        let v4 = self.b.ty_of(Kind::F, Width::Four);
         match self.stage {
             Stage::Vertex => {
                 let local = self.b.local("position", v4);
                 self.symbols
-                    .insert("gl_Position".into(), Sym::Local(local, Kind::F, 4));
+                    .insert("gl_Position".into(), Sym::Local(local, Kind::F, Width::Four));
                 self.outputs.push((
                     Varying {
                         label: Label {
@@ -268,11 +268,13 @@ impl Lower<'_> {
                 for n in targets {
                     let local = self.b.local(&format!("target{n}"), v4);
                     // `gl_FragColor` is target 0
-                    self.symbols
-                        .insert(format!("gl_FragData[{n}]"), Sym::Local(local, Kind::F, 4));
+                    self.symbols.insert(
+                        format!("gl_FragData[{n}]"),
+                        Sym::Local(local, Kind::F, Width::Four),
+                    );
                     if n == 0 {
                         self.symbols
-                            .insert("gl_FragColor".into(), Sym::Local(local, Kind::F, 4));
+                            .insert("gl_FragColor".into(), Sym::Local(local, Kind::F, Width::Four));
                     }
                     self.outputs.push((
                         Varying {
@@ -372,12 +374,12 @@ impl Lower<'_> {
                     let name = self.ident()?;
                     self.expect(";")?;
                     let (kind, ty) = if storage == "vec4" {
-                        (Kind::F, self.b.ty_of(Kind::F, 4))
+                        (Kind::F, self.b.ty_of(Kind::F, Width::Four))
                     } else {
-                        (Kind::I, self.b.ty_of(Kind::I, 4))
+                        (Kind::I, self.b.ty_of(Kind::I, Width::Four))
                     };
                     let local = self.b.local(&name, ty);
-                    self.declare_symbol(&name, Sym::Local(local, kind, 4))?;
+                    self.declare_symbol(&name, Sym::Local(local, kind, Width::Four))?;
                 }
                 other => return self.fail(format!("a declaration beginning {other}")),
             }
@@ -385,7 +387,7 @@ impl Lower<'_> {
     }
 
     fn declare_constants(&mut self, name: &str, rows: NonZeroU32) -> Result<()> {
-        let u4 = self.b.ty_of(Kind::U, 4);
+        let u4 = self.b.ty_of(Kind::U, Width::Four);
         let ty = self.b.ty(TypeInner::Array {
             base: u4,
             size: ArraySize::Constant(rows),
@@ -502,7 +504,7 @@ impl Lower<'_> {
             });
             self.declare_symbol(name, Sym::Argument(argument))?;
         } else {
-            let v4 = self.b.ty_of(Kind::F, 4);
+            let v4 = self.b.ty_of(Kind::F, Width::Four);
             let local = self.b.local(name, v4);
             self.outputs.push((
                 Varying {
@@ -515,7 +517,7 @@ impl Lower<'_> {
                 },
                 local,
             ));
-            self.declare_symbol(name, Sym::Local(local, Kind::F, 4))?;
+            self.declare_symbol(name, Sym::Local(local, Kind::F, Width::Four))?;
         }
         Ok(())
     }
@@ -619,7 +621,7 @@ impl Lower<'_> {
             self.expect("(")?;
             let c = self.expression()?;
             self.expect(")")?;
-            if c.v.kind != Kind::B || c.v.width != 1 {
+            if c.v.kind != Kind::B || c.v.width != Width::One {
                 return self.fail("an if on something that is not one boolean");
             }
             self.b.blocks.push(Block::new());
@@ -735,11 +737,11 @@ impl Lower<'_> {
             return Err(error(line, format!("an assignment to {name}")));
         };
         let lanes = if lanes.is_empty() {
-            (0..width).collect()
+            width.lanes().collect()
         } else {
             lanes
         };
-        if lanes.iter().any(|l| *l >= width)
+        if lanes.iter().any(|l| *l >= width.get())
             || lanes
                 .iter()
                 .enumerate()
@@ -764,12 +766,12 @@ impl Lower<'_> {
             ));
         }
         // the lanes are distinct and within the register's width, which is at most four
-        let count = u8::try_from(lanes.len())
-            .map_err(|_| error(line, format!("a write mask of {name} over 255 lanes")))?;
-        if value.width == 1 && count > 1 {
+        let count = Width::of_count(lanes.len())
+            .ok_or_else(|| error(line, format!("a write mask of {name} over four lanes")))?;
+        if value.width == Width::One && count > Width::One {
             value = self.b.splat(value, count);
         }
-        if usize::from(value.width) != lanes.len() {
+        if value.width != count {
             return Err(error(
                 line,
                 format!("{} lanes stored in {} of {name}", value.width, lanes.len()),
@@ -814,7 +816,7 @@ impl Lower<'_> {
         let a = self.expression()?;
         self.expect(":")?;
         let b = self.expression()?;
-        if c.v.kind != Kind::B || c.v.width != 1 {
+        if c.v.kind != Kind::B || c.v.width != Width::One {
             return self.fail("a condition that is not one boolean");
         }
         if a.v.kind != b.v.kind || a.v.width != b.v.width {
@@ -842,7 +844,7 @@ impl Lower<'_> {
     }
 
     fn logical(&mut self, op: Bo, a: V, b: V) -> Result<V> {
-        if a.v.kind != Kind::B || b.v.kind != Kind::B || a.v.width != 1 || b.v.width != 1 {
+        if a.v.kind != Kind::B || b.v.kind != Kind::B || a.v.width != Width::One || b.v.width != Width::One {
             return self.fail("a logical operator on something that is not one boolean");
         }
         Ok(self.b.binary(op, a.v, b.v).into())
@@ -885,7 +887,7 @@ impl Lower<'_> {
     }
 
     fn compare(&mut self, op: Bo, a: V, b: V) -> Result<V> {
-        if a.v.kind != b.v.kind || a.v.width != 1 || b.v.width != 1 {
+        if a.v.kind != b.v.kind || a.v.width != Width::One || b.v.width != Width::One {
             return self.fail("a comparison of values that are not scalars of one type");
         }
         Ok(self.b.binary(op, a.v, b.v).into())
@@ -930,7 +932,7 @@ impl Lower<'_> {
         if a.v.kind == Kind::I && op == Bo::Divide {
             return self.fail("integer division");
         }
-        if a.v.width != b.v.width && a.v.width != 1 && b.v.width != 1 {
+        if a.v.width != b.v.width && a.v.width != Width::One && b.v.width != Width::One {
             return self.fail(format!(
                 "arithmetic on vectors of {} and {} lanes",
                 a.v.width, b.v.width
@@ -976,7 +978,7 @@ impl Lower<'_> {
                 let Some(lanes) = swizzle_lanes(&w) else {
                     return self.fail(format!("the swizzle {w}"));
                 };
-                if lanes.iter().any(|l| *l >= v.v.width) {
+                if lanes.iter().any(|l| *l >= v.v.width.get()) {
                     return self.fail(format!("the swizzle {w} of a value {} lanes wide", v.v.width));
                 }
                 let r = match lanes[..] {
@@ -1038,7 +1040,7 @@ impl Lower<'_> {
                 Ok(Val {
                     expr,
                     kind: Kind::F,
-                    width: 4,
+                    width: Width::Four,
                 }
                 .into())
             }
@@ -1061,7 +1063,7 @@ impl Lower<'_> {
         let Some((global, _)) = self.constants else {
             return self.fail("the uniform array is not declared");
         };
-        if index.v.kind != Kind::I || index.v.width != 1 {
+        if index.v.kind != Kind::I || index.v.width != Width::One {
             return self.fail("a constant row indexed by something that is not an integer");
         }
         let pointer = self.b.global_ptr(global);
@@ -1072,7 +1074,7 @@ impl Lower<'_> {
                         base: pointer,
                         index: row,
                     });
-                    let words = self.b.load(element, Kind::U, 4);
+                    let words = self.b.load(element, Kind::U, Width::Four);
                     Ok(self.b.bitcast(words, Kind::F).into())
                 }
                 None => self.fail(format!("constant row {row} of {rows}")),
@@ -1087,8 +1089,8 @@ impl Lower<'_> {
             base: pointer,
             index: safe.expr,
         });
-        let words = self.b.load(element, Kind::U, 4);
-        let nothing = self.b.splat(zero, 4);
+        let words = self.b.load(element, Kind::U, Width::Four);
+        let nothing = self.b.splat(zero, Width::Four);
         let words = self.b.select(inside, words, nothing);
         Ok(self.b.bitcast(words, Kind::F).into())
     }
@@ -1118,7 +1120,7 @@ impl Lower<'_> {
             let Some(Sym::Sampler(index)) = self.symbols.get(&sampler).cloned() else {
                 return self.fail(format!("texture2D of {sampler}, which is not a sampler"));
             };
-            if coordinate.v.kind != Kind::F || coordinate.v.width != 2 {
+            if coordinate.v.kind != Kind::F || coordinate.v.width != Width::Two {
                 return self.fail("texture2D at a coordinate that is not two floats");
             }
             let Some(&Sampler { texture, sampler, .. }) = self.samplers.get(index) else {
@@ -1143,7 +1145,7 @@ impl Lower<'_> {
             return Ok(Val {
                 expr,
                 kind: Kind::F,
-                width: 4,
+                width: Width::Four,
             }
             .into());
         }
@@ -1154,7 +1156,7 @@ impl Lower<'_> {
                 let [a] = args.as_slice() else {
                     return self.fail(format!("{name}() of {} arguments", args.len()));
                 };
-                if a.v.width != 1 {
+                if a.v.width != Width::One {
                     return self.fail(format!("{name}() of a vector"));
                 }
                 let kind = if name == "float" { Kind::F } else { Kind::I };
@@ -1189,7 +1191,7 @@ impl Lower<'_> {
                 if a.v.kind != Kind::B {
                     return self.fail(format!("{name} of something that is not boolean"));
                 }
-                if a.v.width == 1 {
+                if a.v.width == Width::One {
                     return Ok(*a);
                 }
                 let expr = self.b.app(E::Relational {
@@ -1203,7 +1205,7 @@ impl Lower<'_> {
                 Ok(Val {
                     expr,
                     kind: Kind::B,
-                    width: 1,
+                    width: Width::One,
                 }
                 .into())
             }
@@ -1234,8 +1236,11 @@ impl Lower<'_> {
                 if args.iter().any(|a| a.v.kind != Kind::F) {
                     return self.fail(format!("{name} of something that is not a float"));
                 }
-                let widest = args.iter().map(|a| a.v.width).max().unwrap_or(1);
-                if args.iter().any(|a| a.v.width != 1 && a.v.width != widest) {
+                let widest = args.iter().map(|a| a.v.width).max().unwrap_or(Width::One);
+                if args
+                    .iter()
+                    .any(|a| a.v.width != Width::One && a.v.width != widest)
+                {
                     return self.fail(format!("{name} of vectors of different widths"));
                 }
                 let vals: Vec<Val> = args.iter().map(|a| a.v).collect();
@@ -1247,12 +1252,10 @@ impl Lower<'_> {
     /// `vec4(..)`, `ivec4(..)`: the lanes of the arguments in order, or one scalar splat; a float vector converted to an
     /// integer one, as GLSL's constructor does (truncating).
     fn construct(&mut self, name: &str, args: &[V]) -> Result<V> {
-        let width: u8 = name
-            .chars()
-            .last()
-            .and_then(|c| c.to_digit(10))
-            .and_then(|d| u8::try_from(d).ok())
-            .unwrap_or(4);
+        let width = match name.chars().last().and_then(|c| c.to_digit(10)) {
+            Some(lanes) => Width::try_from(lanes).or_else(|e| self.fail(format!("{name}() of {e}")))?,
+            None => Width::Four,
+        };
         let kind = if name.starts_with('i') { Kind::I } else { Kind::F };
         let mut lanes = Vec::new();
         for a in args {
@@ -1263,7 +1266,7 @@ impl Lower<'_> {
             } else {
                 return self.fail(format!("{name}() of a boolean"));
             };
-            for k in 0..v.width {
+            for k in v.width.lanes() {
                 lanes.push(self.b.lane(v, k));
             }
         }
@@ -1416,7 +1419,9 @@ impl Lower<'_> {
         let mut parts = Vec::new();
         for (varying, local) in &self.outputs {
             let p = self.b.local_ptr(*local);
-            parts.push(self.b.load(p, Kind::F, varying.value.width).expr);
+            let width =
+                Width::try_from(varying.value.width).map_err(|e| error(0, format!("an output of {e}")))?;
+            parts.push(self.b.load(p, Kind::F, width).expr);
         }
         let out = decl
             .result
@@ -1426,17 +1431,20 @@ impl Lower<'_> {
             components: parts,
         });
         self.b.push(Statement::Return { value: Some(result) });
-        let module = self.b.finish(
-            "main",
-            if self.stage == Stage::Vertex {
-                naga::ShaderStage::Vertex
-            } else {
-                naga::ShaderStage::Fragment
-            },
-            decl.arguments,
-            Some(out),
-            false,
-        );
+        let module = self
+            .b
+            .finish(
+                "main",
+                if self.stage == Stage::Vertex {
+                    naga::ShaderStage::Vertex
+                } else {
+                    naga::ShaderStage::Fragment
+                },
+                decl.arguments,
+                Some(out),
+                false,
+            )
+            .map_err(|detail| error(0, detail))?;
         let mut notes = notes;
         notes.extend(constant_notes);
         notes.extend(iridia::interface_notes(&interface));

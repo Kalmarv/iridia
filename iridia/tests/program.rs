@@ -2,7 +2,7 @@
 //! The program representation on a hand-built pixel program (`uv * scale`, with a front-facing flag): the validator
 //! accepts it, finds each way the module and the interface can disagree, and the text and WGSL come out as worked out
 //! from the construction.
-use iridia::build::{Builder, Kind};
+use iridia::build::{Builder, Kind, Width};
 use iridia::{
     BufferLayout, Conventions, D3dModes, Interface, Label, Problem, Program, Provenance, Resource,
     ResourceId, ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, SystemValue, Value,
@@ -30,7 +30,7 @@ fn varying(name: &str, index: u32, system: Option<SystemValue>, scalar: ScalarTy
 /// `SV_Target0 = float4(TEXCOORD0 * cb0[0].xy, face ? 1 : 0, 1)`
 fn program() -> Program {
     let mut b = Builder::new();
-    let u4 = b.ty_of(Kind::U, 4);
+    let u4 = b.ty_of(Kind::U, Width::Four);
     let cb_ty = b.ty(TypeInner::Array {
         base: u4,
         size: naga::ArraySize::Constant(std::num::NonZeroU32::new(1).unwrap()),
@@ -44,20 +44,20 @@ fn program() -> Program {
         init: None,
         memory_decorations: Default::default(),
     });
-    let f2 = b.ty_of(Kind::F, 2);
-    let boolean = b.ty_of(Kind::B, 1);
-    let f4 = b.ty_of(Kind::F, 4);
+    let f2 = b.ty_of(Kind::F, Width::Two);
+    let boolean = b.ty_of(Kind::B, Width::One);
+    let f4 = b.ty_of(Kind::F, Width::Four);
     let uv = b.app(naga::Expression::FunctionArgument(0));
     let uv = iridia::build::Val {
         expr: uv,
         kind: Kind::F,
-        width: 2,
+        width: Width::Two,
     };
     let face = b.app(naga::Expression::FunctionArgument(1));
     let face = iridia::build::Val {
         expr: face,
         kind: Kind::B,
-        width: 1,
+        width: Width::One,
     };
     let ptr = b.global_ptr(cb);
     let zero = b.lit_u(0);
@@ -65,7 +65,7 @@ fn program() -> Program {
         base: ptr,
         index: zero.expr,
     });
-    let row = b.load(row, Kind::U, 4);
+    let row = b.load(row, Kind::U, Width::Four);
     let scale = b.bitcast(row, Kind::F);
     let scale = b.swizzle(scale, &[0, 1]);
     let product = b.binary(BinaryOperator::Multiply, uv, scale);
@@ -95,30 +95,32 @@ fn program() -> Program {
         components: vec![colour.expr],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![
-            FunctionArgument {
-                name: Some("TEXCOORD0".into()),
-                ty: f2,
-                binding: Some(Binding::Location {
-                    location: 0,
-                    interpolation: Some(naga::Interpolation::Perspective),
-                    sampling: None,
-                    blend_src: None,
-                    per_primitive: false,
-                }),
-            },
-            FunctionArgument {
-                name: Some("SV_IsFrontFace0".into()),
-                ty: boolean,
-                binding: Some(Binding::BuiltIn(naga::BuiltIn::FrontFacing)),
-            },
-        ],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![
+                FunctionArgument {
+                    name: Some("TEXCOORD0".into()),
+                    ty: f2,
+                    binding: Some(Binding::Location {
+                        location: 0,
+                        interpolation: Some(naga::Interpolation::Perspective),
+                        sampling: None,
+                        blend_src: None,
+                        per_primitive: false,
+                    }),
+                },
+                FunctionArgument {
+                    name: Some("SV_IsFrontFace0".into()),
+                    ty: boolean,
+                    binding: Some(Binding::BuiltIn(naga::BuiltIn::FrontFacing)),
+                },
+            ],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     let mut texcoord = varying("TEXCOORD", 0, None, ScalarType::Float, 2);
     texcoord.interp = Some(iridia::Interpolation {
         mode: iridia::InterpMode::Perspective,

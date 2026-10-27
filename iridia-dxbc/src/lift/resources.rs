@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use iridia::ResourceId;
-use iridia::build::{Kind, Val, component};
+use iridia::build::{Kind, Val, Width, component};
 use naga::{
     AddressSpace, ArraySize, BinaryOperator as Bo, Expression as E, GlobalVariable, Handle, ImageClass,
     ImageQuery, ResourceBinding, SampleLevel, StorageAccess, TypeInner,
@@ -51,7 +51,7 @@ impl Lift<'_> {
     /// One global per declared resource, and the immediate constant buffer.
     pub(super) fn declare_resources(&mut self) -> Result<()> {
         let u4 = self.u4();
-        let u1 = self.b.ty_of(Kind::U, 1);
+        let u1 = self.b.ty_of(Kind::U, Width::One);
         let declarations = self.setup.declarations.clone();
         for (i, d) in declarations.iter().enumerate() {
             let Ok(id) = u32::try_from(i).map(ResourceId) else {
@@ -291,7 +291,7 @@ impl Lift<'_> {
         index: Val,
         len: Option<u32>,
         kind: Kind,
-        width: u8,
+        width: Width,
     ) -> Val {
         let pointer = self.b.global_ptr(g);
         let length = match len {
@@ -299,7 +299,7 @@ impl Lift<'_> {
             None => Val {
                 expr: self.b.app(E::ArrayLength(pointer)),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             },
         };
         let inside = self.b.binary(Bo::Less, index, length);
@@ -311,7 +311,7 @@ impl Lift<'_> {
             index: safe.expr,
         });
         let value = self.b.load(element, kind, width);
-        let none = if width == 1 {
+        let none = if width == Width::One {
             self.b.lit_u(0)
         } else {
             let z = self.b.lit_u(0);
@@ -351,11 +351,11 @@ impl Lift<'_> {
     }
 
     /// Coordinate lanes of a texture: 1 (1D), 2 (2D), 3 (3D, cube), and whether an array layer follows.
-    fn coordinates(t: &Texture) -> (u8, bool) {
+    fn coordinates(t: &Texture) -> (Width, bool) {
         let n = match t.dim {
-            naga::ImageDimension::D1 => 1,
-            naga::ImageDimension::D2 => 2,
-            naga::ImageDimension::D3 | naga::ImageDimension::Cube => 3,
+            naga::ImageDimension::D1 => Width::One,
+            naga::ImageDimension::D2 => Width::Two,
+            naga::ImageDimension::D3 | naga::ImageDimension::Cube => Width::Three,
         };
         (n, t.arrayed)
     }
@@ -388,16 +388,16 @@ impl Lift<'_> {
         }
         let (n, arrayed) = Self::coordinates(&t);
         let mask = self.dest_mask(ins.operand(0)?);
-        let lanes: Vec<u8> = (0..n.saturating_add(u8::from(arrayed))).collect();
+        let lanes: Vec<u8> = (0..n.get().saturating_add(u8::from(arrayed))).collect();
         let all = self.read_lanes(ins.operand(1)?, &lanes, Kind::F)?;
         let coordinate = if n == all.width {
             all
         } else {
-            let c: Vec<u8> = (0..n).collect();
+            let c: Vec<u8> = n.lanes().collect();
             self.b.swizzle(all, &c)
         };
         let array_index = if arrayed {
-            let layer = self.b.lane(all, n);
+            let layer = self.b.lane(all, n.get());
             let rounded = self.b.math(naga::MathFunction::Round, &[layer]);
             let zero = self.b.lit_f(0.0);
             let layer = self.b.d3d_min_max(naga::MathFunction::Max, rounded, zero);
@@ -442,7 +442,7 @@ impl Lift<'_> {
                 SampleLevel::Bias(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
             ),
             "sample_d" => {
-                let g: Vec<u8> = (0..n).collect();
+                let g: Vec<u8> = n.lanes().collect();
                 let x = self.read_lanes(ins.operand(4)?, &g, Kind::F)?;
                 let y = self.read_lanes(ins.operand(5)?, &g, Kind::F)?;
                 (None, None, SampleLevel::Gradient { x: x.expr, y: y.expr })
@@ -485,15 +485,19 @@ impl Lift<'_> {
         let mut result = Val {
             expr,
             kind: Kind::F,
-            width: if t.depth && gather.is_none() { 1 } else { 4 },
+            width: if t.depth && gather.is_none() {
+                Width::One
+            } else {
+                Width::Four
+            },
         };
-        if result.width == 1 {
+        if result.width == Width::One {
             // a depth sample is one float; D3D's float view returns it in x and (0, 0, 1) in the others, a comparison
             // in all four
             let zero = self.b.lit_f(0.0);
             let one = self.b.lit_f(1.0);
             result = if depth_ref.is_some() {
-                self.b.splat(result, 4)
+                self.b.splat(result, Width::Four)
             } else {
                 self.b.compose(&[result, zero, zero, one])
             };
@@ -511,16 +515,16 @@ impl Lift<'_> {
             };
             self.notes_typed_buffer();
             let address = self.read(ins.operand(1)?, 1, Kind::U)?;
-            let row = self.guarded_load(g, address, None, Kind::U, 4);
+            let row = self.guarded_load(g, address, None, Kind::U, Width::Four);
             let picked = self.pick(row, ins.operand(2)?, mask);
             return self.write(ins.operand(0)?, picked, false);
         }
         let (image, t) = self.texture(slot)?;
         let (n, arrayed) = Self::coordinates(&t);
         let all = self.read_lanes(ins.operand(1)?, &[0, 1, 2, 3], Kind::I)?;
-        let cl: Vec<u8> = (0..n).collect();
+        let cl: Vec<u8> = n.lanes().collect();
         let coordinate = self.b.swizzle(all, &cl);
-        let array_index = arrayed.then(|| self.b.lane(all, n).expr);
+        let array_index = arrayed.then(|| self.b.lane(all, n.get()).expr);
         let level = (!t.multi).then(|| self.b.lane(all, 3).expr);
         let sample = if ins.name() == "ld_ms" {
             Some(self.read(ins.operand(3)?, 1, Kind::I)?.expr)
@@ -538,10 +542,10 @@ impl Lift<'_> {
         let mut result = Val {
             expr,
             kind: t.kind,
-            width: 4,
+            width: Width::Four,
         };
         if t.depth {
-            result.width = 1;
+            result.width = Width::One;
             let zero = self.b.lit_f(0.0);
             let one = self.b.lit_f(1.0);
             result.kind = Kind::F;
@@ -569,7 +573,7 @@ impl Lift<'_> {
                     query: ImageQuery::NumSamples,
                 }),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             }
         } else {
             self.b.lit_u(0)
@@ -616,9 +620,9 @@ impl Lift<'_> {
         let mip = self.read(ins.operand(1)?, 1, Kind::U)?;
         let g = self.b.global_ptr(image);
         let dims = match t.dim {
-            naga::ImageDimension::D1 => 1,
-            naga::ImageDimension::D2 => 2,
-            _ => 3,
+            naga::ImageDimension::D1 => Width::One,
+            naga::ImageDimension::D2 => Width::Two,
+            _ => Width::Three,
         };
         let size = Val {
             expr: self.b.app(E::ImageQuery {
@@ -640,11 +644,11 @@ impl Lift<'_> {
                     query: ImageQuery::NumLevels,
                 }),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             }
         };
         let zero = self.b.lit_u(0);
-        let mut parts: Vec<Val> = (0..size.width).map(|i| self.b.lane(size, i)).collect();
+        let mut parts: Vec<Val> = size.width.lanes().map(|i| self.b.lane(size, i)).collect();
         if t.arrayed {
             let g = self.b.global_ptr(image);
             parts.push(Val {
@@ -653,7 +657,7 @@ impl Lift<'_> {
                     query: ImageQuery::NumLayers,
                 }),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             });
         }
         while parts.len() < 3 {
@@ -690,7 +694,7 @@ impl Lift<'_> {
         for c in components {
             let offset = self.b.lit_u(u32::from(c));
             let index = self.b.binary(Bo::Add, word, offset);
-            lanes.push(self.guarded_load(g, index, None, Kind::U, 1));
+            lanes.push(self.guarded_load(g, index, None, Kind::U, Width::One));
         }
         self.b.compose(&lanes)
     }
@@ -741,20 +745,20 @@ impl Lift<'_> {
 
     /// The address lanes of a typed view's texel: its dimensions' coordinates, and an array layer after them.
     pub(super) fn view_address(&mut self, op: &Operand, v: &View) -> Result<(Val, Option<naga::Handle<E>>)> {
-        let n: u8 = match v.dim {
-            naga::ImageDimension::D1 => 1,
-            naga::ImageDimension::D2 => 2,
-            _ => 3,
+        let n = match v.dim {
+            naga::ImageDimension::D1 => Width::One,
+            naga::ImageDimension::D2 => Width::Two,
+            _ => Width::Three,
         };
-        let lanes: Vec<u8> = (0..n.saturating_add(u8::from(v.arrayed))).collect();
+        let lanes: Vec<u8> = (0..n.get().saturating_add(u8::from(v.arrayed))).collect();
         let all = self.read_lanes(op, &lanes, Kind::U)?;
         let coordinate = if all.width == n {
             all
         } else {
-            let c: Vec<u8> = (0..n).collect();
+            let c: Vec<u8> = n.lanes().collect();
             self.b.swizzle(all, &c)
         };
-        let layer = v.arrayed.then(|| self.b.lane(all, n).expr);
+        let layer = v.arrayed.then(|| self.b.lane(all, n.get()).expr);
         Ok((coordinate, layer))
     }
 
@@ -795,7 +799,7 @@ impl Lift<'_> {
         let result = Val {
             expr,
             kind: v.kind,
-            width: 4,
+            width: Width::Four,
         };
         let bits = self.b.bitcast(result, Kind::U);
         let picked = self.pick(bits, ins.operand(2)?, mask);

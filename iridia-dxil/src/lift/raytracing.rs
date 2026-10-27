@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use iridia::SystemValue;
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{AddressSpace, Expression as E, FunctionArgument, Handle, Statement, TypeInner};
 
 use super::setup::{const_int, ray_system_value};
@@ -157,9 +157,9 @@ impl Lift<'_> {
                         let accel = lift
                             .b
                             .ty(TypeInner::AccelerationStructure { vertex_return: false });
-                        let u = lift.b.ty_of(Kind::U, 1);
-                        let f = lift.b.ty_of(Kind::F, 1);
-                        let v3 = lift.b.ty_of(Kind::F, 3);
+                        let u = lift.b.ty_of(Kind::U, Width::One);
+                        let f = lift.b.ty_of(Kind::F, Width::One);
+                        let v3 = lift.b.ty_of(Kind::F, Width::Three);
                         let pointer = lift.pointer_type(payload_type);
                         vec![
                             ("acceleration_structure", accel),
@@ -210,8 +210,8 @@ impl Lift<'_> {
                     iridia::rt::REPORT_HIT,
                     Some(attribute_type),
                     |lift| {
-                        let f = lift.b.ty_of(Kind::F, 1);
-                        let u = lift.b.ty_of(Kind::U, 1);
+                        let f = lift.b.ty_of(Kind::F, Width::One);
+                        let u = lift.b.ty_of(Kind::U, Width::One);
                         let pointer = lift.pointer_type(attribute_type);
                         vec![("t", f), ("hit_kind", u), ("attributes", pointer)]
                     },
@@ -222,7 +222,7 @@ impl Lift<'_> {
                 let accepted = Val {
                     expr: accepted,
                     kind: Kind::B,
-                    width: 1,
+                    width: Width::One,
                 };
                 self.define_result(result, Lv::Scalar(accepted))
             }
@@ -234,7 +234,7 @@ impl Lift<'_> {
                     iridia::rt::CALL_SHADER,
                     Some(parameter_type),
                     |lift| {
-                        let u = lift.b.ty_of(Kind::U, 1);
+                        let u = lift.b.ty_of(Kind::U, Width::One);
                         let pointer = lift.pointer_type(parameter_type);
                         vec![("shader_index", u), ("parameter", pointer)]
                     },
@@ -249,7 +249,7 @@ impl Lift<'_> {
                 };
                 let value = self.system_input(system)?;
                 // a vector value is read a component at a time
-                let value = if value.width > 1 {
+                let value = if value.width > Width::One {
                     let Some(component) =
                         const_int(self.m, self.f, self.arg(args, 1)?).filter(|c| (0..3).contains(c))
                     else {

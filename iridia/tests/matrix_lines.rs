@@ -131,16 +131,16 @@ fn a_constant_never_applied_shows_no_arrangement() {
     assert_eq!(lines_of(&program, "tint"), Err(Unshown::NotApplied));
 }
 
-/// `state_lines` states each matrix role of a stage from the program, finding its buffer by the D3D binding: the clip
-/// matrix by columns, the joints' palette (its buffer's one array) through its indexed reads by rows, and a matrix the
-/// program reads but never applies keeps its role with the reason it is unshown. Other roles are left alone.
+/// `lines_at` reads a constant's lines from the program, finding its buffer by the D3D binding: the clip matrix by
+/// columns, the joints' palette (its buffer's one array) through its indexed reads by rows, and a matrix the program
+/// reads but never applies unshown, with the reason; a graph that could not be built leaves it unexamined, with why.
 #[test]
-fn a_stage_states_the_lines_of_its_matrices() {
-    use iridia::matrix::state_lines;
-    use iridia_interface::{ConstantBinding, ConstantRole, MatrixLines, ObjectParameter, ViewParameter};
+fn a_constant_s_lines_are_read_at_its_place() {
+    use iridia::matrix::lines_at;
+    use iridia_interface::MatrixLines;
     let skin = dxbc(SKIN_VS);
     let graph = skin.graph().expect("the value graph");
-    let constant = |name: &str, role: ConstantRole| {
+    let at = |graph: Result<&iridia::ProgramGraph, &str>, name: &str| {
         let (resource, c) = skin
             .interface
             .resources
@@ -154,50 +154,20 @@ fn a_stage_states_the_lines_of_its_matrices() {
                 _ => None,
             })
             .expect("the constant");
-        ConstantBinding {
-            resource,
-            offset: c.offset,
-            size: c.ty.size().expect("a sized constant"),
-            name: Some(name.into()),
-            role,
-            lines: None,
-        }
+        let size = c.ty.size().expect("a sized constant");
+        lines_at(graph, &skin.interface, resource, c.offset, size)
     };
-    let camera = ConstantRole::View(ViewParameter::CameraPosition);
-    let mut constants = vec![
-        constant(
-            "VC_MatrixViewProj",
-            ConstantRole::View(ViewParameter::ViewProjection),
-        ),
-        constant(
-            "VC_aObjMatrix",
-            ConstantRole::Object(ObjectParameter::BonePalette),
-        ),
-        // read, but only added and scaled lane by lane: not applied as a matrix
-        constant("SC_CameraPos", ConstantRole::View(ViewParameter::InverseView)),
-        constant("FC_ShadowColor", camera.clone()),
-    ];
-    assert_eq!(state_lines(Ok(&graph), &skin.interface, &mut constants), 1);
-    let lines: Vec<_> = constants.iter().map(|c| c.lines.clone()).collect();
-    assert_eq!(lines[0], Some(MatrixLines::Columns));
-    assert_eq!(lines[1], Some(MatrixLines::Rows));
-    assert!(
-        lines[2] == Some(MatrixLines::Unshown(Unshown::NotApplied)),
-        "{:?}",
-        lines[2]
-    );
-    assert_eq!(constants[2].role, ConstantRole::View(ViewParameter::InverseView));
-    assert_eq!((&constants[3].role, &lines[3]), (&camera, &None));
-    // a graph that could not be built leaves every matrix unshown, with why
-    let mut again = vec![constant(
-        "VC_MatrixViewProj",
-        ConstantRole::View(ViewParameter::ViewProjection),
-    )];
-    assert_eq!(state_lines(Err("a call"), &skin.interface, &mut again), 1);
+    assert_eq!(at(Ok(&graph), "VC_MatrixViewProj"), MatrixLines::Columns);
+    assert_eq!(at(Ok(&graph), "VC_aObjMatrix"), MatrixLines::Rows);
+    // read, but only added and scaled lane by lane: not applied as a matrix
     assert_eq!(
-        again[0].lines,
-        Some(MatrixLines::Unshown(Unshown::Unexamined {
+        at(Ok(&graph), "SC_CameraPos"),
+        MatrixLines::Unshown(Unshown::NotApplied)
+    );
+    assert_eq!(
+        at(Err("a call"), "VC_MatrixViewProj"),
+        MatrixLines::Unshown(Unshown::Unexamined {
             why: "the value graph: a call".into()
-        }))
+        })
     );
 }

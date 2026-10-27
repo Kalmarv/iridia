@@ -3,7 +3,7 @@
 //! generation program that traces a ray. They validate against the function the interface says (the ray's system values
 //! then pointers to the payload and the attributes), the pipeline's operations are functions without a body, and the
 //! WGSL writer and the executor refuse them by name.
-use iridia::build::{Builder, Kind};
+use iridia::build::{Builder, Kind, Width};
 use iridia::{
     Conventions, D3dBinding, D3dClass, D3dModes, Interface, Label, Program, Provenance, Resource, ResourceId,
     ResourceKind, ResourceProvenance, ScalarType, ShaderFormat, Stage, StageFacts, SystemValue, Value,
@@ -38,8 +38,8 @@ fn provenance() -> Provenance {
 
 /// A structure of one float and one `u32`, as a payload.
 fn payload(b: &mut Builder) -> Handle<Type> {
-    let f = b.ty_of(Kind::F, 1);
-    let u = b.ty_of(Kind::U, 1);
+    let f = b.ty_of(Kind::F, Width::One);
+    let u = b.ty_of(Kind::U, Width::One);
     b.module.types.insert(
         Type {
             name: Some("Payload".into()),
@@ -96,9 +96,9 @@ fn closest_hit() -> Program {
         value: t,
     });
     b.push(Statement::Return { value: None });
-    b.end_function("main", decl);
+    b.end_function("main", decl).expect("the function ends");
     Program {
-        module: b.finish_functions(),
+        module: b.finish_functions().expect("the module finishes"),
         stage: Stage::ClosestHit,
         entry: "main".into(),
         interface,
@@ -139,7 +139,11 @@ fn ray_generation() -> Program {
     let mut b = Builder::new();
     let payload = payload(&mut b);
     let accel = b.ty(TypeInner::AccelerationStructure { vertex_return: false });
-    let (u, f, v3) = (b.ty_of(Kind::U, 1), b.ty_of(Kind::F, 1), b.ty_of(Kind::F, 3));
+    let (u, f, v3) = (
+        b.ty_of(Kind::U, Width::One),
+        b.ty_of(Kind::F, Width::One),
+        b.ty_of(Kind::F, Width::Three),
+    );
     let pointer = b.ty(TypeInner::Pointer {
         base: payload,
         space: AddressSpace::Function,
@@ -201,9 +205,9 @@ fn ray_generation() -> Program {
         result: None,
     });
     b.push(Statement::Return { value: None });
-    b.end_function("main", decl);
+    b.end_function("main", decl).expect("the function ends");
     Program {
-        module: b.finish_functions(),
+        module: b.finish_functions().expect("the module finishes"),
         stage: Stage::RayGeneration,
         entry: "main".into(),
         interface,
@@ -263,7 +267,7 @@ fn a_payload_that_is_not_a_pointer_is_a_problem() {
     let float = {
         let mut b = Builder::new();
         b.module = std::mem::take(&mut p.module);
-        let t = b.ty_of(Kind::F, 1);
+        let t = b.ty_of(Kind::F, Width::One);
         p.module = b.module;
         t
     };

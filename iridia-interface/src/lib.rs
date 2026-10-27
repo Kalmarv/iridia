@@ -1,6 +1,6 @@
 //! What a compiled shader program exposes, as plain data: its inputs and outputs, its resources (constant buffers with
-//! explicit layouts, textures, samplers, buffers, storage) and the roles a renderer binds them to, independent of any
-//! graphics API.
+//! explicit layouts, textures, samplers, buffers, storage) and the stage's own facts, the fixed-function state it is drawn
+//! with, and what the analyses of `iridia` observe of its code, independent of any graphics API.
 //!
 //! A reader maps its API's reflection into this once and keeps the API's own names and addresses in provenance, so a
 //! consumer that only needs meaning (a binding step, a validator, a writer) never sees an API's enum numbers. The
@@ -10,7 +10,9 @@
 //! a reader cannot map is refused by name, never mapped to a guess.
 //!
 //! Everything is plain data: owned strings, integers and enums, no handles and no GPU types, and every type
-//! implements `serde::Serialize`, so the vocabulary can be shown, stored and compared.
+//! implements `serde::Serialize`, so the vocabulary can be shown, stored and compared. What a program's inputs,
+//! constants and outputs stand for (a view-projection matrix, an albedo) is not here: that is decided by whoever binds
+//! the program to a renderer or a baker, in its own terms.
 //!
 //! # Contents
 //!
@@ -19,12 +21,13 @@
 //!   [`Resource`]s and the per-stage [`StageFacts`] (tessellation, geometry, mesh and ray tracing facts).
 //! - [`Resource`] and [`ResourceKind`]: constant buffers with a [`BufferLayout`] of [`Constant`]s whose [`ConstantType`]
 //!   states every stride, textures, samplers, buffers and storage.
-//! - [`ShaderFormat`]: how a program's bytes are encoded.
-//! - [`InputBinding`], [`ConstantBinding`], [`OutputBinding`], [`RenderState`] and their role enums: what a consumer
-//!   decides a program's inputs, constants, textures and outputs mean (a view-projection matrix, an albedo), and the
-//!   fixed-function state to draw it with. The readers do not produce these; whoever drives a renderer or baker does.
-//! - [`surface`]: one reading of a pixel program's outputs, by their roles, as a lit surface.
-//! - [`ProgramFacts`]: a small summary of a program a consumer keeps.
+//! - [`ShaderFormat`]: how a program's bytes are encoded; [`InstructionCount`]: how large a program is.
+//! - [`RenderState`] (blend, depth, stencil, cull, fill, alpha test) and [`SamplerState`] (filters, addressing,
+//!   comparison): Direct3D's fixed-function state, as a source states it.
+//! - What a program's code shows, as `iridia`'s analyses read it: [`MatrixLines`] (whether a constant's lines are a
+//!   matrix's rows or its columns), [`AlphaComparison`] (what a discard compares a constant with) and [`OutputUse`]
+//!   (what tests or blends an output's lanes); and [`ConstantBufferBinding`], the size a source binds a constant buffer
+//!   with.
 //!
 //! # Example
 //!
@@ -76,18 +79,10 @@ mod facts;
 mod interface;
 mod resource;
 mod stage;
-pub mod surface;
+mod state;
 
-pub use binding::{
-    AddressMode, AlphaComparison, AlphaTest, Blend, BlendEquation, BlendFactor, BlendOp, BufferBinding,
-    BufferSource, BufferTable, Compare, ConstantBinding, ConstantBufferBinding, ConstantRole, Cull,
-    DepthBias, DepthState, Fill, FrameParameter, FrameTexture, InputBinding, InputRole, KeyPart, LaneAffine,
-    LaneStream, MatrixLines, NormalEncoding, NormalSpace, ObjectMatrix, ObjectParameter, Occluded,
-    OutputBinding, OutputRole, RenderState, SamplerState, ScalarEncoding, SkinPrefix, Stencil, StencilFace,
-    StencilOp, TargetState, Unshown, VariantKey, ViewParameter,
-};
-pub use binding::{Attribute, Filter, Filters, MipFilter};
-pub use facts::{InstructionCount, InstructionUnit, ProgramFacts, ProgramResourceFacts};
+pub use binding::{AlphaComparison, ConstantBufferBinding, MatrixLines, OutputUse, Unshown};
+pub use facts::{InstructionCount, InstructionUnit};
 pub use interface::{
     D3dSignature, DomainFacts, GeometryFacts, GsInput, GsOutput, HitGroup, HitGroupKind, HullFacts,
     Interface, InterpMode, InterpSampling, Interpolation, Label, MeshFacts, MeshTopology, Partitioning,
@@ -99,4 +94,8 @@ pub use resource::{
     Resource, ResourceId, ResourceKind, ResourceProvenance, SampleType, StorageTarget, TextureDim,
 };
 pub use stage::{ShaderFormat, Stage};
-pub use surface::Surface;
+pub use state::{
+    AddressMode, AlphaTest, Blend, BlendEquation, BlendFactor, BlendOp, Compare, Cull, DepthBias, DepthState,
+    Fill, Filter, Filters, MipFilter, RenderState, SamplerState, Stencil, StencilFace, StencilOp,
+    TargetState,
+};

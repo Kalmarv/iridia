@@ -5,7 +5,7 @@
 //! visit count. The output must be the one a walk of the graph itself gives, including for graphs with loops, switches
 //! and branches that leave several constructs at once.
 use iridia::build::structure::{self, Cfg, Emit, Term};
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{
     Conventions, D3dModes, D3dSignature, Interface, InterpMode, Label, Program, Provenance, ScalarType,
     ShaderFormat, Stage, SystemValue, Value, Varying, VaryingProvenance, entry_io,
@@ -66,7 +66,7 @@ struct Toy {
 impl Toy {
     fn load(&self, b: &mut Builder, local: Handle<naga::LocalVariable>) -> Val {
         let p = b.local_ptr(local);
-        b.load(p, Kind::U, 1)
+        b.load(p, Kind::U, Width::One)
     }
     fn set(&self, b: &mut Builder, local: Handle<naga::LocalVariable>, v: Val) {
         let p = b.local_ptr(local);
@@ -214,7 +214,7 @@ fn program(cfg: &Cfg, seed: u32) -> Result<Program, structure::Error> {
     };
     let _ = InterpMode::Flat;
     let mut b = Builder::new();
-    let u1 = b.ty_of(Kind::U, 1);
+    let u1 = b.ty_of(Kind::U, Width::One);
     let acc = b.local("acc", u1);
     let steps = b.local("steps", u1);
     let jump = b.local("jump", u1);
@@ -231,13 +231,15 @@ fn program(cfg: &Cfg, seed: u32) -> Result<Program, structure::Error> {
         result: declared.result.unwrap(),
     };
     structure::lower(&mut b, &code, &mut toy, jump).unwrap();
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        declared.arguments,
-        declared.result,
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            declared.arguments,
+            declared.result,
+            false,
+        )
+        .expect("the module finishes");
     Ok(Program {
         module,
         stage: Stage::Pixel,

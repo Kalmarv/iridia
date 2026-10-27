@@ -9,6 +9,7 @@ use naga::{
     TypeInner,
 };
 
+use crate::build::Width;
 use crate::program::module_info;
 use crate::{
     EntryIo, Interface, IoType, Label, Program, ProgramError as Error, ResourceId, ScalarType, Stage, Value,
@@ -427,11 +428,17 @@ fn outputs(
             None => None,
             Some((from, to)) => {
                 let (from_scalar, to_scalar) = (naga_scalar(from.scalar)?, naga_scalar(to.scalar)?);
-                let ty = value_type(module, to_scalar, to.width);
-                let padded = (to.width > from.width).then(|| value_type(module, from_scalar, to.width));
+                let width = |v: &Value| {
+                    Width::try_from(v.width).map_err(|e| Error::Pipeline(format!("a linked value of {e}")))
+                };
+                let (from_width, to_width) = (width(from)?, width(to)?);
+                let ty = value_type(module, to_scalar, to_width);
+                let padded = (to_width > from_width).then(|| value_type(module, from_scalar, to_width));
                 Some(Conversion {
                     from: *from,
                     to: *to,
+                    from_width,
+                    to_width,
                     ty,
                     padded,
                     to_kind: to_scalar.kind,
@@ -578,6 +585,9 @@ fn outputs(
 struct Conversion {
     from: Value,
     to: Value,
+    /// The output's width and the consumer's.
+    from_width: Width,
+    to_width: Width,
     /// The consumer's type.
     ty: Handle<Type>,
     /// A vector of the output's scalar at the consumer's width, where that is wider.
@@ -596,17 +606,12 @@ impl Conversion {
         expressions: &mut naga::Arena<Expression>,
     ) -> Handle<Expression> {
         let mut add = |e: Expression| expressions.append(e, Span::UNDEFINED);
-        let (from, to) = (self.from.width, self.to.width);
+        let (from, to) = (self.from_width, self.to_width);
         let mut value = part;
         if to < from {
-            value = if to == 1 {
-                add(Expression::AccessIndex {
-                    base: value,
-                    index: 0,
-                })
-            } else {
+            value = if let Some(size) = to.vector_size() {
                 add(Expression::Swizzle {
-                    size: vector_size(to),
+                    size,
                     vector: value,
                     pattern: [
                         naga::SwizzleComponent::X,
@@ -615,11 +620,16 @@ impl Conversion {
                         naga::SwizzleComponent::W,
                     ],
                 })
+            } else {
+                add(Expression::AccessIndex {
+                    base: value,
+                    index: 0,
+                })
             };
         } else if to > from
             && let (Some(ty), Some(zero)) = (self.padded, self.zero)
         {
-            let mut components: Vec<Handle<Expression>> = if from == 1 {
+            let mut components: Vec<Handle<Expression>> = if from == Width::One {
                 vec![value]
             } else {
                 (0..u32::from(from))
@@ -657,23 +667,11 @@ fn naga_scalar(s: ScalarType) -> Result<naga::Scalar, Error> {
     }
 }
 
-fn vector_size(width: u8) -> naga::VectorSize {
-    match width {
-        2 => naga::VectorSize::Bi,
-        3 => naga::VectorSize::Tri,
-        _ => naga::VectorSize::Quad,
-    }
-}
-
 /// The type of `width` lanes of `scalar`: the scalar itself for one.
-fn value_type(module: &mut naga::Module, scalar: naga::Scalar, width: u8) -> Handle<Type> {
-    let inner = if width == 1 {
-        TypeInner::Scalar(scalar)
-    } else {
-        TypeInner::Vector {
-            size: vector_size(width),
-            scalar,
-        }
+fn value_type(module: &mut naga::Module, scalar: naga::Scalar, width: Width) -> Handle<Type> {
+    let inner = match width.vector_size() {
+        None => TypeInner::Scalar(scalar),
+        Some(size) => TypeInner::Vector { size, scalar },
     };
     module.types.insert(Type { name: None, inner }, Span::UNDEFINED)
 }

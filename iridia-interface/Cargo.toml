@@ -1,6 +1,6 @@
 [package]
 name = "iridia-interface"
-description = "A shader program's interface as plain serializable data: varyings, resources, constant layouts, binding roles and render state"
+description = "A shader program's interface as plain serializable data: varyings, resources, constant layouts, fixed-function state and what its code shows"
 readme = "README.md"
 keywords = ["shader", "reflection", "direct3d", "serde", "interface"]
 categories = ["graphics", "game-development", "data-structures"]

@@ -2,7 +2,7 @@
 //! Programs of the stages naga has no entry point for, built by hand: a hull program (a control-point function and a
 //! patch-constant function), the domain program that reads its patches, and a vertex program that feeds them. They
 //! validate against the functions the interface says, are shown as text, and are refused by the WGSL writer by name.
-use iridia::build::{Builder, Kind};
+use iridia::build::{Builder, Kind, Width};
 use iridia::emit;
 use iridia::{
     Conventions, D3dModes, DomainFacts, HullFacts, Interface, Label, Partitioning, Program, Provenance,
@@ -86,7 +86,7 @@ fn hull() -> Program {
         components: vec![point],
     });
     b.push(Statement::Return { value: Some(result) });
-    b.end_function("main", decl);
+    b.end_function("main", decl).expect("the function ends");
     // patch_constant(POSITION0: array, out_POSITION0: array, SV_PrimitiveID) -> Out { SV_TessFactor0, SV_InsideTessFactor0 }
     let decl = b.declare_function(&sigs[1]).unwrap();
     let out = decl.result.unwrap();
@@ -96,9 +96,9 @@ fn hull() -> Program {
         components: vec![four.expr, two.expr],
     });
     b.push(Statement::Return { value: Some(result) });
-    b.end_function("patch_constant", decl);
+    b.end_function("patch_constant", decl).expect("the function ends");
     Program {
-        module: b.finish_functions(),
+        module: b.finish_functions().expect("the module finishes"),
         stage: Stage::Hull,
         entry: "main".into(),
         interface,
@@ -134,7 +134,7 @@ fn domain() -> Program {
     // SV_TessFactor0, SV_InsideTessFactor0, POSITION0, SV_DomainLocation, SV_PrimitiveID
     let location = b.app(Expression::FunctionArgument(3));
     let one = b.lit_f(1.0);
-    let v4 = b.ty_of(Kind::F, 4);
+    let v4 = b.ty_of(Kind::F, Width::Four);
     let position = b.app(Expression::Compose {
         ty: v4,
         components: vec![location, one.expr],
@@ -144,9 +144,9 @@ fn domain() -> Program {
         components: vec![position],
     });
     b.push(Statement::Return { value: Some(result) });
-    b.end_function("main", decl);
+    b.end_function("main", decl).expect("the function ends");
     Program {
-        module: b.finish_functions(),
+        module: b.finish_functions().expect("the module finishes"),
         stage: Stage::Domain,
         entry: "main".into(),
         interface,
@@ -243,7 +243,7 @@ fn geometry() -> Program {
     let colors = b.app(Expression::FunctionArgument(0));
     let three = b.lit_u(3);
     let (zero, one) = (b.lit_u(0), b.lit_u(1));
-    let u1 = b.ty_of(Kind::U, 1);
+    let u1 = b.ty_of(Kind::U, Width::One);
     let starts_ty = b
         .io_array(
             Value {
@@ -263,9 +263,9 @@ fn geometry() -> Program {
         components: vec![colors, three.expr, starts],
     });
     b.push(Statement::Return { value: Some(result) });
-    b.end_function("main", decl);
+    b.end_function("main", decl).expect("the function ends");
     Program {
-        module: b.finish_functions(),
+        module: b.finish_functions().expect("the module finishes"),
         stage: Stage::Geometry,
         entry: "main".into(),
         interface,

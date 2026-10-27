@@ -17,7 +17,7 @@ use naga::{
     BinaryOperator, Block, Expression, Handle, LocalVariable, Span, Statement, SwitchCase, SwitchValue,
 };
 
-use super::{Builder, Kind};
+use super::{Builder, Kind, Width};
 
 /// How a node of the graph ends. Targets are nodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -449,7 +449,7 @@ impl<E: Emit> Lowering<'_, E> {
         for action in entry.pending {
             let id = self.id(action);
             let jump = b.local_ptr(self.jump);
-            let current = b.load(jump, Kind::U, 1);
+            let current = b.load(jump, Kind::U, Width::One);
             let want = b.lit_u(id);
             let hit = b.binary(BinaryOperator::Equal, current, want);
             b.blocks.push(Block::new());

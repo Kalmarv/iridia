@@ -1,5 +1,4 @@
-//! Small, owned facts a consumer records about a program while it already has it lifted. No bytecode or IR is retained.
-use crate::{D3dBinding, OutputBinding, ResourceId, Stage, Surface, Varying};
+//! How large a program is, in the unit its reader counts.
 use serde::Serialize;
 
 /// The source's counting unit. DXBC counts decoded instructions including control flow, excluding declarations;
@@ -20,72 +19,4 @@ pub struct InstructionCount {
     pub count: u64,
     /// What `count` counts; counts of different units are not comparable.
     pub unit: InstructionUnit,
-}
-
-/// Just the declared resource's source address; bulk buffer layouts and default constants stay in the lifted program.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct ProgramResourceFacts {
-    /// The resource's id in the program's interface.
-    pub id: ResourceId,
-    /// The name the source gives the resource (`ResourceProvenance::name`).
-    pub name: String,
-    /// The D3D register class, index and space the resource is bound at; `None` when the source has no such address.
-    pub d3d: Option<D3dBinding>,
-}
-
-/// A consumer's measured facts about one program: what it reads and writes and how large it is. `H` is the handle the
-/// consumer keeps the program by (`None` until [`ProgramFacts::bound`]).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct ProgramFacts<H> {
-    /// The name the consumer knows the program by.
-    pub name: String,
-    /// The `sha256:` hash of the program's bytes, as `Provenance::source_hash` gives it; `None` when the program was not
-    /// read.
-    pub hash: Option<String>,
-    /// The stage the program runs in.
-    pub stage: Stage,
-    /// The consumer's handle to the program; `None` until [`ProgramFacts::bound`] is called.
-    pub shader: Option<H>,
-    /// The program's size, or `None` for a program that was not lifted or whose lifter does not count.
-    pub instruction_count: Option<InstructionCount>,
-    /// Used signature elements, including the original register/mask provenance. Not a guess from semantic names.
-    pub inputs: Vec<Varying>,
-    /// Resource declarations retain names/register/space, not layouts or bytecode. Not a resource liveness claim.
-    pub resources: Vec<ProgramResourceFacts>,
-    /// The roles of the program's outputs; empty until [`ProgramFacts::bound`] is called.
-    pub outputs: Vec<OutputBinding>,
-    /// The outputs read by their roles as a lit surface; the default surface until [`ProgramFacts::bound`] is called.
-    pub surface: Surface,
-    /// A program that was not found/selected/lifted has a reason, never a zero instruction count.
-    pub not_lifted: Option<String>,
-}
-impl<H> ProgramFacts<H> {
-    /// The facts of a program that has none: no inputs, resources, outputs or instruction count, and `reason` in
-    /// `not_lifted`.
-    pub fn unavailable(
-        name: impl Into<String>,
-        stage: Stage,
-        hash: Option<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            hash,
-            stage,
-            shader: None,
-            instruction_count: None,
-            inputs: Vec::new(),
-            resources: Vec::new(),
-            outputs: Vec::new(),
-            surface: Surface::default(),
-            not_lifted: Some(reason.into()),
-        }
-    }
-    /// Output roles are resolved after the lift; the surface is always the shared reading ([`Surface::read`]).
-    pub fn bound(mut self, shader: H, outputs: &[OutputBinding]) -> Self {
-        self.shader = Some(shader);
-        self.outputs = outputs.to_vec();
-        self.surface = Surface::read(self.outputs.iter().map(|output| (output.lanes, &output.role)));
-        self
-    }
 }

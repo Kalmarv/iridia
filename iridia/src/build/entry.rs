@@ -3,7 +3,7 @@
 
 use naga::{FunctionArgument, Handle, StructMember, Type, TypeInner};
 
-use super::{Builder, Kind, align_up, fits};
+use super::{Builder, Kind, Width, align_up, fits};
 use crate::{EntryIo, FunctionSig, IoType, ScalarType};
 
 impl Kind {
@@ -36,6 +36,11 @@ pub struct FunctionDecl {
     pub result: Option<Handle<Type>>,
 }
 
+/// The width of an interface value, or why it has none (a value is 1 to 4 lanes).
+pub(super) fn width(v: crate::Value, name: &str) -> Result<Width, String> {
+    Width::try_from(v.width).map_err(|e| format!("{name}: {e}"))
+}
+
 impl Builder {
     /// The naga type of an interface type, its size in bytes and its alignment.
     fn io_type(&mut self, ty: IoType, name: &str) -> Result<(Handle<Type>, u32, u32), String> {
@@ -46,12 +51,12 @@ impl Builder {
         };
         Ok(match ty {
             IoType::Value(v) => (
-                self.ty_of(Kind::of(v.scalar), v.width),
+                self.ty_of(Kind::of(v.scalar), width(v, name)?),
                 u32::from(v.width).saturating_mul(4),
                 align_of(v.width),
             ),
             IoType::ClipDistances(n) => {
-                let f = self.ty_of(Kind::F, 1);
+                let f = self.ty_of(Kind::F, Width::One);
                 let len = std::num::NonZeroU32::new(n).ok_or_else(|| format!("{name}: no clip distances"))?;
                 (
                     self.ty(TypeInner::Array {
@@ -66,7 +71,7 @@ impl Builder {
             IoType::Array(v, n) => {
                 let len =
                     std::num::NonZeroU32::new(n).ok_or_else(|| format!("{name}: an array of no elements"))?;
-                let base = self.ty_of(Kind::of(v.scalar), v.width);
+                let base = self.ty_of(Kind::of(v.scalar), width(v, name)?);
                 // a 3-lane element takes 16 bytes in an array, as in uniform memory
                 let stride = align_up(u32::from(v.width).saturating_mul(4), align_of(v.width))?;
                 (
@@ -125,7 +130,7 @@ impl Builder {
             let IoType::Value(v) = item.ty else {
                 return Err(format!("{}: an array-typed input", item.name));
             };
-            let ty = self.ty_of(Kind::of(v.scalar), v.width);
+            let ty = self.ty_of(Kind::of(v.scalar), width(v, &item.name)?);
             arguments.push(FunctionArgument {
                 name: Some(item.name.clone()),
                 ty,

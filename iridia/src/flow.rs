@@ -283,10 +283,20 @@ impl Values {
         &self.patch_constants
     }
 
-    /// The node `id` names.\n\n# Panics\n\nPanics if `id` came from another `Values` graph with more nodes than this one.
+    /// The node `id` names. A `NodeId` is made only by the graph it names a node of; one from another graph is the
+    /// caller's bug, as an index past a slice is ([`Values::get`] is the checked form).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` came from another `Values` graph with more nodes than this one.
     #[allow(clippy::indexing_slicing)] // a NodeId is made only by the graph it indexes
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0 as usize]
+    }
+
+    /// The node `id` names, `None` where this graph has no node of that number (an id from another graph).
+    pub fn get(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(usize::try_from(id.0).ok()?)
     }
 
     /// The node of output `output` (its index in `Interface::outputs`) lane `lane`, where the program writes it.

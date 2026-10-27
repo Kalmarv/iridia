@@ -29,7 +29,7 @@ mod tessellation;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use iridia::build::Builder;
+use iridia::build::{Builder, Width};
 use iridia::{Conventions, D3dModes, Program, Provenance, ShaderFormat, Stage};
 use naga::{Handle, LocalVariable};
 
@@ -169,7 +169,7 @@ impl<'a> Lift<'a> {
     }
 
     fn u4(&mut self) -> Handle<naga::Type> {
-        self.b.ty_of(iridia::build::Kind::U, 4)
+        self.b.ty_of(iridia::build::Kind::U, Width::Four)
     }
 
     /// Refuse a program that ends with an `if`, `loop` or `switch` still open.
@@ -201,13 +201,17 @@ impl<'a> Lift<'a> {
             Stage::Compute => naga::ShaderStage::Compute,
             _ => naga::ShaderStage::Fragment,
         };
-        let module = self.b.finish(
-            "main",
-            stage,
-            self.arguments,
-            self.result_type,
-            self.setup.early_depth_test,
-        );
+        let word = self.word;
+        let module = self
+            .b
+            .finish(
+                "main",
+                stage,
+                self.arguments,
+                self.result_type,
+                self.setup.early_depth_test,
+            )
+            .map_err(|detail| error(word, detail))?;
         let mut limit_notes = iridia::compute_limit_notes(&module);
         let interface = self.setup.interface.clone();
         limit_notes.extend(iridia::interface_notes(&interface));

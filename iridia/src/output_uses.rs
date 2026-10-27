@@ -1,96 +1,62 @@
-//! What a pixel program's own discards and its targets' stated blend show an output lane is used for: the evidence that
-//! binds a lane its source states no role for ([`OutputRole::Unknown`]) to [`OutputRole::Coverage`] or
-//! [`OutputRole::Opacity`]. A caller that states roles for the outputs of a program calls it after stating its own; a lane with a role keeps
-//! it, and nothing is read from a program's or a target's name.
-use iridia_interface::{BlendFactor, OutputBinding, OutputRole, RenderState};
+//! What a pixel program's own discards and its targets' stated blend show its output lanes are used for
+//! ([`output_uses`]), and what its discards compare a constant word with ([`discard_compares`], [`alpha_tests`]). These
+//! are observations of the program and its state; what they make a lane or a word stand for is the caller's to decide.
+//! Nothing is read from a program's or a target's name.
+use iridia_interface::{BlendFactor, OutputUse, RenderState};
 
 use crate::flow::Node;
 use crate::{Interface, ProgramGraph, SystemValue};
 
-/// The lanes [`bind_output_uses`] bound, for a log.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OutputUses {
-    /// Lanes bound as `OutputRole::Coverage`.
-    pub coverage: u32,
-    /// Lanes bound as `OutputRole::Opacity`.
-    pub opacity: u32,
-}
-
-/// Bind the Unknown lanes of a pixel stage's `outputs` that the evidence shows a use for:
+/// What tests or blends each render target output of a pixel program, in the order of `interface`'s outputs (the
+/// stage's program's interface): an output is a target by its system value `SV_Target<n>`, or by its label's index
+/// where it has none, and an output that is not a target is left out.
 ///
-/// - [`OutputRole::Opacity`], the alpha lane (lane 3) of a target whose stated blend weighs the colour by the source
-///   alpha (`state`'s blend for the target: the colour equation's source or destination factor `SrcAlpha` or
-///   `OneMinusSrcAlpha`);
-/// - else [`OutputRole::Coverage`], a lane whose written value is among what a discard's conditions are made of
-///   (`graph`, the program's value graph; a literal is no evidence, as equal literals are one node). No graph, no
-///   Coverage.
-///
-/// `interface` is the stage's program's: an output is a target by its system value `SV_Target<n>`, or by its label's
-/// index where it has none. An Unknown binding keeps its why on the lanes not bound.
-pub fn bind_output_uses(
-    outputs: &mut Vec<OutputBinding>,
+/// - [`OutputUse::blend_weight`] is lane 3 where `state`'s blend for the target weighs the colour by the source alpha
+///   (the colour equation's source or destination factor `SrcAlpha` or `OneMinusSrcAlpha`);
+/// - [`OutputUse::discard_tested`] are the lanes whose written value is among what a discard's conditions are made of
+///   (`graph`, the program's value graph; a literal is no evidence, as equal literals are one node). No graph, no lanes.
+pub fn output_uses(
     interface: &Interface,
     graph: Option<&ProgramGraph>,
     state: &RenderState,
-) -> OutputUses {
+) -> Vec<OutputUse> {
     let tested = graph.map(|g| {
         g.values
             .reached_from(g.values.discards().iter().flatten().copied())
     });
-    let mut uses = OutputUses::default();
-    let mut bound = Vec::with_capacity(outputs.len());
-    for o in outputs.drain(..) {
-        let OutputRole::Unknown { why } = &o.role else {
-            bound.push(o);
-            continue;
-        };
-        let target = interface
-            .outputs
-            .iter()
-            .find(|v| v.label == o.label)
-            .and_then(|v| match v.system {
-                None => Some(v.label.index),
-                Some(SystemValue::Target(n)) => Some(n),
-                Some(_) => None,
-            });
-        let (mut opacity, mut coverage) = (0u8, 0u8);
-        for lane in 0..4u8 {
-            let bit = 1u8 << lane;
-            if o.lanes & bit == 0 || target.is_none() {
-                continue;
+    interface
+        .outputs
+        .iter()
+        .filter_map(|v| {
+            let target = match v.system {
+                None => v.label.index,
+                Some(SystemValue::Target(n)) => n,
+                Some(_) => return None,
+            };
+            let blend_weight = if weighs_by_source_alpha(state, target) {
+                1 << 3
+            } else {
+                0
+            };
+            let mut discard_tested = 0u8;
+            if let (Some(g), Some(tested)) = (graph, &tested) {
+                for lane in 0..4u8 {
+                    if let Some(id) = g.values.output_labelled(&g.interface, &v.label, lane)
+                        && !matches!(g.values.node(id), Node::Literal(_))
+                        && tested.contains(&id)
+                    {
+                        discard_tested |= 1 << lane;
+                    }
+                }
             }
-            if lane == 3 && target.is_some_and(|t| weighs_by_source_alpha(state, t)) {
-                opacity |= bit;
-            } else if let (Some(g), Some(tested)) = (graph, &tested)
-                && let Some(id) = g.values.output_labelled(&g.interface, &o.label, lane)
-                && !matches!(g.values.node(id), Node::Literal(_))
-                && tested.contains(&id)
-            {
-                coverage |= bit;
-            }
-        }
-        let rest = o.lanes & !(opacity | coverage);
-        if rest != 0 {
-            bound.push(OutputBinding {
-                label: o.label.clone(),
-                lanes: rest,
-                role: OutputRole::unknown(why.clone()),
-            });
-        }
-        for (lanes, role) in [(coverage, OutputRole::Coverage), (opacity, OutputRole::Opacity)] {
-            if lanes != 0 {
-                bound.push(OutputBinding {
-                    label: o.label.clone(),
-                    lanes,
-                    role,
-                });
-            }
-        }
-        uses.coverage = uses.coverage.saturating_add(coverage.count_ones());
-        uses.opacity = uses.opacity.saturating_add(opacity.count_ones());
-    }
-    *outputs = bound;
-    uses
+            Some(OutputUse {
+                label: v.label.clone(),
+                target,
+                blend_weight,
+                discard_tested,
+            })
+        })
+        .collect()
 }
 
 mod alpha;

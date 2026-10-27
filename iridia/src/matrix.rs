@@ -8,12 +8,12 @@
 //! [`lines`] reads which, in the value graph, whatever the packing, the side or the bytecode's lowering (a dot product
 //! or the multiplies and adds it is made of).
 //!
-//! The matrix is the one the program applies to column vectors (`M * v`), the form the matrix roles of the interface
-//! vocabulary are stated in: [`Majorness::Row`] is each line one of its rows ([`MatrixLines::Rows`] in a binding).
+//! The matrix is the one the program applies to column vectors (`M * v`): [`Majorness::Row`] is each line one of its
+//! rows ([`MatrixLines::Rows`], as [`lines_at`] states it of one constant).
 use std::collections::{BTreeSet, HashMap};
 
+use iridia_interface::MatrixLines;
 pub use iridia_interface::Unshown;
-use iridia_interface::{ConstantBinding, MatrixLines};
 use naga::{BinaryOperator, MathFunction, UnaryOperator};
 
 use crate::flow::{At, Literal, Node, NodeId, Op, Values};
@@ -196,80 +196,73 @@ pub fn lines(values: &Values, resource: ResourceId, words: &Words) -> Result<Maj
     }
 }
 
-/// States the lines ([`ConstantBinding::lines`]) of each matrix role among `constants`, bindings over the resources of
-/// `interface`, from the program's value graph and its own interface ([`ProgramGraph`]; a program lifted again may
-/// number its resources otherwise, so a buffer is found by its D3D binding): [`lines`] of the matrix's words at their
-/// places, or, where the program's results are made of none of them there, of the words of its buffer the program
-/// reads by an index, when the program's layout shows the matrix is its buffer's one array (a palette; the indexed
-/// reads of a buffer holding other arrays could be theirs). A matrix whose lines the program does not show keeps its
-/// role with [`MatrixLines::Unshown`] and the kind [`lines`] gives; every matrix where the graph could not be built
-/// (`graph` is why), or whose buffer is not found in it, with [`Unshown::Unexamined`]. Returns how many are unshown.
-pub fn state_lines(
+/// The lines of the matrix constant at bytes `offset..offset + size` of the constant buffer `resource` of `interface`,
+/// from the program's value graph and its own interface ([`ProgramGraph`]; a program lifted again may number its
+/// resources otherwise, so the buffer is found by its D3D binding): [`lines`] of the matrix's words at their places, or,
+/// where the program's results are made of none of them there, of the words of its buffer the program reads by an
+/// index, when the program's layout shows the matrix is its buffer's one array (a palette; the indexed reads of a buffer
+/// holding other arrays could be theirs). A matrix whose lines the program does not show is [`MatrixLines::Unshown`]
+/// with the kind [`lines`] gives; one where the graph could not be built (`graph` is why), or whose buffer is not found
+/// in it, is [`Unshown::Unexamined`].
+pub fn lines_at(
     graph: Result<&ProgramGraph, &str>,
     interface: &Interface,
-    constants: &mut [ConstantBinding],
-) -> usize {
-    let mut unshown = 0usize;
-    for c in constants.iter_mut().filter(|c| c.role.is_matrix()) {
-        let unexamined = |why: String| Unshown::Unexamined { why };
-        let found = graph
-            .map_err(|why| unexamined(format!("the value graph: {why}")))
-            .and_then(|graph| {
-                let d3d = interface
-                    .resource(c.resource)
-                    .and_then(|r| r.provenance.d3d)
-                    .ok_or_else(|| {
-                        unexamined("its buffer has no D3D binding to find it in the program by".into())
-                    })?;
-                let (buffer, layout) = graph
-                    .interface
-                    .resources
-                    .iter()
-                    .find_map(|r| match &r.kind {
-                        ResourceKind::ConstantBuffer { layout }
-                            if r.provenance
-                                .d3d
-                                .is_some_and(|b| (b.space, b.register) == (d3d.space, d3d.register)) =>
-                        {
-                            Some((r.id, layout))
-                        }
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        unexamined("the program has no constant buffer at its D3D binding".into())
-                    })?;
-                let at = Words::At(c.offset / 4..c.offset.saturating_add(c.size).div_ceil(4));
-                match lines(&graph.values, buffer, &at) {
-                    Err(Unshown::NotRead) => {
-                        let end = c.offset.saturating_add(c.size);
-                        let mut arrays = layout
-                            .constants
-                            .iter()
-                            .filter(|k| matches!(k.ty, ConstantType::Array { .. }));
-                        let alone = arrays.clone().next().is_some()
-                            && arrays.all(|k| {
-                                k.offset >= c.offset
-                                    && k.ty.size().is_some_and(|n| k.offset.saturating_add(n) <= end)
-                            });
-                        if !alone {
-                            // the buffer's indexed reads, if any, may be another array's
-                            return Err(Unshown::NotRead);
-                        }
-                        lines(&graph.values, buffer, &Words::Indexed)
+    resource: ResourceId,
+    offset: u32,
+    size: u32,
+) -> MatrixLines {
+    let unexamined = |why: String| Unshown::Unexamined { why };
+    let found = graph
+        .map_err(|why| unexamined(format!("the value graph: {why}")))
+        .and_then(|graph| {
+            let d3d = interface
+                .resource(resource)
+                .and_then(|r| r.provenance.d3d)
+                .ok_or_else(|| {
+                    unexamined("its buffer has no D3D binding to find it in the program by".into())
+                })?;
+            let (buffer, layout) = graph
+                .interface
+                .resources
+                .iter()
+                .find_map(|r| match &r.kind {
+                    ResourceKind::ConstantBuffer { layout }
+                        if r.provenance
+                            .d3d
+                            .is_some_and(|b| (b.space, b.register) == (d3d.space, d3d.register)) =>
+                    {
+                        Some((r.id, layout))
                     }
-                    other => other,
+                    _ => None,
+                })
+                .ok_or_else(|| unexamined("the program has no constant buffer at its D3D binding".into()))?;
+            let end = offset.saturating_add(size);
+            let at = Words::At(offset / 4..end.div_ceil(4));
+            match lines(&graph.values, buffer, &at) {
+                Err(Unshown::NotRead) => {
+                    let mut arrays = layout
+                        .constants
+                        .iter()
+                        .filter(|k| matches!(k.ty, ConstantType::Array { .. }));
+                    let alone = arrays.clone().next().is_some()
+                        && arrays.all(|k| {
+                            k.offset >= offset
+                                && k.ty.size().is_some_and(|n| k.offset.saturating_add(n) <= end)
+                        });
+                    if !alone {
+                        // the buffer's indexed reads, if any, may be another array's
+                        return Err(Unshown::NotRead);
+                    }
+                    lines(&graph.values, buffer, &Words::Indexed)
                 }
-            });
-        c.lines = Some(match found {
-            Ok(Majorness::Row) => MatrixLines::Rows,
-            Ok(Majorness::Column) => MatrixLines::Columns,
-            Err(why) => {
-                unshown = unshown.saturating_add(1);
-                MatrixLines::Unshown(why)
+                other => other,
             }
         });
+    match found {
+        Ok(Majorness::Row) => MatrixLines::Rows,
+        Ok(Majorness::Column) => MatrixLines::Columns,
+        Err(why) => MatrixLines::Unshown(why),
     }
-    unshown
 }
 
 /// The nodes the program's results are made of ([`Values::roots`]), each after its operands; an operand that is the

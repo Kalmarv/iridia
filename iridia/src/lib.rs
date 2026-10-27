@@ -42,8 +42,8 @@
 //! - [`gate`]: the version check a reader's tests use so that a changed output comes with a bumped version number;
 //! - analyses of a lifted program, none of which runs it: [`flow`] (what each output lane is made of), [`matrix`] (how
 //!   a constant buffer holds a matrix), [`output_stores`] and [`output_uses`] (what the entry point stores into its
-//!   outputs and what a discard or blend shows a lane is for), [`Program::constant_reads`] (which constant words it
-//!   reads) and [`surface`] (the GPU half of reading a pixel program's outputs as a lit surface);
+//!   outputs and what a discard or blend shows a lane is used for), and [`Program::constant_reads`] (which constant
+//!   words it reads);
 //! - [`rt`]: the calls a ray tracing program makes in place of the pipeline's operations.
 //!
 //! Running a program on the CPU is the `iridia-exec` crate.
@@ -82,7 +82,6 @@ pub mod output_uses;
 mod program;
 mod reads;
 pub mod rt;
-pub mod surface;
 pub use iridia_interface::{
     Access, BufferKind, BufferLayout, Constant, ConstantType, D3dBinding, D3dClass, D3dSignature,
     DomainFacts, GeometryFacts, GsInput, GsOutput, HitGroup, HitGroupKind, HullFacts, InstructionCount,

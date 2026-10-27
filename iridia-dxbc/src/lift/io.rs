@@ -1,7 +1,7 @@
 //! The program's edges: locals for the registers, the prologue that unpacks the entry arguments into input registers,
 //! and the epilogue that packs output registers into the result.
 
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{IoType, ScalarType, Stage, SystemValue};
 use naga::{Expression as E, Handle, Statement, TypeInner};
 
@@ -191,7 +191,10 @@ impl<'a> Lift<'a> {
             let mut value = Val {
                 expr,
                 kind: kind_of(v.scalar),
-                width: v.width,
+                width: match Width::try_from(v.width) {
+                    Ok(width) => width,
+                    Err(e) => return self.refuse(format!("an input of {e}")),
+                },
             };
             let Some(varying) = item
                 .varyings
@@ -246,7 +249,7 @@ impl<'a> Lift<'a> {
                         continue;
                     };
                     let pointer = self.b.local_ptr(local);
-                    for lane in 0..value.width {
+                    for lane in value.width.lanes() {
                         let component = self.b.lane(value, lane);
                         let target = self.b.app(E::AccessIndex {
                             base: pointer,
@@ -300,7 +303,7 @@ impl<'a> Lift<'a> {
                             ));
                         };
                         let p = self.b.local_ptr(local);
-                        let row = self.b.load(p, Kind::U, 4);
+                        let row = self.b.load(p, Kind::U, Width::Four);
                         for lane in lanes_of(d3d.mask) {
                             let c = self.b.lane(row, lane);
                             components.push(self.b.bitcast(c, Kind::F).expr);
@@ -351,10 +354,10 @@ impl<'a> Lift<'a> {
                         }
                     };
                     let p = self.b.local_ptr(local);
-                    let row = self.b.load(p, Kind::U, 4);
+                    let row = self.b.load(p, Kind::U, Width::Four);
                     let picked = self.b.swizzle(row, &lanes);
                     let value = self.b.bitcast(picked, kind_of(carried.scalar));
-                    debug_assert_eq!(value.width, carried.width);
+                    debug_assert_eq!(value.width.get(), carried.width);
                     value.expr
                 }
             };
@@ -374,7 +377,7 @@ impl<'a> Lift<'a> {
         let IoType::ClipDistances(n) = ty else {
             unreachable!("an array type")
         };
-        let f = self.b.ty_of(Kind::F, 1);
+        let f = self.b.ty_of(Kind::F, Width::One);
         self.b.ty(TypeInner::Array {
             base: f,
             size: naga::ArraySize::Constant(std::num::NonZeroU32::new(*n).expect("clip distances")),

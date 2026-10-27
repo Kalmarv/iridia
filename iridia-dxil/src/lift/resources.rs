@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 
-use iridia::build::{Kind, Val, component};
+use iridia::build::{Kind, Val, Width, component};
 use iridia::{
     Access, BufferKind, Resource, ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType,
     StorageTarget, TextureDim,
@@ -201,8 +201,8 @@ impl Lift<'_> {
 
     pub(super) fn declare_resources(&mut self) -> Result<()> {
         self.scan_resources();
-        let u4 = self.b.ty_of(Kind::U, 4);
-        let u1 = self.b.ty_of(Kind::U, 1);
+        let u4 = self.b.ty_of(Kind::U, Width::Four);
+        let u1 = self.b.ty_of(Kind::U, Width::One);
         for i in 0..self.setup.interface.resources.len() {
             let (range, resource) = self.resource_parts(i)?;
             let depth = self.resources.depth.contains(&i);
@@ -821,7 +821,7 @@ impl Lift<'_> {
                     base: pointer,
                     index: super::low32(r as u64),
                 });
-                self.b.load(element, Kind::U, 4)
+                self.b.load(element, Kind::U, Width::Four)
             }
             _ => {
                 let row = self.uint(self.arg(args, 2)?)?;
@@ -859,10 +859,10 @@ impl Lift<'_> {
             base: pointer,
             index: safe.expr,
         });
-        let value = self.b.load(element, Kind::U, 4);
+        let value = self.b.load(element, Kind::U, Width::Four);
         let none = {
             let z = self.b.lit_u(0);
-            self.b.splat(z, 4)
+            self.b.splat(z, Width::Four)
         };
         let _ = pointer;
         self.b.select(inside, value, none)
@@ -913,13 +913,13 @@ impl Lift<'_> {
         dim: TextureDim,
     ) -> Result<Option<Handle<E>>> {
         let n = match dim {
-            TextureDim::D1 => 1,
-            TextureDim::D2 => 2,
-            TextureDim::D3 => 3,
+            TextureDim::D1 => Width::One,
+            TextureDim::D2 => Width::Two,
+            TextureDim::D3 => Width::Three,
             TextureDim::Cube => return Ok(None),
         };
         let mut values = Vec::new();
-        for k in 0..n {
+        for k in 0..n.count() {
             match const_int(self.m, self.f, self.arg(args, first.saturating_add(k))?) {
                 Some(v) => values.push(i32::from_ne_bytes(super::low32(v as u64).to_ne_bytes())),
                 None if self.is_undef(self.arg(args, first.saturating_add(k))?) => values.push(0),
@@ -936,7 +936,7 @@ impl Lift<'_> {
         Ok(Some(if let [only] = parts[..] {
             only
         } else {
-            let ty = self.b.ty_of(Kind::I, super::lane_u8(parts.len()));
+            let ty = self.b.ty_of(Kind::I, n);
             self.b.app(E::Compose {
                 ty,
                 components: parts,
@@ -1065,14 +1065,18 @@ impl Lift<'_> {
         let mut r = Val {
             expr,
             kind: sample_kind,
-            width: if depth && gather.is_none() { 1 } else { 4 },
+            width: if depth && gather.is_none() {
+                Width::One
+            } else {
+                Width::Four
+            },
         };
-        if r.width == 1 {
+        if r.width == Width::One {
             // a depth sample is one float; D3D's float view returns it in x and (0, 0, 1) in the others, a comparison
             // in all four
             let (zero, one) = (self.b.lit_f(0.0), self.b.lit_f(1.0));
             r = if depth_ref.is_some() {
-                self.b.splat(r, 4)
+                self.b.splat(r, Width::Four)
             } else {
                 self.b.compose(&[r, zero, zero, one])
             };
@@ -1124,7 +1128,7 @@ impl Lift<'_> {
             let v = Val {
                 expr: s,
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             };
             self.b.bitcast(v, Kind::I).expr
         });
@@ -1137,7 +1141,7 @@ impl Lift<'_> {
                 let v = Val {
                     expr: a,
                     kind: Kind::I,
-                    width: 1,
+                    width: Width::One,
                 };
                 self.b.bitcast(v, Kind::U).expr
             } else {
@@ -1154,7 +1158,7 @@ impl Lift<'_> {
         let mut r = Val {
             expr,
             kind: if depth { Kind::F } else { kind },
-            width: if depth { 1 } else { 4 },
+            width: if depth { Width::One } else { Width::Four },
         };
         if depth {
             let (zero, one) = (self.b.lit_f(0.0), self.b.lit_f(1.0));
@@ -1201,7 +1205,7 @@ impl Lift<'_> {
         let words = Val {
             expr: self.b.app(E::ArrayLength(pointer)),
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         };
         let four = self.b.lit_u(4);
         let zero = self.b.lit_u(0);
@@ -1245,9 +1249,9 @@ impl Lift<'_> {
         let (dim, arrayed, multi, _, _) = self.texture_shape(resource)?;
         let mip = self.uint(self.arg(args, 2)?)?;
         let dims = match dim {
-            TextureDim::D1 => 1,
-            TextureDim::D2 | TextureDim::Cube => 2,
-            TextureDim::D3 => 3,
+            TextureDim::D1 => Width::One,
+            TextureDim::D2 | TextureDim::Cube => Width::Two,
+            TextureDim::D3 => Width::Three,
         };
         let size = Val {
             expr: self.b.app(E::ImageQuery {
@@ -1268,11 +1272,11 @@ impl Lift<'_> {
                     query: ImageQuery::NumLevels,
                 }),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             }
         };
         let zero = self.b.lit_u(0);
-        let mut parts: Vec<Val> = (0..dims).map(|i| self.b.lane(size, i)).collect();
+        let mut parts: Vec<Val> = dims.lanes().map(|i| self.b.lane(size, i)).collect();
         if arrayed {
             parts.push(Val {
                 expr: self.b.app(E::ImageQuery {
@@ -1280,7 +1284,7 @@ impl Lift<'_> {
                     query: ImageQuery::NumLayers,
                 }),
                 kind: Kind::U,
-                width: 1,
+                width: Width::One,
             });
         }
         while parts.len() < 3 {
@@ -1306,7 +1310,7 @@ impl Lift<'_> {
         let table = match self.resources.sample_positions {
             Some(g) => g,
             None => {
-                let v2 = self.b.ty_of(Kind::F, 2);
+                let v2 = self.b.ty_of(Kind::F, Width::Two);
                 let ty = self.b.ty(TypeInner::Array {
                     base: v2,
                     size: ArraySize::Constant(NonZeroU32::MIN.saturating_add(30)),
@@ -1342,7 +1346,7 @@ impl Lift<'_> {
                 query: ImageQuery::NumSamples,
             }),
             kind: Kind::U,
-            width: 1,
+            width: Width::One,
         };
         let one = self.b.lit_u(1);
         let below = self.b.binary(Bo::Subtract, count, one);
@@ -1356,7 +1360,7 @@ impl Lift<'_> {
             base,
             index: row.expr,
         });
-        let position = self.b.load(element, Kind::F, 2);
+        let position = self.b.load(element, Kind::F, Width::Two);
         let (x, y) = (self.b.lane(position, 0), self.b.lane(position, 1));
         self.define_result(inst.result, Lv::Agg(vec![Lv::Scalar(x), Lv::Scalar(y)]))
     }
@@ -1394,7 +1398,7 @@ impl Lift<'_> {
                 let length = Val {
                     expr: self.b.app(E::ArrayLength(words_ptr)),
                     kind: Kind::U,
-                    width: 1,
+                    width: Width::One,
                 };
                 let inside = self.b.binary(Bo::Less, index, length);
                 let zero = self.b.lit_u(0);
@@ -1412,16 +1416,16 @@ impl Lift<'_> {
                                 base: element,
                                 index: k,
                             });
-                            let loaded = self.b.load(word, kind_of_atomic(scalar), 1);
+                            let loaded = self.b.load(word, kind_of_atomic(scalar), Width::One);
                             words.push(self.b.bitcast_to(loaded, Kind::U));
                         }
                         self.b.compose(&words)
                     }
-                    None => self.b.load(element, Kind::U, 4),
+                    None => self.b.load(element, Kind::U, Width::Four),
                 };
                 let none = {
                     let z = self.b.lit_u(0);
-                    self.b.splat(z, 4)
+                    self.b.splat(z, Width::Four)
                 };
                 self.b.select(inside, value, none)
             }
@@ -1446,7 +1450,7 @@ impl Lift<'_> {
                     let length = Val {
                         expr: self.b.app(E::ArrayLength(words_ptr)),
                         kind: Kind::U,
-                        width: 1,
+                        width: Width::One,
                     };
                     let inside = self.b.binary(Bo::Less, at, length);
                     let zero = self.b.lit_u(0);
@@ -1457,10 +1461,10 @@ impl Lift<'_> {
                     });
                     let value = match atomic {
                         Some(scalar) => {
-                            let loaded = self.b.load(element, kind_of_atomic(scalar), 1);
+                            let loaded = self.b.load(element, kind_of_atomic(scalar), Width::One);
                             self.b.bitcast_to(loaded, Kind::U)
                         }
-                        None => self.b.load(element, Kind::U, 1),
+                        None => self.b.load(element, Kind::U, Width::One),
                     };
                     lanes.push(self.b.select(inside, value, zero));
                 }

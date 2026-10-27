@@ -7,7 +7,7 @@ use naga::{
     StructMember, Type, TypeInner,
 };
 
-use super::{Builder, Kind, align_up, fits};
+use super::{Builder, Kind, Width, align_up, fits};
 use crate::{IoItem, IoType, MeshFacts, MeshTopology};
 
 /// The output variable and where its parts are.
@@ -64,7 +64,7 @@ impl Builder {
             let IoType::Value(v) = item.ty else {
                 return Err(format!("{}: a vertex output that is not a value", item.name));
             };
-            let ty = self.ty_of(Kind::of(v.scalar), v.width);
+            let ty = self.ty_of(Kind::of(v.scalar), super::entry::width(v, &item.name)?);
             let align = match v.width {
                 1 => 4,
                 2 => 8,
@@ -88,8 +88,8 @@ impl Builder {
             naga::Span::UNDEFINED,
         );
         let (indices, width) = match facts.topology {
-            MeshTopology::Triangle => (BuiltIn::TriangleIndices, 3),
-            MeshTopology::Line => (BuiltIn::LineIndices, 2),
+            MeshTopology::Triangle => (BuiltIn::TriangleIndices, Width::Three),
+            MeshTopology::Line => (BuiltIn::LineIndices, Width::Two),
         };
         let index_type = self.ty_of(Kind::U, width);
         let primitive_type = self.module.types.insert(
@@ -119,7 +119,7 @@ impl Builder {
         };
         let vertices = array(self, vertex_type, facts.max_vertices)?;
         let primitives = array(self, primitive_type, facts.max_primitives)?;
-        let u = self.ty_of(Kind::U, 1);
+        let u = self.ty_of(Kind::U, Width::One);
         // the counts, then the two arrays, each at the next multiple of 16
         let vertices_at = 16;
         let primitives_at = fits(align_up(self.type_layout(vertices).0, 16)?.checked_add(vertices_at))?;
@@ -174,14 +174,13 @@ impl Builder {
         arguments: Vec<naga::FunctionArgument>,
         facts: &MeshFacts,
         output: &MeshOutput,
-    ) -> naga::Module {
-        assert_eq!(self.blocks.len(), 1, "unclosed control flow (a lifter bug)");
-        self.assert_checked();
+    ) -> Result<naga::Module, String> {
+        self.finishable()?;
         let mut function = self.function;
         function.name = Some("main".to_owned());
         function.arguments = arguments;
         function.result = None;
-        function.body = self.blocks.pop().expect("one block");
+        function.body = self.blocks.pop().unwrap_or_default();
         self.module.entry_points.push(naga::EntryPoint {
             name: "main".to_owned(),
             stage: naga::ShaderStage::Mesh,
@@ -205,6 +204,6 @@ impl Builder {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        self.module
+        Ok(self.module)
     }
 }

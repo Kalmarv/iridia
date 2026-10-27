@@ -2,7 +2,7 @@
 
 use naga::{AtomicFunction, Expression, Handle, Scalar, Statement};
 
-use super::{Builder, Kind, Val};
+use super::{Builder, Kind, Val, Width};
 
 impl Builder {
     /// The kind a word of the atomic integer type `scalar` is read as.
@@ -20,7 +20,7 @@ impl Builder {
     ) -> Val {
         let kind = Self::atomic_kind(scalar);
         let value = self.bitcast_to(value, kind);
-        let ty = self.ty_of(kind, 1);
+        let ty = self.ty_of(kind, Width::One);
         let result = self.result_expr(Expression::AtomicResult {
             ty,
             comparison: false,
@@ -34,19 +34,23 @@ impl Builder {
         Val {
             expr: result,
             kind,
-            width: 1,
+            width: Width::One,
         }
     }
 
     /// The result expression of an image atomic operation on texels of `kind`: the texel's previous value, which the
     /// `Statement::ImageAtomic` that names it writes.
     pub fn image_atomic_result(&mut self, kind: Kind) -> Val {
-        let ty = self.ty_of(kind, 1);
+        let ty = self.ty_of(kind, Width::One);
         let expr = self.result_expr(Expression::AtomicResult {
             ty,
             comparison: false,
         });
-        Val { expr, kind, width: 1 }
+        Val {
+            expr,
+            kind,
+            width: Width::One,
+        }
     }
 
     /// A compare-and-swap on the atomic word `pointer` names: the old value and whether the swap happened.
@@ -78,7 +82,7 @@ impl Builder {
                 index: 0,
             }),
             kind,
-            width: 1,
+            width: Width::One,
         };
         let exchanged = Val {
             expr: self.app(Expression::AccessIndex {
@@ -86,7 +90,7 @@ impl Builder {
                 index: 1,
             }),
             kind: Kind::B,
-            width: 1,
+            width: Width::One,
         };
         (old, exchanged)
     }
@@ -111,7 +115,7 @@ impl Builder {
     /// An atomic operation `body` makes only where `inside` holds, its old value (of `kind`) zero where it does not:
     /// D3D's answer for an operation past the end of its buffer, which does nothing.
     pub fn atomic_inside(&mut self, inside: Val, kind: Kind, body: impl FnOnce(&mut Self) -> Val) -> Val {
-        let ty = self.ty_of(kind, 1);
+        let ty = self.ty_of(kind, Width::One);
         let local = self.local("old", ty);
         let zero = self.lit_bits(kind, 0);
         let pointer = self.local_ptr(local);
@@ -123,6 +127,6 @@ impl Builder {
             b.store(pointer, old);
         });
         let pointer = self.local_ptr(local);
-        self.load(pointer, kind, 1)
+        self.load(pointer, kind, Width::One)
     }
 }

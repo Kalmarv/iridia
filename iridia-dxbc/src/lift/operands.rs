@@ -1,6 +1,6 @@
 //! Reading and writing DXBC operands: registers as four raw lanes, source swizzles and modifiers, write masks.
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{Expression as E, MathFunction as Mf, UnaryOperator as Uo};
 
 use super::Lift;
@@ -100,11 +100,11 @@ impl Lift<'_> {
             {
                 Some(l) => {
                     let p = self.b.local_ptr(l);
-                    self.b.load(p, Kind::U, 4)
+                    self.b.load(p, Kind::U, Width::Four)
                 }
                 None => {
                     let z = self.b.lit_u(0);
-                    self.b.splat(z, 4)
+                    self.b.splat(z, Width::Four)
                 }
             };
             let pointer = self.b.local_ptr(array);
@@ -125,8 +125,8 @@ impl Lift<'_> {
             base: pointer,
             index: safe.expr,
         });
-        let element = self.b.load(slot, Kind::U, 4);
-        let none = self.b.splat(zero, 4);
+        let element = self.b.load(slot, Kind::U, Width::Four);
+        let none = self.b.splat(zero, Width::Four);
         Ok(self.b.select(inside, element, none))
     }
 
@@ -138,7 +138,7 @@ impl Lift<'_> {
                     return self.refuse("a temporary beyond dcl_temps");
                 };
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::U, 4))
+                Ok(self.b.load(p, Kind::U, Width::Four))
             }
             // a hull, domain or geometry program's inputs are indexed by control point (or vertex) first
             Register::Input | Register::InputControlPoint
@@ -166,7 +166,7 @@ impl Lift<'_> {
                     return self.refuse(format!("input register v{register} is not in the signature"));
                 };
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::U, 4))
+                Ok(self.b.load(p, Kind::U, Width::Four))
             }
             Register::Output => {
                 if self.index_of(op, 0)?.relative.is_some() {
@@ -177,7 +177,7 @@ impl Lift<'_> {
                     return self.refuse(format!("output register o{register} is read but not declared"));
                 };
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::U, 4))
+                Ok(self.b.load(p, Kind::U, Width::Four))
             }
             Register::IndexableTemp => {
                 let Some(&(local, _)) = self.indexable.get(&self.index_of(op, 0)?.base) else {
@@ -189,7 +189,7 @@ impl Lift<'_> {
                     base: p,
                     index: index.expr,
                 });
-                Ok(self.b.load(element, Kind::U, 4))
+                Ok(self.b.load(element, Kind::U, Width::Four))
             }
             Register::Constant => {
                 let slot = self.index_of(op, 0)?.base;
@@ -198,14 +198,14 @@ impl Lift<'_> {
                 };
                 let index = self.index_expr(&self.index_of(op, 1)?.clone())?;
                 if self.index_of(op, 1)?.relative.is_some() {
-                    return Ok(self.guarded_load(g, index, Some(rows), Kind::U, 4));
+                    return Ok(self.guarded_load(g, index, Some(rows), Kind::U, Width::Four));
                 }
                 let p = self.b.global_ptr(g);
                 let element = self.b.app(E::Access {
                     base: p,
                     index: index.expr,
                 });
-                Ok(self.b.load(element, Kind::U, 4))
+                Ok(self.b.load(element, Kind::U, Width::Four))
             }
             Register::ImmediateBuffer => {
                 let Some((g, rows)) = self.resources.immediate else {
@@ -213,14 +213,14 @@ impl Lift<'_> {
                 };
                 let index = self.index_expr(&self.index_of(op, 0)?.clone())?;
                 if self.index_of(op, 0)?.relative.is_some() {
-                    return Ok(self.guarded_load(g, index, Some(rows), Kind::U, 4));
+                    return Ok(self.guarded_load(g, index, Some(rows), Kind::U, Width::Four));
                 }
                 let p = self.b.global_ptr(g);
                 let element = self.b.app(E::Access {
                     base: p,
                     index: index.expr,
                 });
-                Ok(self.b.load(element, Kind::U, 4))
+                Ok(self.b.load(element, Kind::U, Width::Four))
             }
             Register::PrimitiveId | Register::InputCoverage => {
                 let local = if op.register == Register::PrimitiveId {
@@ -232,7 +232,7 @@ impl Lift<'_> {
                     return self.refuse(format!("{:?} is used but not declared", op.register));
                 };
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::U, 4))
+                Ok(self.b.load(p, Kind::U, Width::Four))
             }
             Register::ThreadId
             | Register::ThreadGroupId
@@ -248,7 +248,7 @@ impl Lift<'_> {
                     return self.refuse(format!("{:?} is used but not declared", op.register));
                 };
                 let p = self.b.local_ptr(local);
-                Ok(self.b.load(p, Kind::U, 4))
+                Ok(self.b.load(p, Kind::U, Width::Four))
             }
             other => self.refuse(format!("a source operand of register type {other:?}")),
         }
@@ -324,8 +324,10 @@ impl Lift<'_> {
             return self.refuse("a destination whose write mask is empty");
         }
         let mut v = v;
-        if v.width == 1 && lanes.len() > 1 {
-            v = self.b.splat(v, lane_u8(lanes.len()));
+        if v.width == Width::One
+            && let Some(width) = Width::of_count(lanes.len()).filter(|&w| w > Width::One)
+        {
+            v = self.b.splat(v, width);
         }
         assert_eq!(
             usize::from(v.width),

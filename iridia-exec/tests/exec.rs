@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! The program executor on hand-built programs: a scalar run with the derivatives the caller states, a quad's own
 //! derivatives, and the requests a 3D sample makes of its sampler.
-use iridia::build::{Builder, Kind, Val};
+use iridia::build::{Builder, Kind, Val, Width};
 use iridia::{
     BufferLayout, Conventions, D3dBinding, D3dClass, D3dModes, D3dSignature, Interface, Label, Program,
     Provenance, Resource, ResourceId, ResourceKind, ResourceProvenance, SampleType, ScalarType, ShaderFormat,
@@ -15,7 +15,7 @@ use naga::{
     ImageDimension, ResourceBinding, SampleLevel, ScalarKind, StructMember, TypeInner,
 };
 
-fn val(expr: naga::Handle<naga::Expression>, kind: Kind, width: u8) -> Val {
+fn val(expr: naga::Handle<naga::Expression>, kind: Kind, width: Width) -> Val {
     Val { expr, kind, width }
 }
 
@@ -53,7 +53,7 @@ fn target() -> Varying {
 }
 
 fn result_type(b: &mut Builder) -> naga::Handle<naga::Type> {
-    let f4 = b.ty_of(Kind::F, 4);
+    let f4 = b.ty_of(Kind::F, Width::Four);
     b.ty(TypeInner::Struct {
         members: vec![StructMember {
             name: Some("SV_Target0".into()),
@@ -99,7 +99,7 @@ fn provenance() -> Provenance {
 /// `SV_Target0 = float4(uv.x * cb0[0].x, uv.y * cb0[0].y, ddx(uv.x), ddy(uv.y))`
 fn derivative_program() -> Program {
     let mut b = Builder::new();
-    let u4 = b.ty_of(Kind::U, 4);
+    let u4 = b.ty_of(Kind::U, Width::Four);
     let cb_ty = b.ty(TypeInner::Array {
         base: u4,
         size: naga::ArraySize::Constant(std::num::NonZeroU32::new(1).unwrap()),
@@ -113,16 +113,16 @@ fn derivative_program() -> Program {
         init: None,
         memory_decorations: Default::default(),
     });
-    let f2 = b.ty_of(Kind::F, 2);
+    let f2 = b.ty_of(Kind::F, Width::Two);
     let uv = b.app(naga::Expression::FunctionArgument(0));
-    let uv = val(uv, Kind::F, 2);
+    let uv = val(uv, Kind::F, Width::Two);
     let ptr = b.global_ptr(cb);
     let zero = b.lit_u(0);
     let row = b.app(naga::Expression::Access {
         base: ptr,
         index: zero.expr,
     });
-    let row = b.load(row, Kind::U, 4);
+    let row = b.load(row, Kind::U, Width::Four);
     let scale = b.bitcast(row, Kind::F);
     let scale = b.swizzle(scale, &[0, 1]);
     let product = b.binary(naga::BinaryOperator::Multiply, uv, scale);
@@ -138,20 +138,22 @@ fn derivative_program() -> Program {
         expr: y.expr,
     });
     let (px, py) = (b.lane(product, 0), b.lane(product, 1));
-    let colour = b.compose(&[px, py, val(dx, Kind::F, 1), val(dy, Kind::F, 1)]);
+    let colour = b.compose(&[px, py, val(dx, Kind::F, Width::One), val(dy, Kind::F, Width::One)]);
     let out_ty = result_type(&mut b);
     let out = b.app(naga::Expression::Compose {
         ty: out_ty,
         components: vec![colour.expr],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("TEXCOORD0", f2)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("TEXCOORD0", f2)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     let cb_global = module.global_variables.iter().next().unwrap().0;
     Program {
         module,
@@ -219,7 +221,7 @@ fn volume_program() -> Program {
         init: None,
         memory_decorations: Default::default(),
     });
-    let f3 = b.ty_of(Kind::F, 3);
+    let f3 = b.ty_of(Kind::F, Width::Three);
     let uvw = b.app(naga::Expression::FunctionArgument(0));
     let (image_ptr, sampler_ptr) = (b.global_ptr(image), b.global_ptr(sampler));
     let colour = b.app(naga::Expression::ImageSample {
@@ -239,13 +241,15 @@ fn volume_program() -> Program {
         components: vec![colour],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("TEXCOORD0", f3)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("TEXCOORD0", f3)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     let (image, sampler) = {
         let mut globals = module.global_variables.iter();
         (globals.next().unwrap().0, globals.next().unwrap().0)
@@ -395,9 +399,9 @@ fn a_volume_sample_reaches_a_sampler_that_answers_it_and_is_refused_by_one_that_
 /// `if (uv.x > 0.5) { return red; } return green;`: two returns with results of their own.
 fn branch_program() -> Program {
     let mut b = Builder::new();
-    let f2 = b.ty_of(Kind::F, 2);
+    let f2 = b.ty_of(Kind::F, Width::Two);
     let uv = b.app(naga::Expression::FunctionArgument(0));
-    let uv = val(uv, Kind::F, 2);
+    let uv = val(uv, Kind::F, Width::Two);
     let x = b.lane(uv, 0);
     let half = b.lit_f(0.5);
     let above = b.binary(naga::BinaryOperator::Greater, x, half);
@@ -426,13 +430,15 @@ fn branch_program() -> Program {
     b.push(naga::Statement::Return {
         value: Some(green_out),
     });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("TEXCOORD0", f2)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("TEXCOORD0", f2)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     Program {
         module,
         stage: Stage::Pixel,
@@ -483,11 +489,11 @@ fn each_return_leaves_with_its_own_result() {
 #[test]
 fn an_argument_named_by_several_expressions_is_the_same_value_in_each() {
     let mut b = Builder::new();
-    let f2 = b.ty_of(Kind::F, 2);
+    let f2 = b.ty_of(Kind::F, Width::Two);
     let first = b.app(naga::Expression::FunctionArgument(0));
     let second = b.app(naga::Expression::FunctionArgument(0));
-    let x = b.lane(val(first, Kind::F, 2), 0);
-    let y = b.lane(val(second, Kind::F, 2), 1);
+    let x = b.lane(val(first, Kind::F, Width::Two), 0);
+    let y = b.lane(val(second, Kind::F, Width::Two), 1);
     let colour = b.compose(&[x, y, y, x]);
     let out_ty = result_type(&mut b);
     let out = b.app(naga::Expression::Compose {
@@ -495,13 +501,15 @@ fn an_argument_named_by_several_expressions_is_the_same_value_in_each() {
         components: vec![colour.expr],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("TEXCOORD0", f2)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("TEXCOORD0", f2)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     let program = Program {
         module,
         stage: Stage::Pixel,
@@ -559,9 +567,9 @@ fn array_program() -> Program {
     };
     let image = global(&mut b, "t0", 1, images);
     let sampler = global(&mut b, "s0", 2, samplers);
-    let f1 = b.ty_of(Kind::F, 1);
+    let f1 = b.ty_of(Kind::F, Width::One);
     let x = b.app(naga::Expression::FunctionArgument(0));
-    let element = b.convert(val(x, Kind::F, 1), Kind::U);
+    let element = b.convert(val(x, Kind::F, Width::One), Kind::U);
     let one = b.lit_u(1);
     let next = b.binary(naga::BinaryOperator::Add, element, one);
     let (image_base, sampler_base) = (b.global_ptr(image), b.global_ptr(sampler));
@@ -592,13 +600,15 @@ fn array_program() -> Program {
         components: vec![colour],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("IDX0", f1)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("IDX0", f1)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     let (image, sampler) = {
         let mut globals = module.global_variables.iter();
         (globals.next().unwrap().0, globals.next().unwrap().0)
@@ -739,9 +749,9 @@ fn a_resource_array_is_written_and_its_count_is_checked() {
 /// A pixel program over `uv` (TEXCOORD0, two lanes) whose `SV_Target0` is what `build` makes of the lanes.
 fn program_of(build: impl FnOnce(&mut Builder, Val, Val) -> Val) -> Program {
     let mut b = Builder::new();
-    let f2 = b.ty_of(Kind::F, 2);
+    let f2 = b.ty_of(Kind::F, Width::Two);
     let uv = b.app(naga::Expression::FunctionArgument(0));
-    let uv = val(uv, Kind::F, 2);
+    let uv = val(uv, Kind::F, Width::Two);
     let (x, y) = (b.lane(uv, 0), b.lane(uv, 1));
     let colour = build(&mut b, x, y);
     let out_ty = result_type(&mut b);
@@ -750,13 +760,15 @@ fn program_of(build: impl FnOnce(&mut Builder, Val, Val) -> Val) -> Program {
         components: vec![colour.expr],
     });
     b.push(naga::Statement::Return { value: Some(out) });
-    let module = b.finish(
-        "main",
-        naga::ShaderStage::Fragment,
-        vec![argument("TEXCOORD0", f2)],
-        Some(out_ty),
-        false,
-    );
+    let module = b
+        .finish(
+            "main",
+            naga::ShaderStage::Fragment,
+            vec![argument("TEXCOORD0", f2)],
+            Some(out_ty),
+            false,
+        )
+        .expect("the module finishes");
     Program {
         module,
         stage: Stage::Pixel,
@@ -879,7 +891,7 @@ fn mix_normalize_sign_and_the_relational_functions() {
                 fun,
                 argument: argument.expr,
             });
-            val(e, Kind::B, 1)
+            val(e, Kind::B, Width::One)
         };
         let zero = b.lit_f(0.0);
         let nan = b.binary(naga::BinaryOperator::Divide, zero, zero);

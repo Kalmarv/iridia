@@ -2,7 +2,7 @@
 //! that writes no position. What reads their arguments and fills their results (see
 //! [`iridia::stage_functions`]).
 
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use iridia::{IoType, Program, StageFacts, Varying};
 use naga::{Expression as E, Handle, LocalVariable};
 
@@ -74,7 +74,7 @@ impl Lift<'_> {
         Ok(Val {
             expr,
             kind: Kind::of(v.scalar),
-            width: v.width,
+            width: self.width_of(&v)?,
         })
     }
 
@@ -129,7 +129,7 @@ impl Lift<'_> {
         };
         let name = Program::varying_name(&patch_constant.label);
         let value = self.special_argument(&name)?;
-        let lane_value = if value.width > 1 {
+        let lane_value = if value.width > Width::One {
             self.b.lane(value, position)
         } else {
             value
@@ -222,9 +222,9 @@ impl Lift<'_> {
                 index: point.expr,
             }),
             kind: Kind::of(v.scalar),
-            width: v.width,
+            width: self.width_of(&v)?,
         };
-        let lane_value = if v.width > 1 {
+        let lane_value = if element.width > Width::One {
             self.b.lane(element, position)
         } else {
             element
@@ -277,7 +277,7 @@ impl Lift<'_> {
         let Some(one) = std::num::NonZeroU32::new(max) else {
             return self.refuse("a geometry program that emits no vertices");
         };
-        let u1 = self.b.ty_of(Kind::U, 1);
+        let u1 = self.b.ty_of(Kind::U, Width::One);
         let strips_ty = self.b.ty(naga::TypeInner::Array {
             base: u1,
             size: naga::ArraySize::Constant(one),
@@ -356,18 +356,18 @@ impl Lift<'_> {
         };
         let count = {
             let p = self.b.local_ptr(gs.count);
-            self.b.load(p, Kind::U, 1)
+            self.b.load(p, Kind::U, Width::One)
         };
         let max = self.b.lit_u(gs.max);
         let inside = self.b.binary(naga::BinaryOperator::Less, count, max);
         self.b.when(inside, |b| {
             let index = {
                 let p = b.local_ptr(gs.count);
-                b.load(p, Kind::U, 1)
+                b.load(p, Kind::U, Width::One)
             };
             for (array, register, lanes, carried) in &gs.outputs {
                 let p = b.local_ptr(*register);
-                let row = b.load(p, Kind::U, 4);
+                let row = b.load(p, Kind::U, Width::Four);
                 let picked = b.swizzle(row, lanes);
                 let value = b.bitcast(picked, Kind::of(carried.scalar));
                 let a = b.local_ptr(*array);
@@ -379,7 +379,7 @@ impl Lift<'_> {
             }
             let pending = {
                 let p = b.local_ptr(gs.pending);
-                b.load(p, Kind::U, 1)
+                b.load(p, Kind::U, Width::One)
             };
             let s = b.local_ptr(gs.strips);
             let target = b.app(E::Access {
@@ -409,12 +409,12 @@ impl Lift<'_> {
         let mut parts = Vec::new();
         for (array, ..) in &gs.outputs {
             let p = self.b.local_ptr(*array);
-            parts.push(self.b.load(p, Kind::U, 1).expr);
+            parts.push(self.b.load(p, Kind::U, Width::One).expr);
         }
         let p = self.b.local_ptr(gs.count);
-        parts.push(self.b.load(p, Kind::U, 1).expr);
+        parts.push(self.b.load(p, Kind::U, Width::One).expr);
         let p = self.b.local_ptr(gs.strips);
-        parts.push(self.b.load(p, Kind::U, 1).expr);
+        parts.push(self.b.load(p, Kind::U, Width::One).expr);
         let composed = self.b.app(E::Compose {
             ty: result,
             components: parts,
@@ -460,7 +460,7 @@ impl Lift<'_> {
                 _ => (0..4u8).filter(|l| d3d.mask >> l & 1 != 0).collect(),
             };
             let p = self.b.local_ptr(local);
-            let row = self.b.load(p, Kind::U, 4);
+            let row = self.b.load(p, Kind::U, Width::Four);
             let picked = self.b.swizzle(row, &lanes);
             parts.push(self.b.bitcast(picked, Kind::of(carried.scalar)).expr);
         }

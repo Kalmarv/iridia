@@ -1,7 +1,7 @@
 //! The `dx.op` intrinsics: signature reads and writes, math, bit operations, handles and the resource operations.
 
 use iridia::SystemValue;
-use iridia::build::{Kind, Val};
+use iridia::build::{Kind, Val, Width};
 use naga::{
     BinaryOperator as Bo, DerivativeAxis, DerivativeControl, Expression as E, MathFunction as Mf, Statement,
 };
@@ -338,7 +338,7 @@ impl Lift<'_> {
                         expr: x.expr,
                     }),
                     kind: Kind::F,
-                    width: 1,
+                    width: Width::One,
                 };
                 scalar!(r)
             }
@@ -403,9 +403,9 @@ impl Lift<'_> {
         let value = Val {
             expr,
             kind: Kind::of(carried.scalar),
-            width: carried.width,
+            width: self.width_of(&carried)?,
         };
-        let lane_value = if carried.width > 1 {
+        let lane_value = if value.width > Width::One {
             self.b.lane(value, position)
         } else {
             value
@@ -442,7 +442,7 @@ impl Lift<'_> {
             naga::CollectiveOperation::ExclusiveScan,
             one,
         );
-        let ty = self.b.ty_of(Kind::U, 1);
+        let ty = self.b.ty_of(Kind::U, Width::One);
         let local = self.b.local("lane", ty);
         let p = self.b.local_ptr(local);
         self.b.store(p, rank);
@@ -460,7 +460,7 @@ impl Lift<'_> {
             && let Some(lane) = self.lane
         {
             let p = self.b.local_ptr(lane);
-            return Ok(self.b.load(p, Kind::U, 1));
+            return Ok(self.b.load(p, Kind::U, Width::One));
         }
         // a program that is functions takes its system values as arguments named after the varying
         let (index, ty) = if self.sig.is_some() {
@@ -493,7 +493,7 @@ impl Lift<'_> {
         Ok(Val {
             expr,
             kind: Kind::of(carried.scalar),
-            width: carried.width,
+            width: self.width_of(&carried)?,
         })
     }
 
@@ -575,13 +575,13 @@ impl Lift<'_> {
                         };
                         let local = self.output_local(d3d.register)?;
                         let p = self.b.local_ptr(local);
-                        let row = self.b.load(p, Kind::U, 4);
+                        let row = self.b.load(p, Kind::U, Width::Four);
                         for lane in (0..4u8).filter(|l| d3d.mask >> l & 1 != 0) {
                             let c = self.b.lane(row, lane);
                             components.push(self.b.bitcast(c, Kind::F).expr);
                         }
                     }
-                    let f = self.b.ty_of(Kind::F, 1);
+                    let f = self.b.ty_of(Kind::F, Width::One);
                     let ty = self.b.ty(naga::TypeInner::Array {
                         base: f,
                         size: naga::ArraySize::Constant(
@@ -629,7 +629,7 @@ impl Lift<'_> {
                         }
                     };
                     let p = self.b.local_ptr(local);
-                    let row = self.b.load(p, Kind::U, 4);
+                    let row = self.b.load(p, Kind::U, Width::Four);
                     let picked = self.b.swizzle(row, &lanes);
                     let value = self.b.bitcast(picked, Kind::of(carried.scalar));
                     value.expr
