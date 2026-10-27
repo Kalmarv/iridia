@@ -4,42 +4,67 @@ use crate::{Result, error};
 /// A CTAB type. Numeric class/type values are D3DXPARAMETER_CLASS/TYPE, kept alongside their dimensions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Type {
+    /// D3DXPARAMETER_CLASS as stored (u16 at offset 0 of the type record): scalar, vector, row or column matrix, object,
+    /// struct.
     pub class: u16,
+    /// D3DXPARAMETER_TYPE as stored (u16 at offset 2): bool, int, float, sampler and so on.
     pub kind: u16,
+    /// Rows (u16 at offset 4).
     pub rows: u16,
+    /// Columns (u16 at offset 6).
     pub columns: u16,
+    /// Array length (u16 at offset 8); 1 for a type that is not an array.
     pub elements: u16,
+    /// Members of a struct type in the order stored (the u16 count at offset 10 says how many); empty for any other
+    /// class.
     pub members: Vec<TypeMember>,
 }
 
+/// One member of a struct type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeMember {
+    /// The member's name.
     pub name: String,
+    /// The member's type.
     pub ty: Type,
 }
 
 /// A named allocation, including the original type even when optimization shortened its register range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constant {
+    /// The constant's name, from the NUL-terminated UTF-8 string its record points at.
     pub name: String,
     /// D3DXREGISTER_SET: BOOL=0, INT4=1, FLOAT4=2, SAMPLER=3.
     pub register_set: u16,
+    /// First register of the allocation (u16 at offset 6 of the constant record), in the bank `register_set` names.
     pub register: u16,
+    /// Registers allocated (u16 at offset 8). Reading refuses 0 and a range past the end of the bank (16 registers for
+    /// bool, int4 and, in a `ps_3_0`, samplers; 4 samplers in a `vs_3_0`; 224 float4 registers in a `ps_3_0`, 256 in a
+    /// `vs_3_0`).
     pub count: u16,
     /// Compiler-reserved word of D3DXSHADER_CONSTANTINFO. Compilers write nonzero values;
     /// it is retained verbatim and does not change the explicit register allocation.
     pub reserved: u16,
+    /// The declared type; it can be larger than `count` registers when the compiler shortened the allocation.
     pub ty: Type,
     /// Raw register defaults (BOOL rows are 4 bytes, other numeric rows 16); no defaults on samplers.
     pub default: Option<Vec<u8>>,
 }
 
+/// The constant table (CTAB comment) of a program: who compiled it, for which target, and the named register allocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstantTable {
+    /// The creator string the header's offset at 4 points at (the compiler's name and version).
     pub creator: String,
+    /// The target profile string (`ps_3_0`) the header's offset at 24 points at.
     pub target: String,
+    /// The shader version token (u32 at offset 8 of the header): `0xffff0300` for `ps_3_0`, `0xfffe0300` for `vs_3_0`.
+    /// Reading refuses a table that disagrees with the program's stage.
     pub version: u32,
+    /// Compile flags (u32 at offset 20 of the header), as stored.
     pub flags: u32,
+    /// The allocations in the order stored: at most 1024, none overlapping another in the same register set, no name
+    /// repeated.
     pub constants: Vec<Constant>,
 }
 

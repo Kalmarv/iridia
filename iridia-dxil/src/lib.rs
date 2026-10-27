@@ -36,6 +36,7 @@
 //! assert_eq!(refusal.bytecode, "DXIL");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),
@@ -58,6 +59,7 @@ pub use reflection::{interface, subobjects};
 /// A DXIL program or container refused or unreadable: the bit it is at (in the bitcode, or eight times a byte of the
 /// container) and why ([`iridia::Refusal`]).
 pub type Error = iridia::Refusal;
+/// The result of every function in this crate: `Ok` or a refusal that names the bit of the DXIL module.
 pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn error(bit: usize, detail: impl Into<String>) -> Error {
     Error::new("DXIL", iridia::Unit::Bit, bit, detail)

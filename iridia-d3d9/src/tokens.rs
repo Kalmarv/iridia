@@ -7,10 +7,15 @@ use crate::{ConstantTable, Result, error};
 /// A float register in the supported stage-specific banks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Register {
+    /// Temporary register `rN`, N below 32.
     Temporary(u32),
+    /// Input register `vN`: below 16 in a vertex program, below 10 in a pixel program.
     Input(u32),
+    /// Float constant register `cN`: below 256 in a vertex program, below 224 in a pixel program.
     Constant(u32),
+    /// Sampler `sN`: below 4 in a vertex program, below 16 in a pixel program.
     Sampler(u32),
+    /// Colour output `oCN` of a pixel program, N below 4.
     Target(u32),
     /// A declared vertex output register, distinct from pixel render targets.
     Output(u32),
@@ -19,9 +24,14 @@ pub enum Register {
 /// A source token after decoding its swizzle and modifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Source {
+    /// The register read.
     pub register: Register,
+    /// The four source lanes (0 x, 1 y, 2 z, 3 w) that supply the operand's x, y, z and w, from the two-bit fields of the
+    /// token at bits 16, 18, 20 and 22.
     pub swizzle: [u8; 4],
+    /// True for the `abs` modifier (the token's source modifier 11, or 12 with negation).
     pub absolute: bool,
+    /// True for the negate modifier (source modifier 1, or 12 with the absolute value taken first).
     pub negate: bool,
 }
 
@@ -39,8 +49,11 @@ impl Source {
 /// A destination token; masks keep their original lane positions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Destination {
+    /// The register written.
     pub register: Register,
+    /// The lanes written, bit 0 x to bit 3 w (bits 16 to 19 of the token); never empty.
     pub mask: u8,
+    /// True for the `_sat` modifier (clamp the result to 0..1).
     pub saturate: bool,
     /// A request that hardware may execute at partial precision. The lifter uses f32 and reports it.
     pub partial_precision: bool,
@@ -49,28 +62,51 @@ pub struct Destination {
 /// The operations this lifter reads. Declarations and immediate definitions are kept separately.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opcode {
+    /// `nop` (opcode 0).
     Nop,
+    /// `mov` (1): copy.
     Mov,
+    /// `add` (2).
     Add,
+    /// `sub` (3).
     Sub,
+    /// `mad` (4): multiply and add.
     Mad,
+    /// `mul` (5).
     Mul,
+    /// `rcp` (6): reciprocal of the x lane.
     Rcp,
+    /// `rsq` (7): reciprocal square root of the x lane.
     Rsq,
+    /// `dp3` (8): three-lane dot product.
     Dp3,
+    /// `dp4` (9): four-lane dot product.
     Dp4,
+    /// `min` (10).
     Min,
+    /// `max` (11).
     Max,
+    /// `exp` (14): 2 raised to the x lane.
     Exp,
+    /// `log` (15): base 2 logarithm of the x lane.
     Log,
+    /// `lrp` (18): linear interpolation.
     Lrp,
+    /// `frc` (19): fractional part.
     Frc,
+    /// `pow` (32): first operand's x lane raised to the second's.
     Pow,
+    /// `abs` (35).
     Abs,
+    /// `nrm` (36): normalise the three-lane vector.
     Nrm,
+    /// `texkill` (65): discard the pixel when any lane of the register is negative.
     TexKill,
+    /// `texld` (66): sample a texture; `Instruction::control` says plain, projected or biased.
     Tex,
+    /// `cmp` (88): pick the second operand where the first is at least zero, the third elsewhere.
     Cmp,
+    /// `dp2add` (90): two-lane dot product plus the x lane of the third operand.
     Dp2Add,
 }
 
@@ -143,10 +179,17 @@ impl Opcode {
 /// An executable operation. `control` is TEX's projection/bias mode (0, 1, 2); zero for arithmetic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Instruction {
+    /// Offset of the instruction token in 32-bit words from the version token, the position a refusal and
+    /// `Projection::after_word` name.
     pub word: usize,
+    /// The operation.
     pub opcode: Opcode,
+    /// The register written (for `texkill`, the register tested, which may be an input); `None` for `nop`.
     pub destination: Option<Destination>,
+    /// The source operands in the order the token stream writes them.
     pub sources: Vec<Source>,
+    /// For `texld`, the bits 16 to 17 of the instruction token: 0 plain, 1 projected (`texldp`), 2 biased (`texldb`); 0
+    /// for every other operation.
     pub control: u8,
 }
 
@@ -180,43 +223,64 @@ impl Instruction {
     }
 }
 
+/// A declared pixel or vertex input (a `dcl` of an input register).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
+    /// The input register number N of `vN`.
     pub register: u32,
+    /// The semantic usage (D3DDECLUSAGE: 0 position, 1 blend weight, 2 blend indices, 3 normal, 5 texcoord, 10 color and
+    /// so on), bits 0 to 3 of the declaration word; 0 to 13.
     pub usage: u8,
+    /// The semantic index (the 1 of `TEXCOORD1`), bits 16 to 19 of the declaration word.
     pub index: u8,
+    /// The lanes declared, bit 0 x to bit 3 w.
     pub mask: u8,
+    /// True when the declaration carries the centroid modifier.
     pub centroid: bool,
+    /// True when the declaration carries the partial-precision modifier.
     pub partial_precision: bool,
 }
 
 /// A COMMENT's words, excluding its token. Unknown FourCCs are retained, not interpreted as instructions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Comment {
+    /// Offset of the comment token in 32-bit words from the version token.
     pub word: usize,
+    /// The comment's payload words, including its leading FourCC (`CTAB` for the constant table).
     pub data: Vec<u32>,
 }
 
 /// A declared vertex output; disjoint masks can pack distinct semantics into one register.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Output {
+    /// The output register number N of `oN`, below 12.
     pub register: u32,
+    /// The semantic usage (D3DDECLUSAGE, 0 to 13 except 4, point size), as for `Input::usage`.
     pub usage: u8,
+    /// The semantic index.
     pub index: u8,
+    /// The lanes of the register this semantic occupies, bit 0 x to bit 3 w.
     pub mask: u8,
 }
 
 /// Reflection and executable tokens of one complete `ps_3_0` or `vs_3_0` stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shader {
+    /// Vertex or pixel, from the version token (`0xfffe0300` or `0xffff0300`).
     pub stage: Stage,
+    /// The declared vertex outputs in declaration order; empty for a pixel program.
     pub outputs: Vec<Output>,
+    /// The declared inputs in declaration order.
     pub inputs: Vec<Input>,
+    /// The declared samplers by register number, with the texture dimension each declares (2D, cube or volume).
     pub samplers: BTreeMap<u32, TextureDim>,
     /// `def` constants, as exact f32 bit patterns.
     pub definitions: BTreeMap<u32, [u32; 4]>,
+    /// The executable instructions in program order.
     pub instructions: Vec<Instruction>,
+    /// Every comment, in order, including the one that holds the constant table.
     pub comments: Vec<Comment>,
+    /// The CTAB comment decoded; `None` when the program has none.
     pub constants: Option<ConstantTable>,
 }
 

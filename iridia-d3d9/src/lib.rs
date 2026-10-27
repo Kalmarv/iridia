@@ -54,6 +54,7 @@
 //! [the VS register reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-vs-registers-vs-3-0)
 //! and [output declarations](https://learn.microsoft.com/windows/win32/direct3dhlsl/dcl-usage-outut-register---vs) define
 //! their layout. Arithmetic follows the [ps_3_0 instruction reference](https://learn.microsoft.com/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-instructions-ps-3-0).
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),
@@ -81,6 +82,7 @@ pub use tokens::{Comment, Destination, Input, Instruction, Opcode, Output, Regis
 
 /// A refusal states the word offset in the raw token stream and the unsupported or malformed feature.
 pub type Error = iridia::Refusal;
+/// The result of every function in this crate: `Ok` or a refusal that names the word offset.
 pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn error(at: usize, detail: impl Into<String>) -> Error {
     Error::new("D3D9", iridia::Unit::Word, at, detail)
@@ -98,8 +100,12 @@ pub fn lift(bytes: &[u8]) -> Result<iridia::Program> {
 /// The word offset must identify an instruction, and all three distinct temporary lanes must be initialized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Projection {
+    /// Offset, in 32-bit words from the version token, of the instruction the value is read after.
     pub after_word: usize,
+    /// Index of the temporary register `rN` to read.
     pub temporary: u32,
+    /// Which lanes (0 x, 1 y, 2 z, 3 w) of the temporary become red, green and blue; three distinct lanes, each already
+    /// written by the cut.
     pub lanes: [u8; 3],
 }
 

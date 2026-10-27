@@ -38,6 +38,7 @@
 //! ```
 //!
 //! The container's digest is not verified: this reader does not authenticate shaders.
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),
@@ -61,6 +62,7 @@ pub use reflection::{reflection, resource_reflection, signatures, varying};
 
 /// A DXBC program or container refused or unreadable: the word it is at and why ([`iridia::Refusal`]).
 pub type Error = iridia::Refusal;
+/// The result of every function in this crate: `Ok` or a refusal that names the word of the shader code it is at.
 pub type Result<T> = std::result::Result<T, Error>;
 pub(crate) fn error(word: usize, detail: impl Into<String>) -> Error {
     Error::new("DXBC", iridia::Unit::Word, word, detail)

@@ -62,6 +62,7 @@
 //! assert_eq!(refusal.bytecode, "MojoShader GLSL");
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![deny(missing_docs)]
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
 #![cfg_attr(
     not(test),
@@ -86,6 +87,7 @@ use iridia::{Program, Stage};
 /// ([`iridia::Refusal`]).
 pub type Error = iridia::Refusal;
 
+/// The result of every function in this crate: `Ok` or a refusal that names the line of the source.
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub(crate) fn error(line: usize, detail: impl Into<String>) -> Error {
@@ -110,17 +112,25 @@ pub struct Hints {
 /// left out, one that reaches past them is cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Constant {
+    /// The constant's name, as the effect that owns the program calls it; becomes the layout constant's name.
     pub name: String,
+    /// Byte offset of the constant from the start of the uniform array (a multiple of 16: one `vec4` register is 16
+    /// bytes).
     pub offset: u32,
+    /// Size in bytes of the constant: 16 for a scalar or a vector, a multiple of 16 for an array of registers.
     pub bytes: u32,
+    /// Lanes (1 to 4) of a scalar or vector constant; 0 and 1 both give a scalar. Ignored when `bytes` is not 16.
     pub width: u8,
 }
 
 /// A sampler: the name the program gives it (`ps_s0`), the slot the texture is bound at and the name of what is bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sampler {
+    /// The sampler's name in the GLSL text (`ps_s0`, `vs_s1`).
     pub glsl_name: String,
+    /// The Direct3D sampler slot; the lifted program binds a texture `t<slot>` and a sampler `s<slot>`.
     pub slot: u32,
+    /// The name of the texture bound there, as the effect calls it.
     pub name: String,
 }
 
@@ -128,8 +138,11 @@ pub struct Sampler {
 /// 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attribute {
+    /// The attribute's name in the GLSL text (`vs_v0`); the digits after `vs_v` are its Direct3D input register.
     pub glsl_name: String,
+    /// The semantic name the vertex input is labelled with (`POSITION`, `TEXCOORD`).
     pub semantic: String,
+    /// The semantic index (the `1` of `TEXCOORD1`).
     pub index: u32,
 }
 
