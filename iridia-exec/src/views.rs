@@ -256,7 +256,9 @@ impl Sampler for &Views {
                 "t{slot}: a structured read at byte {offset} of an element of {stride} bytes (undefined)"
             )),
             Some(View::Structured { stride, words }) => {
-                let byte = u64::from(element) * u64::from(*stride) + u64::from(offset);
+                let byte = u64::from(element)
+                    .saturating_mul(u64::from(*stride))
+                    .saturating_add(u64::from(offset));
                 match usize::try_from(byte / 4).ok().and_then(|w| words.get(w)) {
                     Some(word) => Ok(*word),
                     None => self.absent(|| format!("t{slot}: element {element} past the end")),
@@ -275,9 +277,12 @@ impl Sampler for &Views {
         match self.views.get(&slot) {
             None => Some(0),
             Some(View::Typed(e)) => u32::try_from(e.len()).ok(),
-            Some(View::Structured { stride, words }) if *stride > 0 => {
-                u32::try_from(words.len() as u64 * 4 / u64::from(*stride)).ok()
-            }
+            Some(View::Structured { stride, words }) if *stride > 0 => u32::try_from(
+                (words.len() as u64)
+                    .saturating_mul(4)
+                    .checked_div(u64::from(*stride))?,
+            )
+            .ok(),
             Some(_) => None,
         }
     }

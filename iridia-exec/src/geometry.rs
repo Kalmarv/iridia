@@ -63,6 +63,7 @@ impl Topology {
     ///   4) / 2` primitives, primitive `i` (even) is `[2i, 2i - 2 (1 for i = 0), 2i + 2, 2i + 6, 2i + 4, 2i + 3]` and
     ///   primitive `i` (odd) `[2i, 2i + 3, 2i + 4, 2i + 6, 2i + 2, 2i - 2]`, the vertex `2i + 6` that the last
     ///   primitive does not have replaced by `2i + 5`.
+    #[allow(clippy::arithmetic_side_effects)] // indices stay below `vertices`, the length of a slice (under isize::MAX), and the formulas subtract only past the first primitive
     pub fn primitives(self, vertices: usize) -> Vec<Vec<usize>> {
         let list = |size: usize| -> Vec<Vec<usize>> {
             (0..vertices / size)
@@ -192,15 +193,19 @@ impl GeometryShader {
 
     /// The names of the input varyings: the registers of a [`Vertex`] given to the program, in order.
     pub fn inputs(&self) -> impl Iterator<Item = &str> {
-        self.signature.arguments[..self.inputs]
+        self.signature
+            .arguments
             .iter()
+            .take(self.inputs)
             .map(|a| a.name.as_str())
     }
 
     /// The names of the output varyings: the registers of the vertices of a [`Strip`], in order.
     pub fn outputs(&self) -> impl Iterator<Item = &str> {
-        self.signature.result[..self.outputs]
+        self.signature
+            .result
             .iter()
+            .take(self.outputs)
             .map(|a| a.name.as_str())
     }
 
@@ -252,7 +257,17 @@ impl GeometryShader {
         let mut scratch = Scratch::new(&self.executable);
         let mut strips = Vec::new();
         for (primitive, indices) in topology.primitives(vertices.len()).iter().enumerate() {
-            let primitive_vertices: Vec<&Vertex> = indices.iter().map(|&i| &vertices[i]).collect();
+            let primitive_vertices: Vec<&Vertex> = indices
+                .iter()
+                .map(|&i| {
+                    vertices.get(i).ok_or_else(|| {
+                        format!(
+                            "primitive {primitive} names vertex {i}, past the {} given",
+                            vertices.len()
+                        )
+                    })
+                })
+                .collect::<Result<_, _>>()?;
             for instance in 0..self.facts.instances.max(1) {
                 let (emitted, kept) = self.invoke(
                     &bound,
@@ -328,7 +343,7 @@ impl GeometryShader {
                 self.facts.input
             ));
         }
-        let mut arguments = Vec::with_capacity(self.inputs * size + 2);
+        let mut arguments = Vec::with_capacity(self.inputs.saturating_mul(size).saturating_add(2));
         for varying in 0..self.inputs {
             for (k, vertex) in vertices.iter().enumerate() {
                 arguments.push(*vertex.get(varying).ok_or_else(|| {
@@ -347,15 +362,15 @@ impl GeometryShader {
         let [out] = runner.run([&arguments])?;
         let scratch = runner.into_scratch();
         let max = self.facts.max_vertices as usize;
-        let count_at = self.outputs * max;
-        let want = count_at + 1 + max;
+        let count_at = self.outputs.saturating_mul(max);
+        let want = count_at.saturating_add(1).saturating_add(max);
         if out.values.len() != want {
             return Err(format!(
                 "the program returned {} values, its signature has {want}",
                 out.values.len()
             ));
         }
-        let count = out.values[count_at][0] as usize;
+        let count = out.values.get(count_at).map_or(0, |r| r[0]) as usize;
         if count > max {
             return Err(format!(
                 "the invocation emitted {count} vertices, past the {max} it declares"
@@ -363,14 +378,25 @@ impl GeometryShader {
         }
         let mut strips: Vec<Strip> = Vec::new();
         for k in 0..count {
-            if k == 0 || out.values[count_at + 1 + k][0] != 0 {
+            let cut = out
+                .values
+                .get(count_at.saturating_add(1).saturating_add(k))
+                .ok_or_else(|| format!("the program returned no strip flag for vertex {k}"))?;
+            if k == 0 || cut[0] != 0 {
                 strips.push(Strip {
                     primitive,
                     instance,
                     vertices: Vec::new(),
                 });
             }
-            let vertex = (0..self.outputs).map(|o| out.values[o * max + k]).collect();
+            let vertex = (0..self.outputs)
+                .map(|o| {
+                    out.values
+                        .get(o.saturating_mul(max).saturating_add(k))
+                        .copied()
+                        .ok_or_else(|| format!("the program returned no output {o} for vertex {k}"))
+                })
+                .collect::<Result<_, _>>()?;
             if let Some(strip) = strips.last_mut() {
                 strip.vertices.push(vertex);
             }

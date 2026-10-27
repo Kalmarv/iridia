@@ -78,10 +78,10 @@ pub fn evaluate_periodic_with(
         .ok_or_else(|| {
             error(format!(
                 "{} cells of {texels} texels need a grid of more than 4096",
-                u64::from(cells) + 1
+                u64::from(cells).saturating_add(1)
             ))
         })?;
-    let period = (size / texels) as f32;
+    let period = size.checked_div(texels).unwrap_or(0) as f32;
     let grid = evaluate_with(
         threads,
         shader,
@@ -95,7 +95,11 @@ pub fn evaluate_periodic_with(
         targets,
     )?;
     // the bake's side, which is also the shift of one period
-    let (size, out, texels) = (size as usize, (cells * texels) as usize, texels as usize);
+    let (size, out, texels) = (
+        size as usize,
+        cells.saturating_mul(texels) as usize,
+        texels as usize,
+    );
     // per output index along an axis: (weight of E there, weight of E one period on)
     let weights: Vec<(f32, f32)> = (0..out)
         .map(|x| {
@@ -107,35 +111,37 @@ pub fn evaluate_periodic_with(
             }
         })
         .collect();
-    let targets = grid
-        .targets
-        .into_iter()
-        .map(|t| {
-            t.map(|e| {
-                let at = |x: usize, y: usize| e[y * size + x];
-                let mut values = Vec::with_capacity(out * out);
-                for (y, &(wy0, wy1)) in weights.iter().enumerate() {
-                    for (x, &(wx0, wx1)) in weights.iter().enumerate() {
-                        let mut v = at(x, y).map(|c| c * wx0 * wy0);
-                        for (w, (px, py)) in [
-                            (wx1 * wy0, (x + out, y)),
-                            (wx0 * wy1, (x, y + out)),
-                            (wx1 * wy1, (x + out, y + out)),
-                        ] {
-                            if w != 0. {
-                                let o = at(px, py);
-                                for c in 0..4 {
-                                    v[c] += o[c] * w;
-                                }
-                            }
+    let mut targets = Vec::with_capacity(grid.targets.len());
+    for t in grid.targets {
+        let Some(e) = t else {
+            targets.push(None);
+            continue;
+        };
+        let at = |x: usize, y: usize| -> Result<[f32; 4], Error> {
+            e.get(y.saturating_mul(size).saturating_add(x))
+                .copied()
+                .ok_or_else(|| error(format!("texel ({x}, {y}) of a grid of {size} by {size}")))
+        };
+        let mut values = Vec::with_capacity(out.saturating_mul(out));
+        for (y, &(wy0, wy1)) in weights.iter().enumerate() {
+            for (x, &(wx0, wx1)) in weights.iter().enumerate() {
+                let mut v = at(x, y)?.map(|c| c * wx0 * wy0);
+                for (w, (px, py)) in [
+                    (wx1 * wy0, (x.saturating_add(out), y)),
+                    (wx0 * wy1, (x, y.saturating_add(out))),
+                    (wx1 * wy1, (x.saturating_add(out), y.saturating_add(out))),
+                ] {
+                    if w != 0. {
+                        for (sum, o) in v.iter_mut().zip(at(px, py)?) {
+                            *sum += o * w;
                         }
-                        values.push(v);
                     }
                 }
-                values
-            })
-        })
-        .collect();
+                values.push(v);
+            }
+        }
+        targets.push(Some(values));
+    }
     Ok(Evaluation {
         targets,
         instructions: grid.instructions,

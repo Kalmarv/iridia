@@ -98,24 +98,21 @@ impl SamplerUse {
     /// axis was assumed is [`SamplerUse::assumed`].
     pub fn of(state: &SamplerState, unstated: Unstated) -> Result<SamplerUse, String> {
         let axis = |k: usize| -> Result<Address, String> {
-            Ok(match state.wrap[k] {
+            let name = ["u", "v"].get(k).copied().unwrap_or("w");
+            Ok(match state.wrap.get(k).copied().flatten() {
                 Some(AddressMode::Repeat) => Address::Wrap,
                 Some(AddressMode::Mirror) => Address::Mirror,
                 Some(AddressMode::Clamp) => Address::Clamp,
                 Some(AddressMode::MirrorOnce) => Address::MirrorOnce,
                 Some(AddressMode::Border) => {
                     return Err(format!(
-                        "border addressing along {}: the source stores no border colour",
-                        ["u", "v"][k]
+                        "border addressing along {name}: the source stores no border colour"
                     ));
                 }
                 None => match unstated {
                     Unstated::Assume(a) => a,
                     Unstated::Refuse => {
-                        return Err(format!(
-                            "the sampler states no addressing along {}",
-                            ["u", "v"][k]
-                        ));
+                        return Err(format!("the sampler states no addressing along {name}"));
                     }
                 },
             })
@@ -226,8 +223,12 @@ impl SampledTexture {
 
     /// The bytes it holds: the stored levels and the texels decoded for filtering.
     pub fn decoded_bytes(&self) -> usize {
-        self.levels.levels.iter().map(Vec::len).sum::<usize>()
-            + self.base.as_ref().map_or(0, Decoded::decoded_bytes)
+        self.levels
+            .levels
+            .iter()
+            .map(Vec::len)
+            .fold(0usize, usize::saturating_add)
+            .saturating_add(self.base.as_ref().map_or(0, Decoded::decoded_bytes))
     }
 
     /// What of its sampler this sampling does not apply, for the caller to report: a stated bias under
@@ -259,7 +260,7 @@ impl Image for SampledTexture {
                 return base.bilinear_at(uv, address, subtexel).map_err(|e| e.to_string());
             }
             (Filtering::BaseBilinear { .. }, None) => {
-                unreachable!("a base-level texture decodes its base when made")
+                return Err("a base-level texture whose base was not decoded when it was made".into());
             }
             (Filtering::Point, _) => levels
                 .nearest_level(level()?)
@@ -270,7 +271,7 @@ impl Image for SampledTexture {
             (Filtering::Trilinear, _) => levels.trilinear(at, level()?, address, transfer),
         }
         .map_err(|e| e.to_string())?;
-        Ok(v.map(|c| c as f32))
+        Ok(v.map(crate::narrow))
     }
 }
 

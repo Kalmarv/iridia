@@ -125,8 +125,10 @@ impl TessellationShader {
 
         // the domain program's arguments: its patch constants, then its input varyings as arrays of control points
         let constants_read = domain_facts.patch_constants.len();
-        let constant_map = domain_sig.arguments[..constants_read]
+        let constant_map = domain_sig
+            .arguments
             .iter()
+            .take(constants_read)
             .map(|a| {
                 find(&constant_sig, &a.name).ok_or_else(|| {
                     format!(
@@ -136,8 +138,11 @@ impl TessellationShader {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let control_map = domain_sig.arguments[constants_read..constants_read + domain.interface.inputs.len()]
+        let control_map = domain_sig
+            .arguments
             .iter()
+            .skip(constants_read)
+            .take(domain.interface.inputs.len())
             .map(|a| {
                 find(&control_sig, &a.name).ok_or_else(|| {
                     format!("the domain program reads the control-point varying {} the hull program does not write", a.name)
@@ -186,13 +191,13 @@ impl TessellationShader {
     /// [`TessellationShader::tessellate`], in order.
     pub fn inputs(&self) -> impl Iterator<Item = &str> {
         let n = self.hull.interface.inputs.len();
-        self.control_sig.arguments[..n].iter().map(|a| a.name.as_str())
+        self.control_sig.arguments.iter().take(n).map(|a| a.name.as_str())
     }
 
     /// The names of the hull program's output varyings: the registers of [`Patch::control_points`].
     pub fn control_outputs(&self) -> impl Iterator<Item = &str> {
         let n = self.hull.interface.outputs.len();
-        self.control_sig.result[..n].iter().map(|a| a.name.as_str())
+        self.control_sig.result.iter().take(n).map(|a| a.name.as_str())
     }
 
     /// The names of the domain program's output varyings: the registers of [`Patch::vertices`].
@@ -219,7 +224,7 @@ impl TessellationShader {
             ));
         }
         let inputs = self.hull.interface.inputs.len();
-        let mut inputs_as_arrays = Vec::with_capacity(inputs * input_count);
+        let mut inputs_as_arrays = Vec::with_capacity(inputs.saturating_mul(input_count));
         for varying in 0..inputs {
             for (k, point) in control_points.iter().enumerate() {
                 inputs_as_arrays.push(*point.get(varying).ok_or_else(|| {
@@ -242,15 +247,21 @@ impl TessellationShader {
         let mut scratch = Scratch::new(&self.control);
         for id in 0..output_count {
             let mut arguments = inputs_as_arrays.clone();
-            arguments.push([id as u32, 0, 0, 0]);
+            arguments.push([u32::try_from(id).unwrap_or(u32::MAX), 0, 0, 0]);
             let (values, kept) = call(&self.control, &hull_bound, &mut hull_backend, scratch, &arguments)?;
             scratch = kept;
-            control_outputs.push(values[..outputs].to_vec());
+            let members = values.get(..outputs).ok_or_else(|| {
+                format!(
+                    "the hull program returned {} registers for a control point, its signature has {outputs}",
+                    values.len()
+                )
+            })?;
+            control_outputs.push(members.to_vec());
         }
         let mut arguments = inputs_as_arrays;
         for varying in 0..outputs {
             for point in &control_outputs {
-                arguments.push(point[varying]);
+                arguments.push(output_of(point, varying)?);
             }
         }
         arguments.push([primitive, 0, 0, 0]);
@@ -261,16 +272,16 @@ impl TessellationShader {
             Scratch::new(&self.constant),
             &arguments,
         )?;
-        let float = |k: usize| f32::from_bits(constants[k][0]);
+        let float = |k: usize| -> Result<f32, String> { Ok(f32::from_bits(output_of(&constants, k)?[0])) };
         let mut factors = Factors {
             edges: [0.0; 4],
             inside: [0.0; 2],
         };
-        for (slot, &k) in self.edge_factors.iter().enumerate() {
-            factors.edges[slot] = float(k);
+        for (slot, &k) in factors.edges.iter_mut().zip(&self.edge_factors) {
+            *slot = float(k)?;
         }
-        for (slot, &k) in self.inside_factors.iter().enumerate() {
-            factors.inside[slot] = float(k);
+        for (slot, &k) in factors.inside.iter_mut().zip(&self.inside_factors) {
+            *slot = float(k)?;
         }
 
         // the tessellator
@@ -292,10 +303,14 @@ impl TessellationShader {
         // the domain program for each point
         let domain_bound = self.domain_bindings.bind(&self.domain_exe, domain_constants)?;
         let mut domain_backend = self.domain_bindings.backend(sampler);
-        let mut fixed: Vec<[u32; 4]> = self.constant_map.iter().map(|&k| constants[k]).collect();
+        let mut fixed: Vec<[u32; 4]> = self
+            .constant_map
+            .iter()
+            .map(|&k| output_of(&constants, k))
+            .collect::<Result<_, _>>()?;
         for varying in &self.control_map {
             for point in &control_outputs {
-                fixed.push(point[*varying]);
+                fixed.push(output_of(point, *varying)?);
             }
         }
         let triangle = self.domain_facts.domain == TessDomain::Triangle;
@@ -325,6 +340,16 @@ impl TessellationShader {
             indices,
         })
     }
+}
+
+/// Register `k` of a program's result.
+fn output_of(values: &[[u32; 4]], k: usize) -> Result<[u32; 4], String> {
+    values.get(k).copied().ok_or_else(|| {
+        format!(
+            "the program returned {} registers, past register {k}",
+            values.len()
+        )
+    })
 }
 
 /// Run `executable` once on `arguments`, returning its result's registers and the registers kept for the next run.

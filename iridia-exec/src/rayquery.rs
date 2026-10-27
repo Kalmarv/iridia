@@ -68,9 +68,10 @@ impl Geometry {
         self.indices.as_ref().map_or(self.positions.len(), Vec::len) / 3
     }
     fn triangle(&self, k: usize) -> Option<[[f32; 3]; 3]> {
+        let at = |j: usize| k.saturating_mul(3).saturating_add(j);
         let vertex = |j: usize| match &self.indices {
-            Some(i) => self.positions.get(*i.get(3 * k + j)? as usize).copied(),
-            None => self.positions.get(3 * k + j).copied(),
+            Some(i) => self.positions.get(*i.get(at(j))? as usize).copied(),
+            None => self.positions.get(at(j)).copied(),
         };
         Some([vertex(0)?, vertex(1)?, vertex(2)?])
     }
@@ -124,6 +125,7 @@ impl Aabb {
         min: [f32::INFINITY; 3],
         max: [f32::NEG_INFINITY; 3],
     };
+    #[allow(clippy::indexing_slicing)] // k ranges over the three axes of a [f32; 3]
     fn grow(&mut self, p: Vec3) {
         for (k, &x) in p.iter().enumerate() {
             self.min[k] = self.min[k].min(x);
@@ -135,6 +137,7 @@ impl Aabb {
         self.grow(other.max);
     }
     /// A little larger, so that rounding never lets a ray past a primitive the box holds.
+    #[allow(clippy::indexing_slicing)] // k ranges over the three axes of a [f32; 3]
     fn padded(self) -> Aabb {
         let mut b = self;
         for k in 0..3 {
@@ -168,7 +171,7 @@ impl Bvh {
         if bounds.is_empty() {
             return bvh;
         }
-        bvh.order = (0..bounds.len() as u32).collect();
+        bvh.order = (0..u32::try_from(bounds.len()).unwrap_or(u32::MAX)).collect();
         bvh.nodes.push(Node {
             bounds: Aabb::EMPTY,
             first: 0,
@@ -178,6 +181,11 @@ impl Bvh {
         bvh
     }
 
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::indexing_slicing
+    )] // node, order and bounds numbers are made together by this build and a leaf holds at most 4 primitives; the f32 axis index is 0 to 2
     fn split(&mut self, node: usize, lo: usize, hi: usize, bounds: &[Aabb]) {
         let mut total = Aabb::EMPTY;
         let mut centroids = Aabb::EMPTY;
@@ -218,6 +226,7 @@ impl Bvh {
 }
 
 /// Whether the ray crosses the box within `[tmin, tmax]` (the slab test).
+#[allow(clippy::indexing_slicing)] // k ranges over the three axes of a [f32; 3]
 fn crosses(b: &Aabb, origin: Vec3, inv: Vec3, tmin: f32, tmax: f32) -> bool {
     let (mut lo, mut hi) = (tmin, tmax);
     for k in 0..3 {
@@ -252,14 +261,17 @@ pub struct Built {
     top: Bvh,
 }
 
+#[allow(clippy::indexing_slicing)] // r ranges over the three rows of a [[f32; 4]; 3]
 pub(super) fn transform_point(m: &[[f32; 4]; 3], p: Vec3) -> Vec3 {
     std::array::from_fn(|r| m[r][0] * p[0] + m[r][1] * p[1] + m[r][2] * p[2] + m[r][3])
 }
+#[allow(clippy::indexing_slicing)] // r ranges over the three rows of a [[f32; 4]; 3]
 pub(super) fn transform_vector(m: &[[f32; 4]; 3], v: Vec3) -> Vec3 {
     std::array::from_fn(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
 }
 
 /// The inverse of an affine transform of three rows of four (None when it is singular).
+#[allow(clippy::cast_possible_truncation, clippy::indexing_slicing)] // r and c range over the three rows and columns of a [[f32; 4]; 3]; the f64 results round to the f32 of the matrix
 fn invert(m: &[[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     let a = |r: usize, c: usize| f64::from(m[r][c]);
     let det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1))
@@ -298,16 +310,19 @@ fn invert(m: &[[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
 
 impl Built {
     /// Instance `i`: what its hit-group index, id and transform come from.
+    #[allow(clippy::indexing_slicing)] // every index is a node, instance, bottom level, geometry or primitive number that Built::new made from the scene it indexes
     pub(super) fn instance(&self, i: u32) -> &Instance {
         &self.instances[i as usize].instance
     }
     /// Instance `i`'s world-to-object transform, three rows of four.
+    #[allow(clippy::indexing_slicing)] // every index is a node, instance, bottom level, geometry or primitive number that Built::new made from the scene it indexes
     pub(super) fn inverse(&self, i: u32) -> &[[f32; 4]; 3] {
         &self.instances[i as usize].inverse
     }
 
     /// Build the hierarchies of a scene. An instance of a bottom level that does not exist, or with a singular
     /// transform, is an error.
+    #[allow(clippy::indexing_slicing)] // k ranges over the three axes of a [f32; 3]
     pub fn new(scene: &Scene) -> Result<Built, String> {
         let mut bottoms = Vec::new();
         for geometries in &scene.bottoms {
@@ -317,14 +332,21 @@ impl Built {
                 for k in 0..geometry.primitives() {
                     let mut b = Aabb::EMPTY;
                     if geometry.procedural() {
-                        geometry.boxes[k].iter().for_each(|&p| b.grow(p));
+                        let corners = geometry
+                            .boxes
+                            .get(k)
+                            .ok_or_else(|| format!("geometry {g}: box {k} is past its boxes"))?;
+                        corners.iter().for_each(|&p| b.grow(p));
                     } else {
                         let tri = geometry.triangle(k).ok_or_else(|| {
                             format!("geometry {g}: triangle {k} names a vertex that does not exist")
                         })?;
                         tri.iter().for_each(|&p| b.grow(p));
                     }
-                    primitives.push((g as u32, k as u32));
+                    primitives.push((
+                        u32::try_from(g).map_err(|_| "more than 4294967295 geometries")?,
+                        u32::try_from(k).map_err(|_| "more than 4294967295 primitives")?,
+                    ));
                     bounds.push(b);
                 }
             }
@@ -527,6 +549,7 @@ impl Query {
     }
 
     /// Go on to the next candidate: true when there is one for the program to commit or let go.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // every index is a node, instance, bottom level, geometry or primitive number that Built::new made from the scene it indexes
     pub(super) fn proceed(&mut self, scene: &Built) -> bool {
         self.candidate = None;
         if self.done {
@@ -685,6 +708,11 @@ impl Query {
 
 /// The watertight ray-triangle test: the distance along the ray, the barycentric weights of the second and third
 /// vertices, and whether the triangle's winding is clockwise as the ray origin sees it. None for a miss.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing
+)] // kx, ky and kz are a permutation of the three axes of a [f32; 3]; the f64 results round to the f32 the test returns
 fn intersect(tri: &[Vec3; 3], origin: Vec3, direction: Vec3) -> Option<(f32, f32, f32, bool)> {
     // the axis the ray runs most along, and the other two in an order that keeps the winding
     let abs = direction.map(f32::abs);
@@ -778,6 +806,7 @@ impl Reported {
         }
     }
 
+    #[allow(clippy::indexing_slicing)] // the matrix columns and rows are the 4 and 3 of a [[f32; 4]; 3]
     pub(super) fn of(hit: &Hit, scene: &Built) -> Reported {
         let built = &scene.instances[hit.instance as usize];
         let columns =

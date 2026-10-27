@@ -117,8 +117,10 @@ impl MeshShader {
             vertex,
             index,
             vertices_at: 2,
-            primitives_at: 2 + max_vertices * vertex,
-            total: 2 + max_vertices * vertex + max_primitives * index,
+            primitives_at: 2usize.saturating_add(max_vertices.saturating_mul(vertex)),
+            total: 2usize
+                .saturating_add(max_vertices.saturating_mul(vertex))
+                .saturating_add(max_primitives.saturating_mul(index)),
         }
     }
 
@@ -154,7 +156,10 @@ impl MeshShader {
                 layout.total
             ));
         }
-        let (vertex_count, primitive_count) = (words[0] as usize, words[1] as usize);
+        let (Some(&vertex_count), Some(&primitive_count)) = (words.first(), words.get(1)) else {
+            return Err("an output variable without its counts".into());
+        };
+        let (vertex_count, primitive_count) = (vertex_count as usize, primitive_count as usize);
         if vertex_count > self.facts.max_vertices as usize {
             return Err(format!(
                 "the group set {vertex_count} vertices, past the {} it declares",
@@ -167,24 +172,41 @@ impl MeshShader {
                 self.facts.max_primitives
             ));
         }
-        let vertices = (0..vertex_count)
-            .map(|k| {
-                let mut at = layout.vertices_at + k * layout.vertex;
-                self.outputs
-                    .iter()
-                    .map(|&(_, width)| {
-                        let mut register = [0u32; 4];
-                        register[..width].copy_from_slice(&words[at..at + width]);
-                        at += width;
-                        register
-                    })
-                    .collect()
-            })
-            .collect();
+        let mut vertices = Vec::with_capacity(vertex_count);
+        for k in 0..vertex_count {
+            let mut at = layout.vertices_at.saturating_add(k.saturating_mul(layout.vertex));
+            let mut registers = Vec::with_capacity(self.outputs.len());
+            for &(_, width) in &self.outputs {
+                let mut register = [0u32; 4];
+                let (Some(to), Some(from)) =
+                    (register.get_mut(..width), words.get(at..at.saturating_add(width)))
+                else {
+                    return Err(format!(
+                        "vertex {k}: {width} words at word {at} of {}",
+                        words.len()
+                    ));
+                };
+                to.copy_from_slice(from);
+                at = at.saturating_add(width);
+                registers.push(register);
+            }
+            vertices.push(registers);
+        }
         let mut primitives = Vec::with_capacity(primitive_count);
         for k in 0..primitive_count {
-            let at = layout.primitives_at + k * layout.index;
-            let indices = words[at..at + layout.index].to_vec();
+            let at = layout
+                .primitives_at
+                .saturating_add(k.saturating_mul(layout.index));
+            let Some(indices) = words
+                .get(at..at.saturating_add(layout.index))
+                .map(<[u32]>::to_vec)
+            else {
+                return Err(format!(
+                    "primitive {k}: {} words at word {at} of {}",
+                    layout.index,
+                    words.len()
+                ));
+            };
             if let Some(bad) = indices.iter().find(|&&i| i as usize >= vertex_count) {
                 return Err(format!(
                     "primitive {k} names vertex {bad}, past the {vertex_count} the group set"

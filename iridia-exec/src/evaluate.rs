@@ -158,9 +158,10 @@ impl Constants {
             ));
         }
         if let Some(b) = self.buffers.iter().position(|(slot, _)| *slot == f.buffer) {
+            let words = self.written.get(b).map_or(0, Vec::len);
             for (i, v) in values.iter().enumerate() {
-                let word = f.offset as usize + i;
-                if word < self.written[b].len() {
+                let word = (f.offset as usize).saturating_add(i);
+                if word < words {
                     self.store(b, word, v.to_bits());
                 }
             }
@@ -177,7 +178,7 @@ impl Constants {
             .ok_or_else(|| error(0, format!("the program reads no cb{buffer}")))?;
         let end = (word_offset as usize)
             .checked_add(words.len())
-            .filter(|&end| end <= self.written[b].len())
+            .filter(|&end| end <= self.written.get(b).map_or(0, Vec::len))
             .ok_or_else(|| error(word_offset as usize, format!("words past the end of cb{buffer}")))?;
         for (word, &bits) in (word_offset as usize..end).zip(words) {
             self.store(b, word, bits);
@@ -185,8 +186,17 @@ impl Constants {
         Ok(())
     }
     fn store(&mut self, b: usize, word: usize, bits: u32) {
-        self.buffers[b].1[word / 4][word % 4] = bits;
-        self.written[b][word] = true;
+        if let Some(slot) = self
+            .buffers
+            .get_mut(b)
+            .and_then(|(_, rows)| rows.get_mut(word / 4))
+            .and_then(|row| row.get_mut(word % 4))
+        {
+            *slot = bits;
+        }
+        if let Some(written) = self.written.get_mut(b).and_then(|words| words.get_mut(word)) {
+            *written = true;
+        }
     }
     /// Every buffer the program reads, by slot, as its rows of four words (zero where nothing was written).
     pub fn buffers(&self) -> &[(u32, Vec<[u32; 4]>)] {
@@ -359,7 +369,11 @@ pub fn evaluate_raw_with(
         let components = (0..4).filter(|c| d3d.mask & (1 << c) != 0);
         for (component, lane) in components.zip(key.lanes()) {
             match lane {
-                Lane::Bits(bits) => registers[register][component] = bits,
+                Lane::Bits(bits) => {
+                    if let Some(slot) = registers.get_mut(register).and_then(|r| r.get_mut(component)) {
+                        *slot = bits;
+                    }
+                }
                 _ => placed.push((register, component, lane)),
             }
         }
@@ -372,7 +386,13 @@ pub fn evaluate_raw_with(
         } else {
             (1, grid.period[1] / grid.size as f32)
         };
-        derivatives[register][axis][component] = step.to_bits();
+        if let Some(slot) = derivatives
+            .get_mut(register)
+            .and_then(|d| d.get_mut(axis))
+            .and_then(|d| d.get_mut(component))
+        {
+            *slot = step.to_bits();
+        }
     }
     let refs: Vec<(u32, &[[u32; 4]])> = constants
         .buffers
@@ -386,7 +406,9 @@ pub fn evaluate_raw_with(
         let v = (y as f32 + 0.5) / grid.size as f32 * grid.period[1];
         r.copy_from_slice(&registers);
         for &(register, lane, source) in &placed {
-            r[register][lane] = if source == Lane::U { u } else { v }.to_bits();
+            if let Some(slot) = r.get_mut(register).and_then(|r| r.get_mut(lane)) {
+                *slot = if source == Lane::U { u } else { v }.to_bits();
+            }
         }
     };
     let at = |x: u32, y: u32| -> Vec<[u32; 4]> {
@@ -398,8 +420,8 @@ pub fn evaluate_raw_with(
         let mut sampler = textures;
         let mut out = Kept::default();
         let mut keep = |pixel: usize, result: &crate::Execution| {
-            out.instructions += result.instructions as u64;
-            out.samples += result.samples as u64;
+            out.instructions = out.instructions.saturating_add(result.instructions as u64);
+            out.samples = out.samples.saturating_add(result.samples as u64);
             out.pixels.push(pixel);
             out.discarded.push(result.discarded);
             for &(register, mask) in targets {
@@ -412,26 +434,33 @@ pub fn evaluate_raw_with(
             Invocation::Scalar => {
                 // the row's pixels together, each as it evaluates alone, their registers side by side
                 let width = registers.len();
-                let mut row_registers = vec![[0u32; 4]; width * size];
+                let mut row_registers = vec![[0u32; 4]; width.saturating_mul(size)];
                 for (x, r) in (0..grid.size).zip(row_registers.chunks_exact_mut(width.max(1))) {
-                    place(x, y, &mut r[..width]);
+                    if let Some(r) = r.get_mut(..width) {
+                        place(x, y, r);
+                    }
                 }
                 let lanes: Vec<&[[u32; 4]]> = (0..size)
-                    .map(|x| &row_registers[x * width..(x + 1) * width])
+                    .map(|x| {
+                        row_registers
+                            .get(x.saturating_mul(width)..x.saturating_add(1).saturating_mul(width))
+                            .unwrap_or_default()
+                    })
                     .collect();
-                let first = (y * grid.size) as usize;
+                let first = y.saturating_mul(grid.size) as usize;
                 shader
                     .execute_lanes(&lanes, &derivatives, &refs, &mut sampler, &mut |x, result| {
-                        keep(first + x, result)
+                        keep(first.saturating_add(x), result)
                     })
                     .map_err(|(x, mut e)| {
-                        e.detail = format!("pixel {}: {}", first + x, e.detail);
+                        e.detail = format!("pixel {}: {}", first.saturating_add(x), e.detail);
                         e
                     })?;
             }
             Invocation::Quads => {
                 for x in (0..grid.size).step_by(2) {
-                    let lanes = [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)];
+                    let (x1, y1) = (x.saturating_add(1), y.saturating_add(1));
+                    let lanes = [(x, y), (x1, y), (x, y1), (x1, y1)];
                     let inputs = lanes.map(|(lx, ly)| at(lx, ly));
                     let results = shader
                         .execute_quad(
@@ -445,7 +474,7 @@ pub fn evaluate_raw_with(
                         })?;
                     for ((lx, ly), result) in lanes.into_iter().zip(&results) {
                         if lx < grid.size && ly < grid.size {
-                            keep((ly * grid.size + lx) as usize, result);
+                            keep(ly.saturating_mul(grid.size).saturating_add(lx) as usize, result);
                         }
                     }
                 }
@@ -457,20 +486,31 @@ pub fn evaluate_raw_with(
         Invocation::Scalar => (0..grid.size).collect(),
         Invocation::Quads => (0..grid.size).step_by(2).collect(),
     };
-    let done = primase_foundations::parallel::map(threads, &rows, |_, &y| row(y))
-        .map_err(|p| error(0, format!("row {}: {}", rows[p.item], p.message)))?;
-    let mut pixels: Vec<Vec<([u32; 4], u8)>> =
-        targets.iter().map(|_| vec![([0; 4], 0); size * size]).collect();
-    let mut discarded = vec![false; size * size];
+    let done = primase_foundations::parallel::map(threads, &rows, |_, &y| row(y)).map_err(|p| {
+        error(
+            0,
+            format!("row {}: {}", rows.get(p.item).copied().unwrap_or(0), p.message),
+        )
+    })?;
+    let mut pixels: Vec<Vec<([u32; 4], u8)>> = targets
+        .iter()
+        .map(|_| vec![([0; 4], 0); size.saturating_mul(size)])
+        .collect();
+    let mut discarded = vec![false; size.saturating_mul(size)];
     let (mut instructions, mut samples) = (0u64, 0u64);
     for r in done {
         let kept = r?;
-        instructions += kept.instructions;
-        samples += kept.samples;
+        instructions = instructions.saturating_add(kept.instructions);
+        samples = samples.saturating_add(kept.samples);
         for (k, &pixel) in kept.pixels.iter().enumerate() {
-            discarded[pixel] = kept.discarded[k];
+            if let (Some(slot), Some(&was)) = (discarded.get_mut(pixel), kept.discarded.get(k)) {
+                *slot = was;
+            }
             for (t, target) in pixels.iter_mut().enumerate() {
-                target[pixel] = kept.values[k * targets.len() + t];
+                let value = kept.values.get(k.saturating_mul(targets.len()).saturating_add(t));
+                if let (Some(slot), Some(&value)) = (target.get_mut(pixel), value) {
+                    *slot = value;
+                }
             }
         }
     }
@@ -520,7 +560,12 @@ pub fn evaluate_with(
     )?;
     let mut out = Vec::with_capacity(targets.len());
     for (t, &(register, mask)) in targets.iter().enumerate() {
-        let pixels = &raw.pixels[t];
+        let Some(pixels) = raw.pixels.get(t) else {
+            return Err(error(
+                0,
+                format!("target {t}, where the evaluation has {}", raw.pixels.len()),
+            ));
+        };
         let writes = pixels.first().is_some_and(|&(_, m)| m == mask);
         if let Some(pixel) = pixels.iter().position(|&(_, m)| (m == mask) != writes) {
             return Err(error(
@@ -534,7 +579,7 @@ pub fn evaluate_with(
                 .map(|&(bits, _)| {
                     std::array::from_fn(|c| {
                         if mask & (1 << c) != 0 {
-                            f32::from_bits(bits[c])
+                            f32::from_bits(bits.get(c).copied().unwrap_or(0))
                         } else {
                             0.
                         }

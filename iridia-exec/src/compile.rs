@@ -29,6 +29,88 @@ enum Kind {
 
 // ---------------------------------------------------------------- compile
 
+/// A lane number as a `u8`: a lane is one of at most four.
+fn lane_u8(lane: usize) -> u8 {
+    u8::try_from(lane).unwrap_or(u8::MAX)
+}
+
+/// The most words of local memory a function may need: far more than D3D's 64 KiB of scratch and thread group memory, and
+/// what bounds the registers a run allocates (`Scratch`).
+const MAX_LOCAL_WORDS: u32 = 1 << 20;
+
+/// `a + b` words of layout, an error naming the layout when it does not fit.
+fn add(what: &str, a: u32, b: u32) -> Result<u32, String> {
+    a.checked_add(b)
+        .ok_or_else(|| format!("{what}: {a} + {b} words overflow 32 bits"))
+}
+
+/// `a * b` words of layout, an error naming the layout when it does not fit.
+fn mul(what: &str, a: u32, b: u32) -> Result<u32, String> {
+    a.checked_mul(b)
+        .ok_or_else(|| format!("{what}: {a} * {b} words overflow 32 bits"))
+}
+
+/// `local_words` grown by `by`, within [`MAX_LOCAL_WORDS`].
+fn grow(local_words: u32, by: u32) -> Result<u32, String> {
+    add("local memory", local_words, by)
+        .ok()
+        .filter(|total| *total <= MAX_LOCAL_WORDS)
+        .ok_or_else(|| {
+            format!(
+                "local memory of {local_words} + {by} words, where a function has at most {MAX_LOCAL_WORDS}"
+            )
+        })
+}
+
+/// The number of global `g` among the globals the flat form keeps.
+fn gid(map: &BTreeMap<usize, u32>, g: Handle<naga::GlobalVariable>) -> Result<u32, String> {
+    map.get(&g.index())
+        .copied()
+        .ok_or_else(|| format!("global {} is not memory", g.index()))
+}
+
+/// A count of expressions, registers or globals as the `u32` the flat form numbers them by.
+fn number(n: usize) -> Result<u32, String> {
+    u32::try_from(n).map_err(|_| format!("{n} entries, where the flat form numbers them in 32 bits"))
+}
+
+/// A position in one of the tables the compile pass fills (an entry per expression, register, argument or global). The
+/// positions come from a validated module's own handles, so a miss is a bug of the pass; it is reported as an error naming
+/// the position, never a panic.
+trait At<T> {
+    fn at(&self, i: usize) -> Result<&T, String>;
+    fn at_mut(&mut self, i: usize) -> Result<&mut T, String>;
+}
+impl<T> At<T> for [T] {
+    fn at(&self, i: usize) -> Result<&T, String> {
+        self.get(i)
+            .ok_or_else(|| format!("compile: position {i} of a table of {}", self.len()))
+    }
+    fn at_mut(&mut self, i: usize) -> Result<&mut T, String> {
+        let len = self.len();
+        self.get_mut(i)
+            .ok_or_else(|| format!("compile: position {i} of a table of {len}"))
+    }
+}
+
+/// The counts of reads of each register, which dead-operation removal works from.
+trait Uses {
+    fn bump(&mut self, i: usize) -> Result<(), String>;
+    fn drop_one(&mut self, i: usize) -> Result<(), String>;
+}
+impl Uses for [u32] {
+    fn bump(&mut self, i: usize) -> Result<(), String> {
+        let count = self.at_mut(i)?;
+        *count = count.saturating_add(1);
+        Ok(())
+    }
+    fn drop_one(&mut self, i: usize) -> Result<(), String> {
+        let count = self.at_mut(i)?;
+        *count = count.saturating_sub(1);
+        Ok(())
+    }
+}
+
 fn words(m: &Module, ty: Handle<naga::Type>) -> Result<u32, String> {
     Ok(match &m.types[ty].inner {
         TypeInner::Scalar(_) | TypeInner::Atomic(_) => 1,
@@ -37,10 +119,14 @@ fn words(m: &Module, ty: Handle<naga::Type>) -> Result<u32, String> {
             base,
             size: naga::ArraySize::Constant(n),
             ..
-        } => n.get() * words(m, *base)?,
+        } => mul("an array", n.get(), words(m, *base)?)?,
         TypeInner::Array { base, .. } => words(m, *base)?,
         TypeInner::Struct { members, .. } => {
-            members.iter().map(|x| words(m, x.ty)).sum::<Result<u32, _>>()?
+            let mut total = 0u32;
+            for x in members {
+                total = add("a structure", total, words(m, x.ty)?)?;
+            }
+            total
         }
         t => return Err(format!("memory layout of {t:?}")),
     })
@@ -119,10 +205,10 @@ pub(super) fn compile(
     for (h, l) in f.local_variables.iter() {
         local_off.push(local_words);
         if matches!(m.types[l.ty].inner, TypeInner::RayQuery { .. }) {
-            rq_local.insert(h.index(), rq_local.len() as u32);
+            rq_local.insert(h.index(), number(rq_local.len())?);
             continue;
         }
-        local_words += words(m, l.ty)?;
+        local_words = grow(local_words, words(m, l.ty)?)?;
     }
     // arguments that are arrays (a stage function's control points) live in local memory, one element after another;
     // the caller passes each element as a register of its own
@@ -149,9 +235,9 @@ pub(super) fn compile(
                     return Err("an array argument of anything but scalars and vectors".into());
                 }
                 ptr_arg.push(None);
-                array_arg.push(Some((local_words, n.get(), width as u8)));
-                local_words += n.get() * width;
-                arg_len += n.get() as usize;
+                array_arg.push(Some((local_words, n.get(), lane_u8(width as usize))));
+                local_words = grow(local_words, mul("an array argument", n.get(), width)?)?;
+                arg_len = arg_len.saturating_add(n.get() as usize);
             }
             TypeInner::Pointer {
                 base,
@@ -160,13 +246,13 @@ pub(super) fn compile(
                 let w = words(m, *base)?;
                 ptr_arg.push(Some((local_words, w)));
                 array_arg.push(None);
-                local_words += w;
-                arg_len += w.div_ceil(4) as usize;
+                local_words = grow(local_words, w)?;
+                arg_len = arg_len.saturating_add(w.div_ceil(4) as usize);
             }
             _ => {
                 ptr_arg.push(None);
                 array_arg.push(None);
-                arg_len += 1;
+                arg_len = arg_len.saturating_add(1);
             }
         }
     }
@@ -207,12 +293,12 @@ pub(super) fn compile(
                 },
                 _ => 1,
             };
-            gid_of.insert(h.index(), globals.len() as u32);
+            gid_of.insert(h.index(), number(globals.len())?);
             globals.push(GlobalDesc { kind, elem_words });
         }
     }
 
-    let mut slot: Vec<u32> = (0..n_expr as u32).collect();
+    let mut slot: Vec<u32> = (0..number(n_expr)?).collect();
     let mut n_slots = n_expr;
     let mut op_of: Vec<Option<Op>> = vec![None; n_expr];
     let mut ptr_of: Vec<Option<Ptr>> = vec![None; n_expr];
@@ -241,10 +327,12 @@ pub(super) fn compile(
             l => return Err(format!("literal {l:?}")),
         })
     };
-    let add_loc = |loc: Loc, d: u32| match loc {
-        Loc::Local(o) => Loc::Local(o + d),
-        Loc::Global(g, o) => Loc::Global(g, o + d),
-        Loc::Elem(g, o, p) => Loc::Elem(g, o + d, p),
+    let add_loc = |loc: Loc, d: u32| -> Result<Loc, String> {
+        Ok(match loc {
+            Loc::Local(o) => Loc::Local(add("a pointer", o, d)?),
+            Loc::Global(g, o) => Loc::Global(g, add("a pointer", o, d)?),
+            Loc::Elem(g, o, p) => Loc::Elem(g, add("a pointer", o, d)?, p),
+        })
     };
     // provenance: each value lane's source (argument index, lane)
     type Prov = [Option<(u32, u8)>; 4];
@@ -256,9 +344,13 @@ pub(super) fn compile(
         for (h, e) in f.expressions.iter() {
             let i = h.index();
             // a register past the expressions' own (an aggregate's member) carries no provenance
-            let get =
-                |x: Handle<E>| -> Option<Prov> { prov.get(slot[x.index()] as usize).copied().flatten() };
-            prov[i] = match e {
+            let get = |x: Handle<E>| -> Option<Prov> {
+                slot.get(x.index())
+                    .and_then(|&s| prov.get(s as usize))
+                    .copied()
+                    .flatten()
+            };
+            let derived = match e {
                 E::FunctionArgument(a) => {
                     let n = match shape(h) {
                         Ok(Shape::V(_, n)) => n,
@@ -266,7 +358,7 @@ pub(super) fn compile(
                     };
                     let mut p: Prov = [None; 4];
                     for (l, slot) in p.iter_mut().enumerate().take(n as usize) {
-                        *slot = Some((*a, l as u8));
+                        *slot = Some((*a, lane_u8(l)));
                     }
                     Some(p)
                 }
@@ -279,24 +371,27 @@ pub(super) fn compile(
                     pattern,
                 } => get(*vector).map(|s| {
                     let mut p: Prov = [None; 4];
-                    for l in 0..*size as usize {
-                        p[l] = s[pattern[l] as usize];
+                    for (dst, &lane) in p.iter_mut().zip(pattern.iter()).take(*size as usize) {
+                        *dst = s.get(lane as usize).copied().flatten();
                     }
                     p
                 }),
                 E::AccessIndex { base, index } => get(*base)
                     .and_then(|s| s.get(*index as usize).copied().flatten())
                     .map(|x| [Some(x), None, None, None]),
-                E::Load { .. } => static_load[i].and_then(|(loc, n)| {
+                E::Load { .. } => static_load.get(i).copied().flatten().and_then(|(loc, n)| {
                     let Loc::Local(o) = loc else { return None };
                     let mut p: Prov = [None; 4];
                     for (l, slot) in p.iter_mut().enumerate().take(n as usize) {
-                        *slot = local_src.get(&(o + l as u32)).copied();
+                        *slot = local_src.get(&o.saturating_add(u32::from(lane_u8(l)))).copied();
                     }
                     Some(p)
                 }),
                 _ => None,
             };
+            if let Some(entry) = prov.get_mut(i) {
+                *entry = derived;
+            }
         }
         prov
     };
@@ -319,11 +414,11 @@ pub(super) fn compile(
         };
         match e {
             E::Literal(l) => {
-                inits.push((i as u32, [lit(l)?; 4]));
+                inits.push((number(i)?, [lit(l)?; 4]));
             }
             E::ZeroValue(_) => {
                 if let Shape::V(..) = sh {
-                    inits.push((i as u32, [0; 4]));
+                    inits.push((number(i)?, [0; 4]));
                 } else {
                     return Err("aggregate zero value".into());
                 }
@@ -331,48 +426,55 @@ pub(super) fn compile(
             E::Compose { components, .. } => match sh {
                 Shape::V(_, n) => {
                     let mut parts = [(0u32, 0u8); 4];
-                    let mut np = 0;
-                    for c in components {
-                        parts[np] = (slot[c.index()], nlanes(*c));
-                        np += 1;
+                    if components.len() > parts.len() {
+                        return Err(format!("a vector composed of {} parts", components.len()));
+                    }
+                    for (part, c) in parts.iter_mut().zip(components) {
+                        *part = (*slot.at(c.index())?, nlanes(*c));
                     }
                     let _ = n;
-                    op_of[i] = Some(Op::Compose { parts, np: np as u8 });
+                    *op_of.at_mut(i)? = Some(Op::Compose {
+                        parts,
+                        np: lane_u8(components.len()),
+                    });
                 }
                 _ => {
                     // a member that is itself an aggregate (an array, a structure) contributes its members in
                     // order, so a returned structure is the flat list of its vectors and scalars
                     let mut members = Vec::new();
                     for c in components {
-                        match &agg_of[c.index()] {
+                        match agg_of.at(c.index())? {
                             Some(inner) => members.extend(inner.iter().copied()),
-                            None => members.push((slot[c.index()], nlanes(*c))),
+                            None => members.push((*slot.at(c.index())?, nlanes(*c))),
                         }
                     }
-                    agg_of[i] = Some(members);
-                    if components.iter().any(|c| mem_agg[c.index()].is_some()) {
+                    *agg_of.at_mut(i)? = Some(members);
+                    if components
+                        .iter()
+                        .any(|c| mem_agg.get(c.index()).is_some_and(Option::is_some))
+                    {
                         let mut list = Vec::new();
                         for c in components {
-                            match (&mem_agg[c.index()], &agg_of[c.index()]) {
+                            match (mem_agg.at(c.index())?, agg_of.at(c.index())?) {
                                 (&Some((word, count, width)), _) => list.push(Member::Mem {
                                     word,
                                     count,
                                     width,
-                                    keep: mem_keep[c.index()],
+                                    keep: *mem_keep.at(c.index())?,
                                 }),
                                 (None, Some(inner)) => {
                                     list.extend(inner.iter().map(|&(s, n)| Member::Reg(s, n)))
                                 }
-                                (None, None) => list.push(Member::Reg(slot[c.index()], nlanes(*c))),
+                                (None, None) => list.push(Member::Reg(*slot.at(c.index())?, nlanes(*c))),
                             }
                         }
-                        members_of[i] = Some(list);
+                        *members_of.at_mut(i)? = Some(list);
                     }
                 }
             },
             E::Splat { size, value } => {
-                op_of[i] = Some(Op::Splat {
-                    src: slot[value.index()],
+                *op_of.at_mut(i)? = Some(Op::Splat {
+                    src: *slot.at(value.index())?,
                     n: *size as u8,
                 })
             }
@@ -382,19 +484,19 @@ pub(super) fn compile(
                 pattern,
             } => {
                 let mut pat = [0u8; 4];
-                for l in 0..*size as usize {
-                    pat[l] = pattern[l] as u8;
+                for (to, &from) in pat.iter_mut().zip(pattern.iter()).take(*size as usize) {
+                    *to = from as u8;
                 }
-                if let Some((loc, _)) = static_load[vector.index()] {
-                    op_of[i] = Some(Op::LoadLanes {
+                if let Some((loc, _)) = *static_load.at(vector.index())? {
+                    *op_of.at_mut(i)? = Some(Op::LoadLanes {
                         loc,
                         offs: pat,
                         n: *size as u8,
                     });
-                    static_load[i] = None;
+                    *static_load.at_mut(i)? = None;
                 } else {
-                    op_of[i] = Some(Op::Swizzle {
-                        src: slot[vector.index()],
+                    *op_of.at_mut(i)? = Some(Op::Swizzle {
+                        src: *slot.at(vector.index())?,
                         pat,
                         n: *size as u8,
                     });
@@ -403,19 +505,19 @@ pub(super) fn compile(
             // an element of an array of buffers: where its words are
             E::Access { base, index } if is_buffer_array(f, &gid_of, &globals, *base) => {
                 let E::GlobalVariable(g) = f.expressions[*base] else {
-                    unreachable!("checked")
+                    return Err("an array of buffers that is not a global".into());
                 };
-                ptr_of[i] = Some(Ptr {
-                    loc: Loc::Elem(gid_of[&g.index()], 0, Pick::Slot(slot[index.index()])),
+                *ptr_of.at_mut(i)? = Some(Ptr {
+                    loc: Loc::Elem(gid(&gid_of, g)?, 0, Pick::Slot(*slot.at(index.index())?)),
                     dynamic: None,
                 });
             }
             E::AccessIndex { base, index } if is_buffer_array(f, &gid_of, &globals, *base) => {
                 let E::GlobalVariable(g) = f.expressions[*base] else {
-                    unreachable!("checked")
+                    return Err("an array of buffers that is not a global".into());
                 };
-                ptr_of[i] = Some(Ptr {
-                    loc: Loc::Elem(gid_of[&g.index()], 0, Pick::Fixed(*index)),
+                *ptr_of.at_mut(i)? = Some(Ptr {
+                    loc: Loc::Elem(gid(&gid_of, g)?, 0, Pick::Fixed(*index)),
                     dynamic: None,
                 });
             }
@@ -427,26 +529,32 @@ pub(super) fn compile(
                 if *index >= count {
                     return Err("an array argument indexed past its end".into());
                 }
-                let loc = Loc::Local(off + index * u32::from(width));
-                op_of[i] = Some(Op::Load { loc, n: width });
-                static_load[i] = Some((loc, width));
+                let loc = Loc::Local(add(
+                    "an array argument",
+                    off,
+                    mul("an array argument", *index, u32::from(width))?,
+                )?);
+                *op_of.at_mut(i)? = Some(Op::Load { loc, n: width });
+                *static_load.at_mut(i)? = Some((loc, width));
             }
             E::Access { base, index } if array_of(f, &array_arg, *base).is_some() => {
                 let (off, count, width) = array_of(f, &array_arg, *base).expect("checked");
-                op_of[i] = Some(Op::LoadDyn {
+                *op_of.at_mut(i)? = Some(Op::LoadDyn {
                     ptr: Ptr {
                         loc: Loc::Local(off),
-                        dynamic: Some((slot[index.index()], u32::from(width), count)),
+                        dynamic: Some((*slot.at(index.index())?, u32::from(width), count)),
                     },
                     n: width,
                 });
             }
             E::AccessIndex { base, index } => {
-                if let Some(p) = ptr_of[base.index()] {
+                if let Some(p) = *ptr_of.at(base.index())? {
                     // pointer arithmetic: the pointee decides the step
                     let step = match inner(*base) {
                         TypeInner::Pointer { base: t, .. } => match &m.types[*t].inner {
-                            TypeInner::Array { base, .. } => words(m, *base)? * *index,
+                            TypeInner::Array { base, .. } => {
+                                mul("a pointer into an array", words(m, *base)?, *index)?
+                            }
                             TypeInner::Vector { .. } => *index,
                             TypeInner::Struct { members, .. } => members
                                 .iter()
@@ -458,31 +566,31 @@ pub(super) fn compile(
                         TypeInner::ValuePointer { size: Some(_), .. } => *index,
                         t => return Err(format!("access through {t:?}")),
                     };
-                    ptr_of[i] = Some(Ptr {
-                        loc: add_loc(p.loc, step),
+                    *ptr_of.at_mut(i)? = Some(Ptr {
+                        loc: add_loc(p.loc, step)?,
                         dynamic: p.dynamic,
                     });
-                } else if let Some(a) = &agg_of[base.index()] {
+                } else if let Some(a) = agg_of.at(base.index())? {
                     let (s, _) = *a.get(*index as usize).ok_or("aggregate index")?;
-                    slot[i] = s;
+                    *slot.at_mut(i)? = s;
                     if let Some(columns) = nested_of.get(&s) {
-                        agg_of[i] = Some(columns.clone());
+                        *agg_of.at_mut(i)? = Some(columns.clone());
                     }
-                } else if let Some((loc, _)) = static_load[base.index()] {
-                    op_of[i] = Some(Op::LoadLanes {
+                } else if let Some((loc, _)) = *static_load.at(base.index())? {
+                    *op_of.at_mut(i)? = Some(Op::LoadLanes {
                         loc,
-                        offs: [*index as u8, 0, 0, 0],
+                        offs: [lane_u8(*index as usize), 0, 0, 0],
                         n: 1,
                     });
                 } else {
-                    op_of[i] = Some(Op::Lane {
-                        src: slot[base.index()],
-                        i: *index as u8,
+                    *op_of.at_mut(i)? = Some(Op::Lane {
+                        src: *slot.at(base.index())?,
+                        i: lane_u8(*index as usize),
                     });
                 }
             }
             E::Access { base, index } => {
-                let p = ptr_of[base.index()].ok_or("dynamic index of a value")?;
+                let p = ptr_of.at(base.index())?.ok_or("dynamic index of a value")?;
                 if p.dynamic.is_some() {
                     return Err("two dynamic indices".into());
                 }
@@ -500,20 +608,22 @@ pub(super) fn compile(
                     },
                     t => return Err(format!("dynamic access through {t:?}")),
                 };
-                ptr_of[i] = Some(Ptr {
+                *ptr_of.at_mut(i)? = Some(Ptr {
                     loc: p.loc,
-                    dynamic: Some((slot[index.index()], stride, len)),
+                    dynamic: Some((*slot.at(index.index())?, stride, len)),
                 });
             }
             // read by index, or returned whole
-            E::FunctionArgument(a) if ptr_arg[*a as usize].is_some() => {
-                let (off, _) = ptr_arg[*a as usize].expect("checked");
-                ptr_of[i] = Some(Ptr {
+            E::FunctionArgument(a) if ptr_arg.at(*a as usize)?.is_some() => {
+                let (off, _) = ptr_arg.at(*a as usize)?.expect("checked");
+                *ptr_of.at_mut(i)? = Some(Ptr {
                     loc: Loc::Local(off),
                     dynamic: None,
                 });
             }
-            E::FunctionArgument(a) if array_arg[*a as usize].is_some() => mem_agg[i] = array_arg[*a as usize],
+            E::FunctionArgument(a) if array_arg.at(*a as usize)?.is_some() => {
+                *mem_agg.at_mut(i)? = *array_arg.at(*a as usize)?
+            }
             // written by the call that makes it
             E::CallResult(_) => {}
             E::FunctionArgument(a) => {
@@ -524,34 +634,40 @@ pub(super) fn compile(
                     args.resize(*a as usize + 1, (0, 0));
                 }
                 // an argument may be named by several expressions: they share the first one's register
-                if args[*a as usize].1 == 0 {
-                    args[*a as usize] = (i as u32, n);
+                if args.at(*a as usize)?.1 == 0 {
+                    *args.at_mut(*a as usize)? = (number(i)?, n);
                 } else {
-                    slot[i] = args[*a as usize].0;
+                    *slot.at_mut(i)? = args.at(*a as usize)?.0;
                 }
             }
             E::GlobalVariable(g) => {
                 if let Some(gid) = gid_of.get(&g.index()) {
-                    ptr_of[i] = Some(Ptr {
+                    *ptr_of.at_mut(i)? = Some(Ptr {
                         loc: Loc::Global(*gid, 0),
                         dynamic: None,
                     });
                 }
             }
-            E::LocalVariable(l) if rq_local.contains_key(&l.index()) => rq_of[i] = Some(rq_local[&l.index()]),
+            E::LocalVariable(l) if rq_local.contains_key(&l.index()) => {
+                *rq_of.at_mut(i)? = rq_local.get(&l.index()).copied();
+            }
             E::RayQueryGetIntersection { query, committed } => {
-                let q = rq_of[query.index()].ok_or("an intersection of something that is not a ray query")?;
-                let first = n_slots as u32;
-                n_slots += 19;
-                let r = |k: u32| first + k;
+                let q = rq_of
+                    .at(query.index())?
+                    .ok_or("an intersection of something that is not a ray query")?;
+                let first = number(n_slots)?;
+                n_slots = n_slots.saturating_add(19);
+                let r = |k: u32| first.saturating_add(k);
                 let (o2w, w2o) = (
-                    (0..4).map(|c| (r(9 + c), 3)).collect::<Vec<_>>(),
-                    (0..4).map(|c| (r(13 + c), 3)).collect::<Vec<_>>(),
+                    (0..4u32).map(|c| (r(c.saturating_add(9)), 3)).collect::<Vec<_>>(),
+                    (0..4u32)
+                        .map(|c| (r(c.saturating_add(13)), 3))
+                        .collect::<Vec<_>>(),
                 );
                 // the matrices are stood for by registers of their own (17 and 18), not by their first columns'
                 nested_of.insert(r(17), o2w);
                 nested_of.insert(r(18), w2o);
-                agg_of[i] = Some(vec![
+                *agg_of.at_mut(i)? = Some(vec![
                     (r(0), 1),
                     (r(1), 1),
                     (r(2), 1),
@@ -564,7 +680,7 @@ pub(super) fn compile(
                     (r(17), 0),
                     (r(18), 0),
                 ]);
-                op_of[i] = Some(Op::RqHit {
+                *op_of.at_mut(i)? = Some(Op::RqHit {
                     q,
                     committed: *committed,
                     first,
@@ -576,14 +692,14 @@ pub(super) fn compile(
                 return Err("the vertex positions of a ray query's triangle are not carried".into());
             }
             E::LocalVariable(l) => {
-                ptr_of[i] = Some(Ptr {
-                    loc: Loc::Local(local_off[l.index()]),
+                *ptr_of.at_mut(i)? = Some(Ptr {
+                    loc: Loc::Local(*local_off.at(l.index())?),
                     dynamic: None,
                 })
             }
             // a whole array of a local, for a result that returns it
             E::Load { pointer } if matches!(sh, Shape::Other) => {
-                let p = ptr_of[pointer.index()].ok_or("load through a non-pointer")?;
+                let p = ptr_of.at(pointer.index())?.ok_or("load through a non-pointer")?;
                 let (Loc::Local(word), None) = (p.loc, p.dynamic) else {
                     return Err("load of an aggregate that is not a whole local".into());
                 };
@@ -609,25 +725,26 @@ pub(super) fn compile(
                 }
                 // the array as it is now: a store between this load and the return must not change the value
                 let snapshot = local_words;
-                local_words += n.get() * width;
-                op_of[i] = Some(Op::CopyWords {
+                let copied = mul("an array load", n.get(), width)?;
+                local_words = grow(local_words, copied)?;
+                *op_of.at_mut(i)? = Some(Op::CopyWords {
                     src: Loc::Local(word),
                     dst: snapshot,
-                    words: n.get() * width,
+                    words: copied,
                 });
-                mem_agg[i] = Some((snapshot, n.get(), width as u8));
-                mem_keep[i] = Some(slot[i]);
+                *mem_agg.at_mut(i)? = Some((snapshot, n.get(), lane_u8(width as usize)));
+                *mem_keep.at_mut(i)? = Some(*slot.at(i)?);
             }
             E::Load { pointer } => {
                 let Shape::V(_, n) = sh else {
                     return Err("load of an aggregate".into());
                 };
-                let p = ptr_of[pointer.index()].ok_or("load through a non-pointer")?;
+                let p = ptr_of.at(pointer.index())?.ok_or("load through a non-pointer")?;
                 if p.dynamic.is_some() {
-                    op_of[i] = Some(Op::LoadDyn { ptr: p, n });
+                    *op_of.at_mut(i)? = Some(Op::LoadDyn { ptr: p, n });
                 } else {
-                    op_of[i] = Some(Op::Load { loc: p.loc, n });
-                    static_load[i] = Some((p.loc, n));
+                    *op_of.at_mut(i)? = Some(Op::Load { loc: p.loc, n });
+                    *static_load.at_mut(i)? = Some((p.loc, n));
                 }
             }
             E::Unary { op, expr } => {
@@ -639,9 +756,9 @@ pub(super) fn compile(
                     (Uo::LogicalNot, _) => UnOp::Not,
                     (Uo::BitwiseNot, _) => UnOp::BitNot,
                 };
-                op_of[i] = Some(Op::Un {
+                *op_of.at_mut(i)? = Some(Op::Un {
                     op: uo,
-                    src: slot[expr.index()],
+                    src: *slot.at(expr.index())?,
                     n,
                 });
             }
@@ -687,10 +804,10 @@ pub(super) fn compile(
                     (Bo::LogicalOr, _) => LOr,
                     (o, k) => return Err(format!("binary {o:?} on {k:?}")),
                 };
-                op_of[i] = Some(Op::Bin {
+                *op_of.at_mut(i)? = Some(Op::Bin {
                     op: bo,
-                    a: slot[left.index()],
-                    b: slot[right.index()],
+                    a: *slot.at(left.index())?,
+                    b: *slot.at(right.index())?,
                     n,
                     a1,
                     b1,
@@ -702,10 +819,10 @@ pub(super) fn compile(
                 reject,
             } => {
                 let n = nlanes(*accept);
-                op_of[i] = Some(Op::Select {
-                    c: slot[condition.index()],
-                    a: slot[accept.index()],
-                    b: slot[reject.index()],
+                *op_of.at_mut(i)? = Some(Op::Select {
+                    c: *slot.at(condition.index())?,
+                    a: *slot.at(accept.index())?,
+                    b: *slot.at(reject.index())?,
                     n,
                     c1: nlanes(*condition) == 1,
                 });
@@ -715,7 +832,7 @@ pub(super) fn compile(
                 kind: tk,
                 convert,
             } => match convert {
-                None => slot[i] = slot[expr.index()],
+                None => *slot.at_mut(i)? = *slot.at(expr.index())?,
                 Some(_) => {
                     let n = nlanes(*expr);
                     let from = kind(*expr);
@@ -727,14 +844,14 @@ pub(super) fn compile(
                         (Kind::B, ScalarKind::Float) => CvtOp::B2F,
                         (Kind::B, ScalarKind::Uint | ScalarKind::Sint) => CvtOp::B2U,
                         (Kind::I, ScalarKind::Uint) | (Kind::U, ScalarKind::Sint) => {
-                            slot[i] = slot[expr.index()];
+                            *slot.at_mut(i)? = *slot.at(expr.index())?;
                             continue;
                         }
                         (a, b) => return Err(format!("conversion {a:?} to {b:?}")),
                     };
-                    op_of[i] = Some(Op::Cvt {
+                    *op_of.at_mut(i)? = Some(Op::Cvt {
                         op: co,
-                        src: slot[expr.index()],
+                        src: *slot.at(expr.index())?,
                         n,
                     });
                 }
@@ -746,8 +863,8 @@ pub(super) fn compile(
                     naga::DerivativeAxis::Y => 1,
                     _ => return Err("width derivative".into()),
                 };
-                op_of[i] = Some(Op::Deriv {
-                    src: slot[expr.index()],
+                *op_of.at_mut(i)? = Some(Op::Deriv {
+                    src: *slot.at(expr.index())?,
                     axis: ax,
                     fine: matches!(ctrl, naga::DerivativeControl::Fine),
                     n,
@@ -759,9 +876,9 @@ pub(super) fn compile(
             } => {
                 let k = kind(*arg);
                 let n = nlanes(*arg);
-                let a = slot[arg.index()];
-                let b = arg1.map_or(0, |x| slot[x.index()]);
-                let c = arg2.map_or(0, |x| slot[x.index()]);
+                let a = *slot.at(arg.index())?;
+                let b = arg1.map_or(Ok(0), |x| slot.at(x.index()).copied())?;
+                let c = arg2.map_or(Ok(0), |x| slot.at(x.index()).copied())?;
                 let f = match (fun, k) {
                     (Mf::Abs, Kind::F) => MathOp::AbsF,
                     (Mf::Abs, _) => MathOp::AbsI,
@@ -808,7 +925,7 @@ pub(super) fn compile(
                     (f, k) => return Err(format!("math function {f:?} on {k:?}")),
                 };
                 let c1 = arg2.is_some_and(|x| nlanes(x) == 1) && n > 1;
-                op_of[i] = Some(Op::Math { f, a, b, c, n, c1 });
+                *op_of.at_mut(i)? = Some(Op::Math { f, a, b, c, n, c1 });
             }
             E::Relational { fun, argument } => {
                 let f = match fun {
@@ -817,9 +934,9 @@ pub(super) fn compile(
                     naga::RelationalFunction::IsNan => MathOp::IsNan,
                     naga::RelationalFunction::IsInf => MathOp::IsInf,
                 };
-                op_of[i] = Some(Op::Math {
+                *op_of.at_mut(i)? = Some(Op::Math {
                     f,
-                    a: slot[argument.index()],
+                    a: *slot.at(argument.index())?,
                     b: 0,
                     c: 0,
                     n: nlanes(*argument),
@@ -827,15 +944,15 @@ pub(super) fn compile(
                 });
             }
             E::ArrayLength(p) => {
-                let pp = ptr_of[p.index()].ok_or("arrayLength of a non-pointer")?;
+                let pp = ptr_of.at(p.index())?.ok_or("arrayLength of a non-pointer")?;
                 let (g, pick) = match pp.loc {
                     Loc::Global(g, _) => (g, None),
                     Loc::Elem(g, _, pick) => (g, Some(pick)),
                     Loc::Local(_) => return Err("arrayLength of a local".into()),
                 };
-                op_of[i] = Some(Op::ArrLen {
+                *op_of.at_mut(i)? = Some(Op::ArrLen {
                     gid: g,
-                    elem_words: globals[g as usize].elem_words,
+                    elem_words: globals.at(g as usize)?.elem_words,
                     pick,
                 });
             }
@@ -863,12 +980,14 @@ pub(super) fn compile(
                 let lv = match level {
                     SampleLevel::Auto => LevelOp::Auto,
                     SampleLevel::Zero => LevelOp::Zero,
-                    SampleLevel::Exact(x) => LevelOp::Exact(slot[x.index()]),
-                    SampleLevel::Bias(x) => LevelOp::Bias(slot[x.index()]),
-                    SampleLevel::Gradient { x, y } => LevelOp::Gradient(slot[x.index()], slot[y.index()]),
+                    SampleLevel::Exact(x) => LevelOp::Exact(*slot.at(x.index())?),
+                    SampleLevel::Bias(x) => LevelOp::Bias(*slot.at(x.index())?),
+                    SampleLevel::Gradient { x, y } => {
+                        LevelOp::Gradient(*slot.at(x.index())?, *slot.at(y.index())?)
+                    }
                 };
                 let layer = if arrayed {
-                    array_index.map(|x| slot[x.index()])
+                    array_index.map(|x| slot.at(x.index()).copied()).transpose()?
                 } else {
                     None
                 };
@@ -882,17 +1001,17 @@ pub(super) fn compile(
                     naga::SwizzleComponent::Z => 2,
                     naga::SwizzleComponent::W => 3,
                 });
-                op_of[i] = Some(Op::Sample {
+                *op_of.at_mut(i)? = Some(Op::Sample {
                     tex,
                     smp,
-                    coord: slot[coordinate.index()],
+                    coord: *slot.at(coordinate.index())?,
                     cn: nlanes(*coordinate),
                     layer,
                     level: lv,
                     dim: dim_of(dim),
                     offset: off,
                     gather: g,
-                    depth_ref: depth_ref.map(|x| slot[x.index()]),
+                    depth_ref: depth_ref.map(|x| slot.at(x.index()).copied()).transpose()?,
                     depth: matches!(class, ImageClass::Depth { .. }),
                 });
             }
@@ -904,30 +1023,33 @@ pub(super) fn compile(
                 level,
             } => {
                 let (tex, class, dim, arrayed) = image_of(m, f, &resource_of, &slot, *image)?;
-                op_of[i] = Some(Op::Texel {
+                *op_of.at_mut(i)? = Some(Op::Texel {
                     tex,
-                    coord: slot[coordinate.index()],
+                    coord: *slot.at(coordinate.index())?,
                     cn: nlanes(*coordinate),
                     dim: dim_of(dim),
                     storage: matches!(class, ImageClass::Storage { .. }),
                     layer: if arrayed {
-                        array_index.map(|x| slot[x.index()])
+                        array_index.map(|x| slot.at(x.index()).copied()).transpose()?
                     } else {
                         None
                     },
-                    sample: sample.map(|x| slot[x.index()]),
-                    mip: level.map(|x| slot[x.index()]),
+                    sample: sample.map(|x| slot.at(x.index()).copied()).transpose()?,
+                    mip: level.map(|x| slot.at(x.index()).copied()).transpose()?,
                 });
             }
             E::ImageQuery { image, query } => {
                 let (tex, _, dim, _) = image_of(m, f, &resource_of, &slot, *image)?;
                 let (kind, level) = match query {
-                    ImageQuery::Size { level } => (QueryKind::Size, level.map(|x| slot[x.index()])),
+                    ImageQuery::Size { level } => (
+                        QueryKind::Size,
+                        level.map(|x| slot.at(x.index()).copied()).transpose()?,
+                    ),
                     ImageQuery::NumLevels => (QueryKind::Levels, None),
                     ImageQuery::NumLayers => (QueryKind::Layers, None),
                     ImageQuery::NumSamples => (QueryKind::Samples, None),
                 };
-                op_of[i] = Some(Op::Query {
+                *op_of.at_mut(i)? = Some(Op::Query {
                     tex,
                     dim: dim_of(dim),
                     kind,
@@ -940,8 +1062,8 @@ pub(super) fn compile(
             E::AtomicResult { comparison, .. } => {
                 if *comparison {
                     let extra = n_slots;
-                    n_slots += 1;
-                    agg_of[i] = Some(vec![(slot[i], 1), (extra as u32, 1)]);
+                    n_slots = n_slots.saturating_add(1);
+                    *agg_of.at_mut(i)? = Some(vec![(*slot.at(i)?, 1), (number(extra)?, 1)]);
                 }
             }
             e => return Err(format!("expression {:?}", std::mem::discriminant(e))),
@@ -958,7 +1080,7 @@ pub(super) fn compile(
             | Op::Un { src, .. }
             | Op::Cvt { src, .. }
             | Op::Deriv { src, .. } => vec![*src],
-            Op::Compose { parts, np } => parts[..*np as usize].iter().map(|p| p.0).collect(),
+            Op::Compose { parts, np } => parts.iter().take(*np as usize).map(|p| p.0).collect(),
             Op::LoadDyn { ptr, .. } => ptr
                 .dynamic
                 .map(|d| d.0)
@@ -1034,21 +1156,21 @@ pub(super) fn compile(
         for s in b.iter() {
             match s {
                 Statement::Emit(r) => {
-                    let lo = cx.ops.len() as u32;
+                    let lo = number(cx.ops.len())?;
                     for h in r.clone() {
-                        if let Some(op) = &cx.op_of[h.index()] {
-                            let dst = cx.slot[h.index()];
+                        if let Some(op) = cx.op_of.at(h.index())? {
+                            let dst = *cx.slot.at(h.index())?;
                             for o in operands(op) {
-                                cx.uses[o as usize] += 1;
+                                cx.uses.bump(o as usize)?;
                             }
                             // reads the query and writes registers nothing names: never dropped
                             if matches!(op, Op::RqHit { .. }) {
-                                cx.uses[dst as usize] += 1;
+                                cx.uses.bump(dst as usize)?;
                             }
                             cx.ops.push((dst, op.clone()));
                         }
                     }
-                    let hi = cx.ops.len() as u32;
+                    let hi = number(cx.ops.len())?;
                     if hi > lo {
                         out.push(St::Run(lo, hi));
                     }
@@ -1062,8 +1184,8 @@ pub(super) fn compile(
                     accept,
                     reject,
                 } => {
-                    let c = cx.slot[condition.index()];
-                    cx.uses[c as usize] += 1;
+                    let c = *cx.slot.at(condition.index())?;
+                    cx.uses.bump(c as usize)?;
                     let a = block(cx, accept)?;
                     let r = block(cx, reject)?;
                     out.push(St::If { c, a, r });
@@ -1075,9 +1197,9 @@ pub(super) fn compile(
                 } => {
                     let body = block(cx, body)?;
                     let cont = block(cx, continuing)?;
-                    let bi = break_if.map(|x| cx.slot[x.index()]);
+                    let bi = break_if.map(|x| cx.slot.at(x.index()).copied()).transpose()?;
                     if let Some(x) = bi {
-                        cx.uses[x as usize] += 1;
+                        cx.uses.bump(x as usize)?;
                     }
                     out.push(St::Loop {
                         body,
@@ -1086,8 +1208,8 @@ pub(super) fn compile(
                     });
                 }
                 Statement::Switch { selector, cases } => {
-                    let sel = cx.slot[selector.index()];
-                    cx.uses[sel as usize] += 1;
+                    let sel = *cx.slot.at(selector.index())?;
+                    cx.uses.bump(sel as usize)?;
                     let mut cs = Vec::new();
                     for c in cases {
                         let v = match c.value {
@@ -1106,18 +1228,18 @@ pub(super) fn compile(
                     let mut members: Vec<Member> = Vec::new();
                     if let Some(v) = value {
                         // a structure of members, or one vector or scalar
-                        members = match (&cx.members_of[v.index()], &cx.agg_of[v.index()]) {
+                        members = match (cx.members_of.at(v.index())?, cx.agg_of.at(v.index())?) {
                             (Some(list), _) => list.clone(),
                             (None, Some(a)) => a.iter().map(|&(s, n)| Member::Reg(s, n)).collect(),
                             (None, None) => match (cx.shape)(*v)? {
-                                Shape::V(_, n) => vec![Member::Reg(cx.slot[v.index()], n)],
+                                Shape::V(_, n) => vec![Member::Reg(*cx.slot.at(v.index())?, n)],
                                 _ => return Err("return of a non-aggregate".into()),
                             },
                         };
                         for m in &members {
                             match m {
-                                Member::Reg(s, _) => cx.uses[*s as usize] += 1,
-                                Member::Mem { keep: Some(s), .. } => cx.uses[*s as usize] += 1,
+                                Member::Reg(s, _) => cx.uses.bump(*s as usize)?,
+                                Member::Mem { keep: Some(s), .. } => cx.uses.bump(*s as usize)?,
                                 Member::Mem { .. } => {}
                             }
                         }
@@ -1130,14 +1252,22 @@ pub(super) fn compile(
                     result,
                 } => {
                     let name = cx.functions[*function].name.clone().unwrap_or_default();
-                    fn take(cx: &mut Ctx, h: &Handle<E>) -> u32 {
-                        let s = cx.slot[h.index()];
-                        cx.uses[s as usize] += 1;
-                        s
+                    fn take(cx: &mut Ctx, h: &Handle<E>) -> Result<u32, String> {
+                        let s = *cx.slot.at(h.index())?;
+                        cx.uses.bump(s as usize)?;
+                        Ok(s)
                     }
                     match name.as_str() {
-                        iridia_rt::TRACE_RAY if arguments.len() == 11 => {
-                            let naga::Expression::GlobalVariable(g) = cx.exprs[arguments[0]] else {
+                        iridia_rt::TRACE_RAY => {
+                            let &[acceleration, o0, o1, o2, o3, o4, o5, o6, o7, o8, pointer] =
+                                arguments.as_slice()
+                            else {
+                                return Err(format!(
+                                    "TraceRay with {} arguments, where it takes 11",
+                                    arguments.len()
+                                ));
+                            };
+                            let naga::Expression::GlobalVariable(g) = cx.exprs[acceleration] else {
                                 return Err(
                                     "a ray traced into an acceleration structure that is not a global".into(),
                                 );
@@ -1148,29 +1278,41 @@ pub(super) fn compile(
                                 .ok_or("an unbound acceleration structure")?
                                 .0;
                             let mut operands = [0u32; 9];
-                            for (k, a) in arguments[1..10].iter().enumerate() {
-                                operands[k] = take(cx, a);
+                            for (to, a) in operands.iter_mut().zip([o0, o1, o2, o3, o4, o5, o6, o7, o8]) {
+                                *to = take(cx, &a)?;
                             }
-                            let payload = (cx.rt_pointer)(arguments[10])?;
+                            let payload = (cx.rt_pointer)(pointer)?;
                             out.push(St::RtTrace {
                                 scene,
                                 operands,
                                 payload,
                             });
                         }
-                        iridia_rt::REPORT_HIT if arguments.len() == 3 => {
-                            let (t, kind) = (take(cx, &arguments[0]), take(cx, &arguments[1]));
-                            let attributes = (cx.rt_pointer)(arguments[2])?;
+                        iridia_rt::REPORT_HIT => {
+                            let &[t_arg, kind_arg, attributes_arg] = arguments.as_slice() else {
+                                return Err(format!(
+                                    "ReportHit with {} arguments, where it takes 3",
+                                    arguments.len()
+                                ));
+                            };
+                            let (t, kind) = (take(cx, &t_arg)?, take(cx, &kind_arg)?);
+                            let attributes = (cx.rt_pointer)(attributes_arg)?;
                             out.push(St::RtReport {
                                 t,
                                 kind,
                                 attributes,
-                                result: result.map(|r| cx.slot[r.index()]),
+                                result: result.map(|r| cx.slot.at(r.index()).copied()).transpose()?,
                             });
                         }
-                        iridia_rt::CALL_SHADER if arguments.len() == 2 => {
-                            let index = take(cx, &arguments[0]);
-                            let parameter = (cx.rt_pointer)(arguments[1])?;
+                        iridia_rt::CALL_SHADER => {
+                            let &[index_arg, parameter_arg] = arguments.as_slice() else {
+                                return Err(format!(
+                                    "CallShader with {} arguments, where it takes 2",
+                                    arguments.len()
+                                ));
+                            };
+                            let index = take(cx, &index_arg)?;
+                            let parameter = (cx.rt_pointer)(parameter_arg)?;
                             out.push(St::RtCall { index, parameter });
                         }
                         iridia_rt::IGNORE_HIT => out.push(St::RtDecide(Decision::Ignore)),
@@ -1180,19 +1322,24 @@ pub(super) fn compile(
                         other => return Err(format!("a call of the function {other}")),
                     }
                 }
-                Statement::Store { pointer, value } if cx.agg_of[value.index()].is_some() => {
-                    let p = cx.ptr_of[pointer.index()].ok_or("store through a non-pointer")?;
+                Statement::Store { pointer, value } if cx.agg_of.at(value.index())?.is_some() => {
+                    let p = cx
+                        .ptr_of
+                        .at(pointer.index())?
+                        .ok_or("store through a non-pointer")?;
                     if p.dynamic.is_some() || !matches!(p.loc, Loc::Local(_)) {
                         return Err("a store of an aggregate to anything but a whole local".into());
                     }
-                    let members = cx.agg_of[value.index()].clone().expect("checked");
+                    let Some(members) = cx.agg_of.at(value.index())?.clone() else {
+                        return Err("a store of an aggregate that has no members".into());
+                    };
                     for (s, _) in &members {
-                        cx.uses[*s as usize] += 1;
+                        cx.uses.bump(*s as usize)?;
                     }
                     out.push(St::StoreAgg { loc: p.loc, members });
                 }
                 Statement::RayQuery { query, fun } => {
-                    let q = cx.rq_of[query.index()]
+                    let q = (*cx.rq_of.at(query.index())?)
                         .ok_or("a ray query statement on something that is not a query")?;
                     match fun {
                         naga::RayQueryFunction::Initialize {
@@ -1210,7 +1357,9 @@ pub(super) fn compile(
                                 .get(&g.index())
                                 .ok_or("an unbound acceleration structure")?
                                 .0;
-                            let members = cx.agg_of[descriptor.index()]
+                            let members = cx
+                                .agg_of
+                                .at(descriptor.index())?
                                 .clone()
                                 .ok_or("a ray descriptor that is not a composite")?;
                             let [
@@ -1225,7 +1374,7 @@ pub(super) fn compile(
                                 return Err("a ray descriptor without its six fields".into());
                             };
                             for s in [flags, mask, tmin, tmax, origin, direction] {
-                                cx.uses[s as usize] += 1;
+                                cx.uses.bump(s as usize)?;
                             }
                             out.push(St::RqInit {
                                 q,
@@ -1240,31 +1389,34 @@ pub(super) fn compile(
                         }
                         naga::RayQueryFunction::Proceed { result } => out.push(St::RqProceed {
                             q,
-                            result: cx.slot[result.index()],
+                            result: *cx.slot.at(result.index())?,
                         }),
                         naga::RayQueryFunction::ConfirmIntersection => out.push(St::RqConfirm { q }),
                         naga::RayQueryFunction::Terminate => out.push(St::RqTerminate { q }),
                         naga::RayQueryFunction::GenerateIntersection { hit_t } => {
-                            let t = cx.slot[hit_t.index()];
-                            cx.uses[t as usize] += 1;
+                            let t = *cx.slot.at(hit_t.index())?;
+                            cx.uses.bump(t as usize)?;
                             out.push(St::RqGenerate { q, t });
                         }
                     }
                 }
                 Statement::Store { pointer, value } => {
-                    let p = cx.ptr_of[pointer.index()].ok_or("store through a non-pointer")?;
+                    let p = cx
+                        .ptr_of
+                        .at(pointer.index())?
+                        .ok_or("store through a non-pointer")?;
                     if let Some(s) = p.loc.slot() {
-                        cx.uses[s as usize] += 1;
+                        cx.uses.bump(s as usize)?;
                     }
                     let Shape::V(_, n) = (cx.shape)(*value)? else {
                         return Err("store of an aggregate".into());
                     };
-                    let src = cx.slot[value.index()];
-                    cx.uses[src as usize] += 1;
+                    let src = *cx.slot.at(value.index())?;
+                    cx.uses.bump(src as usize)?;
                     match p.dynamic {
                         None => out.push(St::Store { loc: p.loc, src, n }),
                         Some(d) => {
-                            cx.uses[d.0 as usize] += 1;
+                            cx.uses.bump(d.0 as usize)?;
                             out.push(St::StoreDyn { ptr: p, src, n })
                         }
                     }
@@ -1277,7 +1429,7 @@ pub(super) fn compile(
                 } => {
                     let (tex, _, dim, arrayed) = (cx.image)(*image)?;
                     if let Some(s) = tex.slot() {
-                        cx.uses[s as usize] += 1;
+                        cx.uses.bump(s as usize)?;
                     }
                     let Shape::V(_, cn) = (cx.shape)(*coordinate)? else {
                         return Err("store coordinate".into());
@@ -1285,16 +1437,16 @@ pub(super) fn compile(
                     let Shape::V(_, vn) = (cx.shape)(*value)? else {
                         return Err("store of an aggregate".into());
                     };
-                    let (c, v) = (cx.slot[coordinate.index()], cx.slot[value.index()]);
+                    let (c, v) = (*cx.slot.at(coordinate.index())?, *cx.slot.at(value.index())?);
                     let layer = if arrayed {
-                        array_index.map(|x| cx.slot[x.index()])
+                        array_index.map(|x| cx.slot.at(x.index()).copied()).transpose()?
                     } else {
                         None
                     };
-                    cx.uses[c as usize] += 1;
-                    cx.uses[v as usize] += 1;
+                    cx.uses.bump(c as usize)?;
+                    cx.uses.bump(v as usize)?;
                     if let Some(l) = layer {
-                        cx.uses[l as usize] += 1;
+                        cx.uses.bump(l as usize)?;
                     }
                     out.push(St::ImageStore {
                         tex,
@@ -1316,7 +1468,7 @@ pub(super) fn compile(
                 } => {
                     let (tex, _, dim, arrayed) = (cx.image)(*image)?;
                     if let Some(s) = tex.slot() {
-                        cx.uses[s as usize] += 1;
+                        cx.uses.bump(s as usize)?;
                     }
                     let op = match fun {
                         naga::AtomicFunction::Add => ImageAtomicOp::Add,
@@ -1335,16 +1487,16 @@ pub(super) fn compile(
                         return Err("atomic coordinate".into());
                     };
                     let signed = matches!((cx.shape)(*value)?, Shape::V(Kind::I, _));
-                    let (c, v) = (cx.slot[coordinate.index()], cx.slot[value.index()]);
+                    let (c, v) = (*cx.slot.at(coordinate.index())?, *cx.slot.at(value.index())?);
                     let layer = if arrayed {
-                        array_index.map(|x| cx.slot[x.index()])
+                        array_index.map(|x| cx.slot.at(x.index()).copied()).transpose()?
                     } else {
                         None
                     };
-                    cx.uses[c as usize] += 1;
-                    cx.uses[v as usize] += 1;
+                    cx.uses.bump(c as usize)?;
+                    cx.uses.bump(v as usize)?;
                     if let Some(l) = layer {
-                        cx.uses[l as usize] += 1;
+                        cx.uses.bump(l as usize)?;
                     }
                     out.push(St::ImageAtomic {
                         tex,
@@ -1355,7 +1507,7 @@ pub(super) fn compile(
                         op,
                         signed,
                         value: v,
-                        result: result.map(|r| cx.slot[r.index()]),
+                        result: result.map(|r| cx.slot.at(r.index()).copied()).transpose()?,
                     });
                 }
                 Statement::Atomic {
@@ -1374,26 +1526,36 @@ pub(super) fn compile(
                         naga::AtomicFunction::Max => (AtomOp::Max, None),
                         naga::AtomicFunction::Exchange { compare: None } => (AtomOp::Exchange, None),
                         naga::AtomicFunction::Exchange { compare: Some(c) } => {
-                            (AtomOp::CompareExchange, Some(cx.slot[c.index()]))
+                            (AtomOp::CompareExchange, Some(*cx.slot.at(c.index())?))
                         }
                     };
-                    let p = cx.ptr_of[pointer.index()].ok_or("atomic through a non-pointer")?;
+                    let p = cx
+                        .ptr_of
+                        .at(pointer.index())?
+                        .ok_or("atomic through a non-pointer")?;
                     if let Some(s) = p.loc.slot() {
-                        cx.uses[s as usize] += 1;
+                        cx.uses.bump(s as usize)?;
                     }
-                    let v = cx.slot[value.index()];
+                    let v = *cx.slot.at(value.index())?;
                     let signed = matches!((cx.shape)(*value)?, Shape::V(Kind::I, _));
-                    cx.uses[v as usize] += 1;
+                    cx.uses.bump(v as usize)?;
                     if let Some(c) = compare {
-                        cx.uses[c as usize] += 1;
+                        cx.uses.bump(c as usize)?;
                     }
                     if let Some(d) = p.dynamic {
-                        cx.uses[d.0 as usize] += 1;
+                        cx.uses.bump(d.0 as usize)?;
                     }
                     let (result, exchanged) = match result {
-                        Some(r) => match &cx.agg_of[r.index()] {
-                            Some(members) => (Some(members[0].0), Some(members[1].0)),
-                            None => (Some(cx.slot[r.index()]), None),
+                        Some(r) => match cx.agg_of.at(r.index())? {
+                            Some(members) => match members[..] {
+                                [(old, _), (exchanged, _), ..] => (Some(old), Some(exchanged)),
+                                _ => {
+                                    return Err(
+                                        "an atomic compare-exchange result without its two members".into()
+                                    );
+                                }
+                            },
+                            None => (Some(*cx.slot.at(r.index())?), None),
                         },
                         None => (None, None),
                     };
@@ -1409,13 +1571,13 @@ pub(super) fn compile(
                 }
                 Statement::ControlBarrier(_) => out.push(St::Barrier),
                 Statement::SubgroupBallot { result, predicate } => {
-                    let predicate = predicate.map(|p| cx.slot[p.index()]);
+                    let predicate = predicate.map(|p| cx.slot.at(p.index()).copied()).transpose()?;
                     if let Some(p) = predicate {
-                        cx.uses[p as usize] += 1;
+                        cx.uses.bump(p as usize)?;
                     }
                     out.push(St::WaveBallot {
                         predicate,
-                        result: cx.slot[result.index()],
+                        result: *cx.slot.at(result.index())?,
                     });
                 }
                 Statement::SubgroupGather {
@@ -1424,19 +1586,19 @@ pub(super) fn compile(
                     result,
                 } => {
                     use naga::GatherMode as G;
-                    let mut slot_of = |h: &Handle<E>| {
-                        let s = cx.slot[h.index()];
-                        cx.uses[s as usize] += 1;
-                        s
+                    let mut slot_of = |h: &Handle<E>| -> Result<u32, String> {
+                        let s = *cx.slot.at(h.index())?;
+                        cx.uses.bump(s as usize)?;
+                        Ok(s)
                     };
                     let mode = match mode {
                         G::BroadcastFirst => WaveGather::First,
-                        G::Broadcast(i) => WaveGather::Lane(slot_of(i)),
-                        G::Shuffle(i) => WaveGather::Shuffle(slot_of(i)),
-                        G::ShuffleDown(i) => WaveGather::Down(slot_of(i)),
-                        G::ShuffleUp(i) => WaveGather::Up(slot_of(i)),
-                        G::ShuffleXor(i) => WaveGather::Xor(slot_of(i)),
-                        G::QuadBroadcast(i) => WaveGather::QuadLane(slot_of(i)),
+                        G::Broadcast(i) => WaveGather::Lane(slot_of(i)?),
+                        G::Shuffle(i) => WaveGather::Shuffle(slot_of(i)?),
+                        G::ShuffleDown(i) => WaveGather::Down(slot_of(i)?),
+                        G::ShuffleUp(i) => WaveGather::Up(slot_of(i)?),
+                        G::ShuffleXor(i) => WaveGather::Xor(slot_of(i)?),
+                        G::QuadBroadcast(i) => WaveGather::QuadLane(slot_of(i)?),
                         G::QuadSwap(naga::Direction::X) => WaveGather::QuadSwap(1),
                         G::QuadSwap(naga::Direction::Y) => WaveGather::QuadSwap(2),
                         G::QuadSwap(naga::Direction::Diagonal) => WaveGather::QuadSwap(3),
@@ -1444,13 +1606,13 @@ pub(super) fn compile(
                     let Shape::V(_, n) = (cx.shape)(*argument)? else {
                         return Err("wave gather of an aggregate".into());
                     };
-                    let value = cx.slot[argument.index()];
-                    cx.uses[value as usize] += 1;
+                    let value = *cx.slot.at(argument.index())?;
+                    cx.uses.bump(value as usize)?;
                     out.push(St::WaveGather {
                         mode,
                         value,
                         n,
-                        result: cx.slot[result.index()],
+                        result: *cx.slot.at(result.index())?,
                     });
                 }
                 Statement::SubgroupCollectiveOperation {
@@ -1484,15 +1646,15 @@ pub(super) fn compile(
                         Kind::I => WaveKind::I,
                         _ => WaveKind::U,
                     };
-                    let value = cx.slot[argument.index()];
-                    cx.uses[value as usize] += 1;
+                    let value = *cx.slot.at(argument.index())?;
+                    cx.uses.bump(value as usize)?;
                     out.push(St::WaveOp {
                         op,
                         scan,
                         value,
                         n,
                         kind,
-                        result: cx.slot[result.index()],
+                        result: *cx.slot.at(result.index())?,
                     });
                 }
                 // one sequential schedule: every write is visible at once
@@ -1531,7 +1693,7 @@ pub(super) fn compile(
         let Some(Ptr {
             loc: Loc::Local(o),
             dynamic,
-        }) = ptr_of[pointer.index()]
+        }) = ptr_of.get(pointer.index()).copied().flatten()
         else {
             return;
         };
@@ -1540,18 +1702,20 @@ pub(super) fn compile(
             _ => 0,
         };
         if dynamic.is_some() {
-            *stored.entry(u32::MAX).or_default() += 1;
+            let count = stored.entry(u32::MAX).or_default();
+            *count = count.saturating_add(1);
         }
         for l in 0..n as u32 {
-            *stored.entry(o + l).or_default() += 1;
+            let count = stored.entry(o.saturating_add(l)).or_default();
+            *count = count.saturating_add(1);
             // a register past the expressions' own (an aggregate's member) carries no provenance
             if let Some(src) = prov0
-                .get(slot[value.index()] as usize)
+                .get(slot.get(value.index()).copied().unwrap_or(u32::MAX) as usize)
                 .copied()
                 .flatten()
-                .and_then(|pr| pr[l as usize])
+                .and_then(|pr| pr.get(l as usize).copied().flatten())
             {
-                local_src.insert(o + l, src);
+                local_src.insert(o.saturating_add(l), src);
             }
         }
     });
@@ -1560,7 +1724,9 @@ pub(super) fn compile(
 
     // a pointer to a structure the pipeline's operations read and write: its words in local memory, and how many
     let rt_pointer = |h: Handle<E>| -> Result<(u32, u32), String> {
-        let p = ptr_of[h.index()].ok_or("a pipeline operation on something that is not a pointer")?;
+        let p = ptr_of
+            .at(h.index())?
+            .ok_or("a pipeline operation on something that is not a pointer")?;
         let (Loc::Local(off), None) = (p.loc, p.dynamic) else {
             return Err("a pipeline operation on a pointer that is not a whole local structure".into());
         };
@@ -1602,7 +1768,7 @@ pub(super) fn compile(
         let mut a = [(0u32, 0u8); 4];
         let mut whole = true;
         for (l, slot) in a.iter_mut().enumerate().take(*n as usize) {
-            match pr[l] {
+            match pr.get(l).copied().flatten() {
                 Some(x) => *slot = x,
                 None => whole = false,
             }
@@ -1613,48 +1779,53 @@ pub(super) fn compile(
     }
     // dead operations: nothing reads their result
     let mut keep = vec![true; ops.len()];
-    for k in (0..ops.len()).rev() {
-        if uses[ops[k].0 as usize] == 0 {
-            keep[k] = false;
-            for o in operands(&ops[k].1) {
-                if uses[o as usize] > 0 {
-                    uses[o as usize] -= 1;
+    for (k, (dst, op)) in ops.iter().enumerate().rev() {
+        if *uses.at(*dst as usize)? == 0 {
+            *keep.at_mut(k)? = false;
+            for o in operands(op) {
+                if *uses.at(o as usize)? > 0 {
+                    uses.drop_one(o as usize)?;
                 }
             }
         }
     }
     // rebuild: compact the ops and remap the Run ranges
-    let mut remap = vec![0u32; ops.len() + 1];
+    let mut remap = vec![0u32; ops.len().saturating_add(1)];
     let mut kept: Vec<(u32, Op)> = Vec::new();
     for (k, o) in ops.into_iter().enumerate() {
-        remap[k] = kept.len() as u32;
-        if keep[k] {
+        *remap.at_mut(k)? = number(kept.len())?;
+        if *keep.at(k)? {
             kept.push(o);
         }
     }
-    remap[keep.len()] = kept.len() as u32;
-    fn fix(b: &mut Vec<St>, remap: &Vec<u32>) {
+    *remap.at_mut(keep.len())? = number(kept.len())?;
+    fn fix(b: &mut Vec<St>, remap: &Vec<u32>) -> Result<(), String> {
         for s in b.iter_mut() {
             match s {
                 St::Run(lo, hi) => {
-                    *lo = remap[*lo as usize];
-                    *hi = remap[*hi as usize];
+                    *lo = *remap.at(*lo as usize)?;
+                    *hi = *remap.at(*hi as usize)?;
                 }
                 St::If { a, r, .. } => {
-                    fix(a, remap);
-                    fix(r, remap);
+                    fix(a, remap)?;
+                    fix(r, remap)?;
                 }
                 St::Loop { body, cont, .. } => {
-                    fix(body, remap);
-                    fix(cont, remap);
+                    fix(body, remap)?;
+                    fix(cont, remap)?;
                 }
-                St::Switch { cases, .. } => cases.iter_mut().for_each(|c| fix(&mut c.2, remap)),
+                St::Switch { cases, .. } => {
+                    for case in cases.iter_mut() {
+                        fix(&mut case.2, remap)?;
+                    }
+                }
                 _ => {}
             }
         }
         b.retain(|s| !matches!(s, St::Run(lo, hi) if lo == hi));
+        Ok(())
     }
-    fix(&mut body, &remap);
+    fix(&mut body, &remap)?;
     args.resize(f.arguments.len(), (0, 0));
     let pointer_args: Vec<(usize, u32, u32)> = ptr_arg
         .iter()
@@ -1672,7 +1843,7 @@ pub(super) fn compile(
                 .get(&info.output_variable.index())
                 .ok_or("a mesh program whose output variable is not memory")?
                 as usize;
-            match globals[global].kind {
+            match globals.at(global)?.kind {
                 GlobalKind::Workgroup(words) => Some((global, words)),
                 _ => return Err("a mesh program whose output variable is not thread-group memory".into()),
             }
@@ -1714,7 +1885,7 @@ fn array_of(
     h: Handle<E>,
 ) -> Option<(u32, u32, u8)> {
     match f.expressions[h] {
-        E::FunctionArgument(a) => array_arg[a as usize],
+        E::FunctionArgument(a) => array_arg.get(a as usize).copied().flatten(),
         _ => None,
     }
 }
@@ -1727,9 +1898,11 @@ fn is_buffer_array(
     h: Handle<E>,
 ) -> bool {
     match f.expressions[h] {
-        E::GlobalVariable(g) => gid_of
-            .get(&g.index())
-            .is_some_and(|&gid| matches!(globals[gid as usize].kind, GlobalKind::StorageArray(..))),
+        E::GlobalVariable(g) => gid_of.get(&g.index()).is_some_and(|&gid| {
+            globals
+                .get(gid as usize)
+                .is_some_and(|g| matches!(g.kind, GlobalKind::StorageArray(..)))
+        }),
         _ => false,
     }
 }
@@ -1756,7 +1929,7 @@ fn resource_ref<'a>(
     let (g, pick) = match f.expressions[h] {
         E::GlobalVariable(g) => (g, Pick::One),
         E::Access { base, index } => match f.expressions[base] {
-            E::GlobalVariable(g) => (g, Pick::Slot(slot[index.index()])),
+            E::GlobalVariable(g) => (g, Pick::Slot(*slot.at(index.index())?)),
             _ => return Err(format!("{what} expression")),
         },
         E::AccessIndex { base, index } => match f.expressions[base] {
@@ -1808,8 +1981,8 @@ fn const_ints(f: &naga::Function, h: Handle<E>) -> Result<[i32; 3], String> {
     let mut r = [0; 3];
     match &f.expressions[h] {
         E::Compose { components, .. } => {
-            for (i, c) in components.iter().take(3).enumerate() {
-                r[i] = one(*c)?;
+            for (to, c) in r.iter_mut().zip(components.iter().take(3)) {
+                *to = one(*c)?;
             }
         }
         _ => r[0] = one(h)?,

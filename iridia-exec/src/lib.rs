@@ -45,6 +45,14 @@
 //! ```
 
 #![deny(clippy::disallowed_methods, clippy::disallowed_types)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation
+    )
+)]
 
 // Run the examples in the README as doc tests.
 #[cfg(doctest)]
@@ -94,6 +102,19 @@ pub use run::{Bound, Decision, Dispatched, Output, Resources, Runner, STEP_LIMIT
 pub use stage::Constants;
 
 use iridia::Program;
+
+/// `v` rounded to the nearest f32. Reference arithmetic evaluates in f64 and rounds once.
+#[allow(clippy::cast_possible_truncation)] // the rounding is the operation
+pub(crate) fn narrow(v: f64) -> f32 {
+    v as f32
+}
+
+/// The mask of the lowest `lanes` bits of a write (at most the 4 a register has).
+pub(crate) fn lane_mask(lanes: u8) -> u8 {
+    0xffu8
+        .checked_shr(8u32.saturating_sub(u32::from(lanes.min(8))))
+        .unwrap_or(0)
+}
 
 /// An error of checking or compiling a program, in the program's own terms.
 pub(crate) fn error(detail: impl Into<String>) -> Error {
@@ -405,7 +426,7 @@ pub trait Sampler {
                 request.layer.unwrap_or(request.texel[2]),
             ],
             value: request.value,
-            mask: ((1u16 << request.lanes) - 1) as u8,
+            mask: lane_mask(request.lanes),
         })
     }
 }

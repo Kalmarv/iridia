@@ -302,7 +302,7 @@ impl<'a> DrawShader<'a> {
                 indices.len()
             )));
         }
-        let n = surface.width as usize * surface.height as usize;
+        let n = (surface.width as usize).saturating_mul(surface.height as usize);
         if surface.targets.iter().flatten().any(|t| t.len() != n)
             || surface.depth.as_ref().is_some_and(|d| d.len() != n)
         {
@@ -315,9 +315,9 @@ impl<'a> DrawShader<'a> {
         let mut shaded: Vec<Option<Shaded>> = vec![None; vertices.len()];
         let mut stats = DrawStats::default();
         for triangle in indices.as_chunks::<3>().0 {
-            stats.triangles += 1;
+            stats.triangles = stats.triangles.saturating_add(1);
             let mut drawn = [0usize; 3];
-            for (k, &i) in triangle.iter().enumerate() {
+            for (slot, &i) in drawn.iter_mut().zip(triangle) {
                 let i = i as usize;
                 let input = vertices.get(i).ok_or_else(|| {
                     error(format!(
@@ -325,38 +325,55 @@ impl<'a> DrawShader<'a> {
                         vertices.len()
                     ))
                 })?;
-                if shaded[i].is_none() {
+                let entry = shaded
+                    .get_mut(i)
+                    .ok_or_else(|| error(format!("vertex {i} has no room for its shading")))?;
+                if entry.is_none() {
                     let (e, position) = self.vertex.execute_vertex(input, vertex_buffers, sampler)?;
-                    shaded[i] = Some(Shaded {
+                    *entry = Some(Shaded {
                         position: position.map(f32::from_bits),
                         outputs: e.outputs,
                     });
                 }
-                drawn[k] = i;
+                *slot = i;
             }
-            let original = drawn.map(|i| shaded[i].as_ref().expect("shaded above"));
-            let corners = (0..3)
-                .map(|k| {
+            let [first, second, third] = drawn;
+            let (Some(Some(first)), Some(Some(second)), Some(Some(third))) =
+                (shaded.get(first), shaded.get(second), shaded.get(third))
+            else {
+                return Err(error("a vertex of a triangle was not shaded"));
+            };
+            let original = [first, second, third];
+            let corners = original
+                .iter()
+                .enumerate()
+                .map(|(k, vertex)| {
                     let mut weights = [0.; 3];
-                    weights[k] = 1.;
+                    if let Some(weight) = weights.get_mut(k) {
+                        *weight = 1.;
+                    }
                     ClipVertex {
-                        clip: original[k].position,
+                        clip: vertex.position,
                         weights,
                     }
                 })
                 .collect();
             let polygon = clip(corners);
             if polygon.len() < 3 {
-                stats.clipped_away += 1;
+                stats.clipped_away = stats.clipped_away.saturating_add(1);
                 continue;
             }
             if polygon.iter().any(|v| v.clip.iter().any(|c| c.is_nan())) {
-                stats.not_a_number += 1;
+                stats.not_a_number = stats.not_a_number.saturating_add(1);
                 continue;
             }
-            for k in 1..polygon.len() - 1 {
-                let tri = [&polygon[0], &polygon[k], &polygon[k + 1]];
-                self.raster(tri, original, pixel_buffers, sampler, state, surface, &mut stats)?;
+            if let Some((fan, rest)) = polygon.split_first() {
+                for pair in rest.windows(2) {
+                    if let [second, third] = pair {
+                        let tri = [fan, second, third];
+                        self.raster(tri, original, pixel_buffers, sampler, state, surface, &mut stats)?;
+                    }
+                }
             }
         }
         Ok(stats)
@@ -379,7 +396,7 @@ impl<'a> DrawShader<'a> {
         };
         let front = setup.clockwise != state.front_counter_clockwise;
         if (state.cull == Cull::Front && front) || (state.cull == Cull::Back && !front) {
-            stats.culled += 1;
+            stats.culled = stats.culled.saturating_add(1);
             return Ok(());
         }
         let (w, h) = (i64::from(surface.width), i64::from(surface.height));
@@ -392,15 +409,24 @@ impl<'a> DrawShader<'a> {
         let mut lane_inputs: [Vec<[u32; 4]>; 4] = Default::default();
         for qy in (qy0..max_y).step_by(2) {
             for qx in (qx0..max_x).step_by(2) {
-                let lanes = [(qx, qy), (qx + 1, qy), (qx, qy + 1), (qx + 1, qy + 1)];
+                let (qx1, qy1) = (qx.saturating_add(1), qy.saturating_add(1));
+                let lanes = [(qx, qy), (qx1, qy), (qx, qy1), (qx1, qy1)];
                 let mut covered = [false; 4];
                 let mut depths = [0f32; 4];
-                for (l, &(px, py)) in lanes.iter().enumerate() {
+                for (((&(px, py), covered), depth), lane_input) in lanes
+                    .iter()
+                    .zip(covered.iter_mut())
+                    .zip(depths.iter_mut())
+                    .zip(lane_inputs.iter_mut())
+                {
                     let (b, inside) = setup.weights(px, py);
-                    covered[l] = inside && px < w && py < h;
-                    let z = b[0] * setup.screen[0][2] + b[1] * setup.screen[1][2] + b[2] * setup.screen[2][2];
-                    let z = (z as f32).clamp(vp.min_depth.min(vp.max_depth), vp.max_depth.max(vp.min_depth));
-                    depths[l] = z;
+                    *covered = inside && px < w && py < h;
+                    let [b0, b1, b2] = b;
+                    let [s0, s1, s2] = setup.screen;
+                    let z = b0 * s0[2] + b1 * s1[2] + b2 * s2[2];
+                    let z = crate::narrow(z)
+                        .clamp(vp.min_depth.min(vp.max_depth), vp.max_depth.max(vp.min_depth));
+                    *depth = z;
                     self.inputs_at(
                         tri,
                         original,
@@ -408,50 +434,59 @@ impl<'a> DrawShader<'a> {
                         &setup.inv_w,
                         [px as f32 + 0.5, py as f32 + 0.5, z],
                         front,
-                        &mut lane_inputs[l],
+                        lane_input,
                     );
                 }
                 if !covered.iter().any(|c| *c) {
                     continue;
                 }
+                let [input0, input1, input2, input3] = &lane_inputs;
                 let inputs = [
-                    lane_inputs[0].as_slice(),
-                    lane_inputs[1].as_slice(),
-                    lane_inputs[2].as_slice(),
-                    lane_inputs[3].as_slice(),
+                    input0.as_slice(),
+                    input1.as_slice(),
+                    input2.as_slice(),
+                    input3.as_slice(),
                 ];
                 let quad: [Execution; 4] = self.pixel.execute_quad(inputs, buffers, sampler)?;
-                for (l, e) in quad.iter().enumerate() {
-                    if !covered[l] {
+                for (((e, &covered), &(px, py)), &depth) in quad.iter().zip(&covered).zip(&lanes).zip(&depths)
+                {
+                    if !covered {
                         continue;
                     }
-                    stats.shaded += 1;
+                    stats.shaded = stats.shaded.saturating_add(1);
                     if e.discarded {
-                        stats.discarded += 1;
+                        stats.discarded = stats.discarded.saturating_add(1);
                         continue;
                     }
-                    let (px, py) = lanes[l];
-                    let at = (py * w + px) as usize;
+                    // the pixel is inside the surface: `weights` and the bounds are clamped to its width and height
+                    let at = usize::try_from(py.saturating_mul(w).saturating_add(px))
+                        .map_err(|_| error(format!("pixel ({px}, {py}) is outside the surface")))?;
                     if let (Some(test), Some(buffer)) = (state.depth, surface.depth.as_mut()) {
-                        if !test.compare.passes(depths[l], buffer[at]) {
-                            stats.depth_failed += 1;
+                        let stored = buffer.get_mut(at).ok_or_else(|| {
+                            error(format!("pixel ({px}, {py}) is outside the depth buffer"))
+                        })?;
+                        if !test.compare.passes(depth, *stored) {
+                            stats.depth_failed = stats.depth_failed.saturating_add(1);
                             continue;
                         }
                         if test.write {
-                            buffer[at] = depths[l];
+                            *stored = depth;
                         }
                     }
                     for (register, target) in surface.targets.iter_mut().enumerate() {
                         let Some(target) = target else { continue };
                         let mask = e.output_masks.get(register).copied().unwrap_or(0);
                         let value = e.outputs.get(register).copied().unwrap_or([0; 4]);
-                        for lane in 0..4 {
+                        let texel = target.get_mut(at).ok_or_else(|| {
+                            error(format!("pixel ({px}, {py}) is outside target {register}"))
+                        })?;
+                        for (lane, (stored, &written)) in texel.iter_mut().zip(&value).enumerate() {
                             if mask >> lane & 1 != 0 {
-                                target[at][lane] = value[lane];
+                                *stored = written;
                             }
                         }
                     }
-                    stats.written += 1;
+                    stats.written = stats.written.saturating_add(1);
                 }
             }
         }
@@ -483,21 +518,31 @@ impl<'a> DrawShader<'a> {
         let (mut on_persp, mut on_linear) = ([0f64; 3], [0f64; 3]);
         for (k, v) in tri.iter().enumerate() {
             let screen = screen_weights(v.weights, corner_w);
-            for i in 0..3 {
-                on_persp[i] += persp[k] * v.weights[i];
-                on_linear[i] += b[k] * screen[i];
+            let (persp_k, b_k) = (
+                persp.get(k).copied().unwrap_or(0.),
+                b.get(k).copied().unwrap_or(0.),
+            );
+            for (((persp_sum, linear_sum), &weight), &on_screen) in on_persp
+                .iter_mut()
+                .zip(on_linear.iter_mut())
+                .zip(&v.weights)
+                .zip(&screen)
+            {
+                *persp_sum += persp_k * weight;
+                *linear_sum += b_k * on_screen;
             }
         }
         for s in &self.sources {
             match s {
                 Source::Position { register, lanes } => {
-                    let value = [position[0], position[1], position[2], (1. / sum) as f32];
-                    for (k, lane) in lanes.iter().enumerate() {
-                        into[*register][*lane as usize] = value[k].to_bits();
+                    let [x, y, z] = position;
+                    let value = [x, y, z, crate::narrow(1. / sum)];
+                    for (lane, value) in lanes.iter().zip(value) {
+                        put(into, *register, *lane as usize, value.to_bits());
                     }
                 }
                 Source::FrontFace { register, lane } => {
-                    into[*register][*lane as usize] = if front { u32::MAX } else { 0 };
+                    put(into, *register, *lane as usize, if front { u32::MAX } else { 0 });
                 }
                 Source::Varying {
                     from_register,
@@ -508,24 +553,39 @@ impl<'a> DrawShader<'a> {
                 } => {
                     for (k, to) in to_lanes.iter().enumerate() {
                         let Some(from) = from_lanes.get(k) else { continue };
-                        let word =
-                            |v: &Shaded| v.outputs.get(*from_register).map_or(0, |r| r[*from as usize]);
-                        let blend = |weights: [f64; 3]| {
-                            let v: f64 = (0..3)
-                                .map(|i| weights[i] * f64::from(f32::from_bits(word(original[i]))))
-                                .sum();
-                            (v as f32).to_bits()
+                        let word = |v: &Shaded| {
+                            v.outputs
+                                .get(*from_register)
+                                .and_then(|r| r.get(*from as usize))
+                                .copied()
+                                .unwrap_or(0)
                         };
+                        let blend = |weights: [f64; 3]| {
+                            let v: f64 = weights
+                                .iter()
+                                .zip(original)
+                                .map(|(weight, vertex)| weight * f64::from(f32::from_bits(word(vertex))))
+                                .sum();
+                            crate::narrow(v).to_bits()
+                        };
+                        let [provoking, _, _] = original;
                         let word = match mode {
-                            InterpMode::Flat => word(original[0]),
+                            InterpMode::Flat => word(provoking),
                             InterpMode::Perspective => blend(on_persp),
                             InterpMode::Linear => blend(on_linear),
                         };
-                        into[*to_register][*to as usize] = word;
+                        put(into, *to_register, *to as usize, word);
                     }
                 }
             }
         }
+    }
+}
+
+/// Set word `lane` of register `register` of a pixel program's inputs, where the program has them.
+fn put(into: &mut [[u32; 4]], register: usize, lane: usize, word: u32) {
+    if let Some(slot) = into.get_mut(register).and_then(|r| r.get_mut(lane)) {
+        *slot = word;
     }
 }
 
@@ -534,12 +594,14 @@ const FIXED: [i64; 2] = [-(1 << 23), (1 << 23) - 1];
 
 /// A screen coordinate in 16.8 fixed point: to the nearest, a tie to even, saturating at the format's range (3.2.4.1's
 /// reference conversion; WARP takes the tie to even too, on exec_warp_draw's tie cases).
+#[allow(clippy::cast_possible_truncation)] // the clamp to the 16.8 range follows, and a NaN casts to 0
 fn fixed(x: f64) -> i64 {
     ((x * 256.).round_ties_even() as i64).clamp(FIXED[0], FIXED[1])
 }
 
 /// Twice the signed area of `a`, `b`, `p` in fixed point: positive when `p` is right of `a -> b` (y down). With every
 /// position in the 16.8 range a difference is under 2^24 and a product under 2^48.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // fixed-size arrays, and the range above
 fn edge(a: [i64; 2], b: [i64; 2], p: [i64; 2]) -> i64 {
     (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
 }
@@ -565,17 +627,14 @@ struct Setup {
 
 impl Setup {
     /// `None` for a triangle of no snapped area, which draws nothing.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // fixed-size arrays indexed by 0..3, and the 16.8 range
     fn new(tri: [&ClipVertex; 3], vp: &Viewport) -> Option<Self> {
         let mut screen = [[0f64; 3]; 3];
         let mut inv_w = [0f64; 3];
         let mut fixed_at = [[0i64; 2]; 3];
         for (k, v) in tri.iter().enumerate() {
-            let w = f64::from(v.clip[3]);
-            let (nx, ny, nz) = (
-                f64::from(v.clip[0]) / w,
-                f64::from(v.clip[1]) / w,
-                f64::from(v.clip[2]) / w,
-            );
+            let [cx, cy, cz, w] = v.clip.map(f64::from);
+            let (nx, ny, nz) = (cx / w, cy / w, cz / w);
             let x = f64::from(vp.x) + (nx + 1.) * 0.5 * f64::from(vp.width);
             let y = f64::from(vp.y) + (1. - ny) * 0.5 * f64::from(vp.height);
             let z = f64::from(vp.min_depth) + nz * f64::from(vp.max_depth - vp.min_depth);
@@ -611,6 +670,7 @@ impl Setup {
 
     /// The pixels of a `w` x `h` target the triangle's bounding box holds, as x and y ranges; `None` when it holds
     /// none.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // an axis of 0 or 1, and a shift of a 16.8 value
     fn bounds(&self, w: i64, h: i64) -> Option<([i64; 2], [i64; 2])> {
         let along = |axis: usize, size: i64| {
             let low = self.fixed.iter().map(|p| p[axis]).min().unwrap_or(0) >> 8;
@@ -623,6 +683,7 @@ impl Setup {
 
     /// The barycentrics of a pixel centre from the snapped positions (the weight of each vertex of the triangle), and
     /// whether the triangle covers it.
+    #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // the edges' indices are 0..3; pixel and edge values stay within the 16.8 range
     fn weights(&self, px: i64, py: i64) -> ([f64; 3], bool) {
         let p = [px * 256 + 128, py * 256 + 128];
         let mut inside = true;
@@ -645,6 +706,7 @@ impl Setup {
 /// origin (w = 0, so x, y and z are 0 too: the planes keep `w >= |x|, |y|` and `w >= z >= 0`) is empty: a point of a
 /// triangle is the zero vector only when its vertices are linearly dependent, so the triangle's plane holds the camera
 /// and it has no area on screen; it has no screen position to divide out there.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // the corners are indexed by a loop over the polygon, and the plane tests take the four components of a clip position
 fn clip(triangle: Vec<ClipVertex>) -> Vec<ClipVertex> {
     let w = |c: &[f32; 4]| f64::from(c[3]);
     // each plane as the signed distance of a vertex: kept where >= 0
@@ -687,6 +749,7 @@ fn clip(triangle: Vec<ClipVertex>) -> Vec<ClipVertex> {
 }
 
 /// The point at `t` from `a` to `b` in clip space, its weights blended alike.
+#[allow(clippy::indexing_slicing, clippy::cast_possible_truncation)] // fixed-size arrays indexed by 0..4, and a clip position is single precision
 fn blend(a: &ClipVertex, b: &ClipVertex, t: f64) -> ClipVertex {
     let clip = [0, 1, 2, 3]
         .map(|k| (f64::from(a.clip[k]) + (f64::from(b.clip[k]) - f64::from(a.clip[k])) * t) as f32);

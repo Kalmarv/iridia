@@ -379,7 +379,7 @@ impl<'p> Host<'p, '_> {
             .programs
             .get_key_value(name)
             .ok_or_else(|| format!("the shader table names {name}, which the library does not export"))?;
-        if self.stack.len() as u32
+        if u32::try_from(self.stack.len()).unwrap_or(u32::MAX)
             > pipe
                 .max_recursion
                 .unwrap_or(0)
@@ -407,7 +407,7 @@ impl<'p> Host<'p, '_> {
                     // payload (or parameter) first, the hit attributes second
                     let words = match taken {
                         0 if memory.is_empty() => Vec::new(),
-                        0 => memory[0].clone(),
+                        0 => memory.first().map(|m| m.to_vec()).unwrap_or_default(),
                         _ => attributes.to_vec(),
                     };
                     let size = entry
@@ -417,7 +417,7 @@ impl<'p> Host<'p, '_> {
                     let mut words = words;
                     words.resize(size as usize, 0);
                     registers.extend(pack(&words));
-                    taken += 1;
+                    taken = taken.saturating_add(1);
                 }
                 _ => {
                     return Err(format!(
@@ -427,7 +427,11 @@ impl<'p> Host<'p, '_> {
                 }
             }
         }
-        let resources = self.resources[key.as_str()].clone();
+        let resources = self
+            .resources
+            .get(key.as_str())
+            .cloned()
+            .ok_or_else(|| format!("{name}: the pipeline has no resources for it"))?;
         let mut bound = entry
             .executable
             .bind_resources(&resources)
@@ -438,13 +442,13 @@ impl<'p> Host<'p, '_> {
             }
         }
         self.stack.push(entry);
-        self.depth += 1;
-        self.stats.programs += 1;
+        self.depth = self.depth.saturating_add(1);
+        self.stats.programs = self.stats.programs.saturating_add(1);
         let result = {
             let mut runner = Runner::<1>::new(&entry.executable, &bound, &mut *self, None);
             runner.run([&registers])
         };
-        self.depth -= 1;
+        self.depth = self.depth.saturating_sub(1);
         self.stack.pop();
         let [out] = result.map_err(|e| format!("{name}: {e}"))?;
         for (k, m) in memory.iter_mut().enumerate() {
@@ -492,13 +496,13 @@ impl<'p> Host<'p, '_> {
     }
 
     fn trace(&mut self, r: TraceRay<'_>) -> Result<(), String> {
-        if self.active.len() as u32 >= self.pipe.max_recursion.unwrap_or(0) {
+        if u32::try_from(self.active.len()).unwrap_or(u32::MAX) >= self.pipe.max_recursion.unwrap_or(0) {
             return Err(format!(
                 "TraceRay recurses deeper than the pipeline's maximum of {}",
                 self.pipe.max_recursion.unwrap_or(0)
             ));
         }
-        self.stats.rays += 1;
+        self.stats.rays = self.stats.rays.saturating_add(1);
         let ray_flags = r.flags | self.pipe.config_flags;
         let query = Query::new(
             r.scene,
@@ -525,8 +529,10 @@ impl<'p> Host<'p, '_> {
         let done = self.active.pop();
         outcome?;
         if let Some(a) = done {
-            r.payload
-                .copy_from_slice(&a.payload[..r.payload.len().min(a.payload.len())]);
+            let n = r.payload.len().min(a.payload.len());
+            if let (Some(to), Some(from)) = (r.payload.get_mut(..n), a.payload.get(..n)) {
+                to.copy_from_slice(from);
+            }
         }
         Ok(())
     }
@@ -762,7 +768,9 @@ impl Backend for Host<'_, '_> {
         let mut parameter = r.parameter.to_vec();
         self.run(&name, &env, &mut [&mut parameter], &[])?;
         let n = r.parameter.len().min(parameter.len());
-        r.parameter[..n].copy_from_slice(&parameter[..n]);
+        if let (Some(to), Some(from)) = (r.parameter.get_mut(..n), parameter.get(..n)) {
+            to.copy_from_slice(from);
+        }
         Ok(())
     }
 

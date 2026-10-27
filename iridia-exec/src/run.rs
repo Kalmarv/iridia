@@ -147,15 +147,17 @@ pub struct Scratch<const N: usize> {
 }
 impl<const N: usize> Scratch<N> {
     pub fn new(exe: &Executable) -> Self {
-        let mut regs = vec![[0u32; 4]; exe.slots * N];
+        let mut regs = vec![[0u32; 4]; exe.slots.saturating_mul(N)];
         for (s, v) in &exe.inits {
             for l in 0..N {
-                regs[*s as usize * N + l] = *v;
+                if let Some(register) = regs.get_mut(slot_at::<N>(*s).saturating_add(l)) {
+                    *register = *v;
+                }
             }
         }
         Self {
             regs,
-            mem: vec![0; exe.local_words * N],
+            mem: vec![0; exe.local_words.saturating_mul(N)],
             outs: std::array::from_fn(|_| Vec::new()),
         }
     }
@@ -255,6 +257,101 @@ macro_rules! each {
     };
 }
 
+/// A position in one of the tables of the compiled program or its bound data (a global, an operation). The compile pass
+/// numbers them, so a miss is an internal error, reported with the position instead of a panic.
+trait At<T> {
+    fn at(&self, i: usize) -> Result<&T, String>;
+}
+impl<T> At<T> for [T] {
+    fn at(&self, i: usize) -> Result<&T, String> {
+        self.get(i)
+            .ok_or_else(|| format!("internal error: position {i} of a table of {}", self.len()))
+    }
+}
+
+/// The word offset `o + extra`, an error where it does not fit.
+fn offset(o: u32, extra: u32) -> Result<usize, String> {
+    o.checked_add(extra)
+        .map(|word| word as usize)
+        .ok_or_else(|| format!("word offset {o} + {extra} overflows"))
+}
+
+/// The `n` (at most 4) words at `at` of `words`, as the leading words of a register; `what` names `words` in the error.
+fn take_words(words: &[u32], at: usize, n: usize, what: &str) -> Result<Reg, String> {
+    let from = at
+        .checked_add(n)
+        .and_then(|end| words.get(at..end))
+        .ok_or_else(|| format!("{what} index out of range"))?;
+    let mut r = [0u32; 4];
+    for (to, word) in r.iter_mut().zip(from) {
+        *to = *word;
+    }
+    Ok(r)
+}
+
+/// The first `n` words of the register `v` written at `at` of `words`.
+fn put_words(words: &mut [u32], at: usize, n: usize, v: &Reg, what: &str) -> Result<(), String> {
+    let to = at
+        .checked_add(n)
+        .and_then(|end| words.get_mut(at..end))
+        .ok_or_else(|| format!("{what} index out of range"))?;
+    for (to, word) in to.iter_mut().zip(v) {
+        *to = *word;
+    }
+    Ok(())
+}
+
+/// The first `n` words of a register as the coordinates of a texel (the rest 0).
+fn texel_of(r: &Reg, n: usize) -> [u32; 3] {
+    let [x, y, z, _] = *r;
+    let keep = |i: usize, w: u32| if i < n { w } else { 0 };
+    [keep(0, x), keep(1, y), keep(2, z)]
+}
+
+/// Component `axis` of a 3-vector of an id or a size (0 past its three).
+fn comp3(v: [u32; 3], axis: usize) -> u32 {
+    v.get(axis).copied().unwrap_or(0)
+}
+
+/// How many invocations a thread group of this size has.
+fn group_lanes(size: [u32; 3]) -> Result<u32, String> {
+    let [x, y, z] = size;
+    x.checked_mul(y)
+        .and_then(|xy| xy.checked_mul(z))
+        .ok_or_else(|| format!("a thread group of {x} by {y} by {z} invocations does not fit in 32 bits"))
+}
+
+/// Component `i` of a register; 0 past its four (a scalar operand repeated reads component 0).
+#[inline(always)]
+fn comp(r: &Reg, i: usize) -> u32 {
+    r.get(i).copied().unwrap_or(0)
+}
+
+/// HLSL's float to signed integer: saturating, a NaN 0, as the bits of the integer.
+#[inline(always)]
+#[allow(clippy::cast_possible_truncation)] // the saturating conversion is the operation
+fn float_to_int(x: f32) -> u32 {
+    (x as i32) as u32
+}
+
+/// HLSL's float to unsigned integer: saturating, a NaN 0.
+#[inline(always)]
+#[allow(clippy::cast_possible_truncation)] // the saturating conversion is the operation
+fn float_to_uint(x: f32) -> u32 {
+    x as u32
+}
+
+/// The register index of the first lane of slot `slot`: the slots outermost and the lanes innermost, as in `Scratch`.
+#[inline(always)]
+fn slot_at<const N: usize>(slot: u32) -> usize {
+    (slot as usize).saturating_mul(N)
+}
+
+/// A bug of the compile pass, as an error naming the register: the compile pass numbers a run's registers.
+fn no_register(index: usize, len: usize) -> String {
+    format!("internal error: register {index}, where the run has {len}")
+}
+
 #[inline(always)]
 fn fl(x: f32, on: bool) -> f32 {
     if on && x.is_subnormal() {
@@ -329,21 +426,39 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         }
     }
 
+    /// Register `lane` of the slot whose first lane is `base` (see [`slot_at`]).
+    #[inline(always)]
+    fn rd(&self, base: usize, lane: usize) -> Result<Reg, String> {
+        let index = base.saturating_add(lane);
+        self.regs
+            .get(index)
+            .copied()
+            .ok_or_else(|| no_register(index, self.regs.len()))
+    }
+    /// Set register `lane` of the slot whose first lane is `base` to `value`.
+    #[inline(always)]
+    fn wr(&mut self, base: usize, lane: usize, value: Reg) -> Result<(), String> {
+        let index = base.saturating_add(lane);
+        let len = self.regs.len();
+        *self.regs.get_mut(index).ok_or_else(|| no_register(index, len))? = value;
+        Ok(())
+    }
+
     /// Count `n` steps the lanes of `active` take, refusing a run past its budget: each lane's own for independent
     /// invocations, the quad's or the group's once.
     #[inline(always)]
     fn count(&mut self, active: M, n: u64) -> Result<(), String> {
         let over = if self.grouping == Grouping::Independent {
             let mut over = false;
-            for l in 0..N {
+            for (l, steps) in self.lane_steps.iter_mut().enumerate() {
                 if active.has(l) {
-                    self.lane_steps[l] += n;
-                    over |= self.lane_steps[l] > STEP_LIMIT;
+                    *steps = steps.saturating_add(n);
+                    over |= *steps > STEP_LIMIT;
                 }
             }
             over
         } else {
-            self.steps += n;
+            self.steps = self.steps.saturating_add(n);
             self.steps > STEP_LIMIT
         };
         if over {
@@ -355,106 +470,127 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
     /// Where local word `word` of lane `lane` is: the words outermost and the lanes innermost, as in the registers.
     #[inline(always)]
     fn local(word: usize, lane: usize) -> usize {
-        word * N + lane
+        word.saturating_mul(N).saturating_add(lane)
     }
     /// The first local word of `n` from `word`, refusing words past the program's locals.
     #[inline(always)]
     fn locals(&self, word: usize, n: usize) -> Result<usize, String> {
-        if word + n > self.c.local_words {
+        if word.checked_add(n).is_none_or(|end| end > self.c.local_words) {
             return Err("local index out of range".into());
         }
         Ok(word)
     }
+    /// Local word `word` of lane `lane`.
+    #[inline(always)]
+    fn local_word(&self, word: usize, lane: usize) -> Result<u32, String> {
+        let at = Self::local(word, lane);
+        self.mem.get(at).copied().ok_or_else(|| {
+            format!(
+                "internal error: local word {at}, where the run has {}",
+                self.mem.len()
+            )
+        })
+    }
+    /// Set local word `word` of lane `lane`.
+    #[inline(always)]
+    fn set_local_word(&mut self, word: usize, lane: usize, value: u32) -> Result<(), String> {
+        let at = Self::local(word, lane);
+        let len = self.mem.len();
+        *self
+            .mem
+            .get_mut(at)
+            .ok_or_else(|| format!("internal error: local word {at}, where the run has {len}"))? = value;
+        Ok(())
+    }
     /// Lane `lane`'s local words `at..at + n`.
-    fn read_locals(&self, lane: usize, at: usize, n: usize) -> Vec<u32> {
-        (at..at + n).map(|w| self.mem[Self::local(w, lane)]).collect()
+    fn read_locals(&self, lane: usize, at: usize, n: usize) -> Result<Vec<u32>, String> {
+        (at..at.saturating_add(n))
+            .map(|w| self.local_word(w, lane))
+            .collect()
     }
     /// Lane `lane`'s local words from `at` set to `words`.
-    fn write_locals(&mut self, lane: usize, at: usize, words: &[u32]) {
+    fn write_locals(&mut self, lane: usize, at: usize, words: &[u32]) -> Result<(), String> {
         for (k, w) in words.iter().enumerate() {
-            self.mem[Self::local(at + k, lane)] = *w;
+            self.set_local_word(at.saturating_add(k), lane, *w)?;
         }
+        Ok(())
     }
 
-    fn mem_get(&mut self, loc: Loc, lane: usize, extra: u32, n: u8) -> Result<Reg, String> {
-        let mut r = [0u32; 4];
+    fn mem_get(&mut self, loc: Loc, lane: usize, extra: u32, n8: u8) -> Result<Reg, String> {
+        let n = n8 as usize;
         match loc {
             Loc::Local(o) => {
-                let base = self.locals((o + extra) as usize, n as usize)?;
-                for (i, w) in r.iter_mut().take(n as usize).enumerate() {
-                    *w = self.mem[Self::local(base + i, lane)];
+                let base = self.locals(offset(o, extra)?, n)?;
+                let mut r = [0u32; 4];
+                for (i, w) in r.iter_mut().take(n).enumerate() {
+                    *w = self.local_word(base.saturating_add(i), lane)?;
                 }
+                Ok(r)
             }
             Loc::Elem(g, o, pick) => {
-                let base = (o + extra) as usize;
+                let base = offset(o, extra)?;
                 let e = self.element_index(g, pick, lane)?;
                 let d = self.element_words(g, e)?;
-                let s = d
-                    .get(base..base + n as usize)
-                    .ok_or("buffer index out of range")?;
-                r[..n as usize].copy_from_slice(s);
+                take_words(d, base, n, "buffer")
             }
             Loc::Global(g, o) => {
-                let base = (o + extra) as usize;
+                let base = offset(o, extra)?;
                 if let Some(Some(d)) = self.store.get(g as usize) {
-                    let s = d
-                        .get(base..base + n as usize)
-                        .ok_or("memory index out of range")?;
-                    r[..n as usize].copy_from_slice(s);
-                    return Ok(r);
+                    return take_words(d, base, n, "memory");
                 }
                 let bound = self.b;
-                match &bound.data[g as usize] {
-                    Words::Elements(_) => return Err("an array of buffers read without an element".into()),
-                    Words::Owned(d) => {
-                        let s = d
-                            .get(base..base + n as usize)
-                            .ok_or("buffer index out of range")?;
-                        r[..n as usize].copy_from_slice(s);
-                    }
-                    Words::Slice(d) => {
-                        let s = d
-                            .get(base..base + n as usize)
-                            .ok_or("buffer index out of range")?;
-                        r[..n as usize].copy_from_slice(s);
-                    }
+                match bound.data.at(g as usize)? {
+                    Words::Elements(_) => Err("an array of buffers read without an element".into()),
+                    Words::Owned(d) => take_words(d, base, n, "buffer"),
+                    Words::Slice(d) => take_words(d, base, n, "buffer"),
                     Words::Rows(rows) => {
+                        let mut r = [0u32; 4];
                         if n == 4 && base.is_multiple_of(4) {
                             r = *rows.get(base / 4).ok_or("buffer index out of range")?;
                         } else {
-                            for (i, w) in r.iter_mut().take(n as usize).enumerate() {
-                                let word = base + i;
-                                *w = rows.get(word / 4).ok_or("buffer index out of range")?[word % 4];
+                            for (i, w) in r.iter_mut().take(n).enumerate() {
+                                let word = base.saturating_add(i);
+                                *w = rows
+                                    .get(word / 4)
+                                    .and_then(|row| row.get(word % 4))
+                                    .copied()
+                                    .ok_or("buffer index out of range")?;
                             }
                         }
+                        Ok(r)
                     }
                     // a buffer the caller answers for word by word
                     Words::Backend => {
-                        let GlobalKind::Storage(view) = self.c.globals[g as usize].kind else {
+                        let GlobalKind::Storage(view) = self.c.globals.at(g as usize)?.kind else {
                             return Err("a global that is neither bound nor a buffer".into());
                         };
-                        r = self.sampler.read_buffer(view, base as u32, n)?;
-                        for w in r.iter_mut().skip(n as usize) {
+                        let mut r = self.sampler.read_buffer(
+                            view,
+                            u32::try_from(base).map_err(|_| "buffer index out of range")?,
+                            n8,
+                        )?;
+                        for w in r.iter_mut().skip(n) {
                             *w = 0;
                         }
+                        Ok(r)
                     }
                 }
             }
         }
-        Ok(r)
     }
     fn mem_put(&mut self, loc: Loc, lane: usize, extra: u32, n: u8, v: Reg) -> Result<(), String> {
+        let count = n as usize;
         match loc {
             Loc::Local(o) => {
-                let base = self.locals((o + extra) as usize, n as usize)?;
-                for (i, w) in v.iter().take(n as usize).enumerate() {
-                    self.mem[Self::local(base + i, lane)] = *w;
+                let base = self.locals(offset(o, extra)?, count)?;
+                for (i, w) in v.iter().take(count).enumerate() {
+                    self.set_local_word(base.saturating_add(i), lane, *w)?;
                 }
                 Ok(())
             }
             Loc::Elem(g, o, pick) => {
                 let e = self.element_index(g, pick, lane)?;
-                let at = (o + extra) as usize;
+                let at = offset(o, extra)?;
                 let Some(Some(d)) = self
                     .elem_store
                     .get_mut(g as usize)
@@ -462,27 +598,19 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 else {
                     return Err("a store to an element of an array of buffers the run does not write".into());
                 };
-                let s = d
-                    .get_mut(at..at + n as usize)
-                    .ok_or("memory index out of range")?;
-                s.copy_from_slice(&v[..n as usize]);
-                Ok(())
+                put_words(d, at, count, &v, "memory")
             }
             Loc::Global(g, o) => {
                 if let Some(Some(d)) = self.store.get_mut(g as usize) {
-                    let at = (o + extra) as usize;
-                    let s = d
-                        .get_mut(at..at + n as usize)
-                        .ok_or("memory index out of range")?;
-                    s.copy_from_slice(&v[..n as usize]);
-                    return Ok(());
+                    let at = offset(o, extra)?;
+                    return put_words(d, at, count, &v, "memory");
                 }
                 // a write to a storage buffer is the caller's effect (it reaches none of this evaluation's reads)
-                let GlobalKind::Storage(view) = self.c.globals[g as usize].kind else {
+                let GlobalKind::Storage(view) = self.c.globals.at(g as usize)?.kind else {
                     return Err("store to a read-only global".into());
                 };
-                self.sampler
-                    .store_buffer(view, o + extra, v, ((1u16 << n) - 1) as u8)
+                let first = o.checked_add(extra).ok_or("memory index out of range")?;
+                self.sampler.store_buffer(view, first, v, crate::lane_mask(n))
             }
         }
     }
@@ -491,9 +619,9 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         let index = match pick {
             Pick::One => 0,
             Pick::Fixed(i) => i,
-            Pick::Slot(s) => self.regs[s as usize * N + lane][0],
+            Pick::Slot(s) => self.rd(slot_at::<N>(s), lane)?[0],
         };
-        match &self.c.globals[g as usize].kind {
+        match &self.c.globals.at(g as usize)?.kind {
             GlobalKind::StorageArray(id, count) if index >= *count => {
                 Err(format!("buffer {}: element {index} of an array of {count}", id.0))
             }
@@ -505,7 +633,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         if let Some(Some(d)) = self.elem_store.get(g as usize).and_then(|v| v.get(e as usize)) {
             return Ok(d);
         }
-        match &self.b.data[g as usize] {
+        match self.b.data.at(g as usize)? {
             Words::Elements(v) => v
                 .get(e as usize)
                 .copied()
@@ -518,22 +646,23 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         match p.dynamic {
             None => Ok(0),
             Some((s, stride, len)) => {
-                let i = self.regs[s as usize * N + lane][0];
+                let i = self.rd(slot_at::<N>(s), lane)?[0];
                 if i >= len {
                     return Err(format!("dynamic index {i} past the end ({len})"));
                 }
-                Ok(i * stride)
+                i.checked_mul(stride)
+                    .ok_or_else(|| format!("dynamic index {i} of a stride of {stride} words overflows"))
             }
         }
     }
 
     fn ops(&mut self, lo: u32, hi: u32, active: M) -> Result<(), String> {
-        self.count(active, (hi - lo) as u64)?;
+        self.count(active, u64::from(hi.saturating_sub(lo)))?;
         let c = self.c;
         let ftz = self.ftz;
         for k in lo..hi {
-            let (dst, op) = &c.ops[k as usize];
-            let dst = *dst as usize * N;
+            let (dst, op) = c.ops.at(k as usize)?;
+            let dst = slot_at::<N>(*dst);
             match op {
                 // a local's words, at offsets the compiler checked: read straight from every lane's memory
                 Op::Load {
@@ -544,9 +673,9 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     each!(active, l, {
                         let mut r = [0u32; 4];
                         for (i, w) in r.iter_mut().take(n).enumerate() {
-                            *w = self.mem[Self::local(base + i, l)];
+                            *w = self.local_word(base.saturating_add(i), l)?;
                         }
-                        self.regs[dst + l] = r;
+                        self.wr(dst, l, r)?;
                     })
                 }
                 Op::LoadLanes {
@@ -555,80 +684,85 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     n,
                 } => {
                     let (o, n) = (*o as usize, *n as usize);
-                    for &k in &offs[..n] {
-                        self.locals(o + k as usize, 1)?;
+                    for &k in offs.iter().take(n) {
+                        self.locals(o.saturating_add(k as usize), 1)?;
                     }
                     each!(active, l, {
                         let mut r = [0u32; 4];
-                        for (w, &k) in r.iter_mut().zip(&offs[..n]) {
-                            *w = self.mem[Self::local(o + k as usize, l)];
+                        for (w, &k) in r.iter_mut().zip(offs.iter().take(n)) {
+                            *w = self.local_word(o.saturating_add(k as usize), l)?;
                         }
-                        self.regs[dst + l] = r;
+                        self.wr(dst, l, r)?;
                     })
                 }
                 Op::Load { loc, n } => each!(active, l, {
-                    self.regs[dst + l] = self.mem_get(*loc, l, 0, *n)?;
+                    let loaded = self.mem_get(*loc, l, 0, *n)?;
+                    self.wr(dst, l, loaded)?;
                 }),
                 Op::LoadLanes { loc, offs, n } => each!(active, l, {
                     let mut r = [0u32; 4];
-                    for i in 0..*n as usize {
-                        r[i] = self.mem_get(*loc, l, offs[i] as u32, 1)?[0];
+                    for (w, &k) in r.iter_mut().zip(offs.iter().take(*n as usize)) {
+                        *w = self.mem_get(*loc, l, u32::from(k), 1)?[0];
                     }
-                    self.regs[dst + l] = r;
+                    self.wr(dst, l, r)?;
                 }),
                 Op::LoadDyn { ptr, n } => each!(active, l, {
                     let x = self.dyn_extra(ptr, l)?;
-                    self.regs[dst + l] = self.mem_get(ptr.loc, l, x, *n)?;
+                    let loaded = self.mem_get(ptr.loc, l, x, *n)?;
+                    self.wr(dst, l, loaded)?;
                 }),
                 Op::Swizzle { src, pat, n } => {
-                    let src = *src as usize * N;
+                    let src = slot_at::<N>(*src);
                     each!(active, l, {
-                        let s = self.regs[src + l];
+                        let s = self.rd(src, l)?;
                         let mut r = [0u32; 4];
-                        for i in 0..*n as usize {
-                            r[i] = s[pat[i] as usize];
+                        for (w, &p) in r.iter_mut().zip(pat.iter()).take(*n as usize) {
+                            *w = comp(&s, p as usize);
                         }
-                        self.regs[dst + l] = r;
+                        self.wr(dst, l, r)?;
                     })
                 }
                 Op::Lane { src, i } => {
-                    let (src, i) = (*src as usize * N, *i as usize);
+                    let (src, i) = (slot_at::<N>(*src), *i as usize);
                     each!(active, l, {
-                        self.regs[dst + l] = [self.regs[src + l][i]; 4];
+                        let s = self.rd(src, l)?;
+                        self.wr(dst, l, [comp(&s, i); 4])?;
                     })
                 }
                 Op::Splat { src, n } => {
                     let _ = n;
-                    let src = *src as usize * N;
+                    let src = slot_at::<N>(*src);
                     each!(active, l, {
-                        self.regs[dst + l] = [self.regs[src + l][0]; 4];
+                        let s = self.rd(src, l)?;
+                        self.wr(dst, l, [comp(&s, 0); 4])?;
                     })
                 }
                 Op::Compose { parts, np } => each!(active, l, {
                     let mut r = [0u32; 4];
-                    let mut at = 0;
-                    for p in &parts[..*np as usize] {
-                        let s = self.regs[p.0 as usize * N + l];
-                        for w in &s[..p.1 as usize] {
-                            r[at] = *w;
-                            at += 1;
+                    let mut at = 0usize;
+                    for p in parts.iter().take(*np as usize) {
+                        let s = self.rd(slot_at::<N>(p.0), l)?;
+                        for w in s.iter().take(p.1 as usize) {
+                            if let Some(slot) = r.get_mut(at) {
+                                *slot = *w;
+                            }
+                            at = at.saturating_add(1);
                         }
                     }
-                    self.regs[dst + l] = r;
+                    self.wr(dst, l, r)?;
                 }),
                 Op::Un { op, src, n } => {
-                    let (src, n) = (*src as usize * N, *n as usize);
+                    let (src, n) = (slot_at::<N>(*src), *n as usize);
                     // each operation's own loop over the lanes
                     macro_rules! un {
                         ($w:ident => $e:expr) => {
                             each!(active, l, {
-                                let s = self.regs[src + l];
+                                let s = self.rd(src, l)?;
                                 let mut r = [0u32; 4];
-                                for i in 0..n {
-                                    let $w = s[i];
-                                    r[i] = $e;
+                                for (out, &$w) in r.iter_mut().zip(s.iter()).take(n) {
+                                    *out = $e;
                                 }
-                                self.regs[dst + l] = r;
+                                self.wr(dst, l, r)?;
                             })
                         };
                     }
@@ -640,7 +774,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     }
                 }
                 Op::Bin { op, a, b, n, a1, b1 } => {
-                    let (a, b, n) = (*a as usize * N, *b as usize * N, *n as usize);
+                    let (a, b, n) = (slot_at::<N>(*a), slot_at::<N>(*b), *n as usize);
                     // a scalar operand's lane 0 for every component
                     let (sa, sb) = (usize::from(!*a1), usize::from(!*b1));
                     // each operation's own loop over the lanes, `bin` of a constant operation inlined into it
@@ -648,13 +782,13 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         ($($o:ident),*) => {
                             match op {
                                 $(BinOp::$o => each!(active, l, {
-                                    let x = self.regs[a + l];
-                                    let y = self.regs[b + l];
+                                    let x = self.rd(a, l)?;
+                                    let y = self.rd(b, l)?;
                                     let mut r = [0u32; 4];
-                                    for i in 0..n {
-                                        r[i] = bin(BinOp::$o, x[i * sa], y[i * sb], ftz)?;
+                                    for (i, out) in r.iter_mut().enumerate().take(n) {
+                                        *out = bin(BinOp::$o, comp(&x, i.saturating_mul(sa)), comp(&y, i.saturating_mul(sb)), ftz)?;
                                     }
-                                    self.regs[dst + l] = r;
+                                    self.wr(dst, l, r)?;
                                 }),)*
                             }
                         };
@@ -666,37 +800,40 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     )
                 }
                 Op::Select { c: cs, a, b, n, c1 } => {
-                    let (cs, a, b, n) = (*cs as usize * N, *a as usize * N, *b as usize * N, *n as usize);
+                    let (cs, a, b, n) = (slot_at::<N>(*cs), slot_at::<N>(*a), slot_at::<N>(*b), *n as usize);
                     let sc = usize::from(!*c1);
                     each!(active, l, {
-                        let cc = self.regs[cs + l];
-                        let x = self.regs[a + l];
-                        let y = self.regs[b + l];
+                        let cc = self.rd(cs, l)?;
+                        let x = self.rd(a, l)?;
+                        let y = self.rd(b, l)?;
                         let mut r = [0u32; 4];
-                        for i in 0..n {
-                            r[i] = if cc[i * sc] != 0 { x[i] } else { y[i] };
+                        for (i, out) in r.iter_mut().enumerate().take(n) {
+                            *out = if comp(&cc, i.saturating_mul(sc)) != 0 {
+                                comp(&x, i)
+                            } else {
+                                comp(&y, i)
+                            };
                         }
-                        self.regs[dst + l] = r;
+                        self.wr(dst, l, r)?;
                     })
                 }
                 Op::Cvt { op, src, n } => {
-                    let (src, n) = (*src as usize * N, *n as usize);
+                    let (src, n) = (slot_at::<N>(*src), *n as usize);
                     macro_rules! cvt {
                         ($w:ident => $e:expr) => {
                             each!(active, l, {
-                                let s = self.regs[src + l];
+                                let s = self.rd(src, l)?;
                                 let mut r = [0u32; 4];
-                                for i in 0..n {
-                                    let $w = s[i];
-                                    r[i] = $e;
+                                for (out, &$w) in r.iter_mut().zip(s.iter()).take(n) {
+                                    *out = $e;
                                 }
-                                self.regs[dst + l] = r;
+                                self.wr(dst, l, r)?;
                             })
                         };
                     }
                     match op {
-                        CvtOp::F2I => cvt!(w => (f(w) as i32) as u32),
-                        CvtOp::F2U => cvt!(w => f(w) as u32),
+                        CvtOp::F2I => cvt!(w => float_to_int(f(w))),
+                        CvtOp::F2U => cvt!(w => float_to_uint(f(w))),
                         CvtOp::I2F => cvt!(w => (w as i32 as f32).to_bits()),
                         CvtOp::U2F => cvt!(w => (w as f32).to_bits()),
                         CvtOp::B2F => cvt!(w => (if w != 0 { 1.0f32 } else { 0.0 }).to_bits()),
@@ -711,15 +848,15 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     n,
                     c1,
                 } => {
-                    let (a, b, cc) = (*a as usize * N, *b as usize * N, *cc as usize * N);
+                    let (a, b, cc) = (slot_at::<N>(*a), slot_at::<N>(*b), slot_at::<N>(*cc));
                     each!(active, l, {
-                        let x = self.regs[a + l];
-                        let y = self.regs[b + l];
-                        let mut z = self.regs[cc + l];
+                        let x = self.rd(a, l)?;
+                        let y = self.rd(b, l)?;
+                        let mut z = self.rd(cc, l)?;
                         if *c1 {
                             z = [z[0]; 4];
                         }
-                        self.regs[dst + l] = math(*mf, x, y, z, *n, ftz);
+                        self.wr(dst, l, math(*mf, x, y, z, *n, ftz))?;
                     })
                 }
                 Op::CopyWords { src, dst, words } => {
@@ -727,8 +864,8 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if active.has(l) {
                             for k in 0..*words {
                                 let w = self.mem_get(*src, l, k, 1)?[0];
-                                let at = self.locals((*dst + k) as usize, 1)?;
-                                self.mem[Self::local(at, l)] = w;
+                                let at = self.locals(offset(*dst, k)?, 1)?;
+                                self.set_local_word(at, l, w)?;
                             }
                         }
                     }
@@ -739,7 +876,8 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                             continue;
                         }
                         let b = self.b;
-                        let query = self.query_slots(*q)[l]
+                        let query = self
+                            .query_slot(*q, l)?
                             .as_ref()
                             .ok_or("a ray query read before it was initialized")?;
                         let scene = b
@@ -755,24 +893,24 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                             .as_ref()
                             .map_or_else(Reported::none, |h| Reported::of(h, scene));
                         let first = *first as usize;
-                        let mut put = |k: usize, v: [u32; 4]| self.regs[(first + k) * N + l] = v;
-                        put(0, [r.kind; 4]);
-                        put(1, [r.t.to_bits(); 4]);
-                        put(2, [r.custom; 4]);
-                        put(3, [r.instance; 4]);
-                        put(4, [r.sbt; 4]);
-                        put(5, [r.geometry; 4]);
-                        put(6, [r.primitive; 4]);
-                        put(
-                            7,
-                            [r.barycentrics[0].to_bits(), r.barycentrics[1].to_bits(), 0, 0],
-                        );
-                        put(8, [u32::from(r.front); 4]);
-                        for c in 0..4 {
-                            let o = r.object_to_world[c].map(f32::to_bits);
-                            put(9 + c, [o[0], o[1], o[2], 0]);
-                            let w = r.world_to_object[c].map(f32::to_bits);
-                            put(13 + c, [w[0], w[1], w[2], 0]);
+                        let mut put = |k: usize, v: [u32; 4]| -> Result<(), String> {
+                            self.wr(first.saturating_add(k).saturating_mul(N), l, v)
+                        };
+                        put(0, [r.kind; 4])?;
+                        put(1, [r.t.to_bits(); 4])?;
+                        put(2, [r.custom; 4])?;
+                        put(3, [r.instance; 4])?;
+                        put(4, [r.sbt; 4])?;
+                        put(5, [r.geometry; 4])?;
+                        put(6, [r.primitive; 4])?;
+                        let [bx, by] = r.barycentrics;
+                        put(7, [bx.to_bits(), by.to_bits(), 0, 0])?;
+                        put(8, [u32::from(r.front); 4])?;
+                        for (c, (o, w)) in r.object_to_world.iter().zip(&r.world_to_object).enumerate() {
+                            let [ox, oy, oz] = o.map(f32::to_bits);
+                            put(9usize.saturating_add(c), [ox, oy, oz, 0])?;
+                            let [wx, wy, wz] = w.map(f32::to_bits);
+                            put(13usize.saturating_add(c), [wx, wy, wz, 0])?;
                         }
                     }
                 }
@@ -784,8 +922,9 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     for l in 0..N {
                         if active.has(l) {
                             let e = self.element_index(*gid, *pick, l)?;
-                            let words = self.element_words(*gid, e)?.len() as u32;
-                            self.regs[dst + l] = [words / elem_words; 4];
+                            let words = u32::try_from(self.element_words(*gid, e)?.len())
+                                .map_err(|_| "an array of buffers over 4294967295 words")?;
+                            self.wr(dst, l, [words.checked_div(*elem_words).unwrap_or(0); 4])?;
                         }
                     }
                 }
@@ -795,24 +934,29 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     pick: None,
                 } => {
                     let bound = self.b;
-                    let words = match &bound.data[*gid as usize] {
-                        _ if matches!(self.store.get(*gid as usize), Some(Some(_))) => {
-                            self.store[*gid as usize].as_ref().map_or(0, Vec::len) as u32
-                        }
+                    let count =
+                        |n: usize| u32::try_from(n).map_err(|_| "a buffer over 4294967295 words".to_owned());
+                    let words = match bound.data.at(*gid as usize)? {
+                        _ if matches!(self.store.get(*gid as usize), Some(Some(_))) => count(
+                            self.store
+                                .get(*gid as usize)
+                                .and_then(Option::as_ref)
+                                .map_or(0, Vec::len),
+                        )?,
                         Words::Elements(_) => {
                             return Err("arrayLength of an array of buffers without an element".into());
                         }
-                        Words::Owned(d) => d.len() as u32,
-                        Words::Slice(d) => d.len() as u32,
-                        Words::Rows(d) => d.len() as u32 * 4,
-                        Words::Backend => match self.c.globals[*gid as usize].kind {
+                        Words::Owned(d) => count(d.len())?,
+                        Words::Slice(d) => count(d.len())?,
+                        Words::Rows(d) => count(d.len())?.saturating_mul(4),
+                        Words::Backend => match self.c.globals.at(*gid as usize)?.kind {
                             GlobalKind::Storage(view) => self.sampler.buffer_words(view)?,
                             _ => return Err("arrayLength of a global that is not a buffer".into()),
                         },
                     };
-                    let len = words / elem_words;
+                    let len = words.checked_div(*elem_words).unwrap_or(0);
                     for l in 0..N {
-                        self.regs[dst + l] = [len; 4];
+                        self.wr(dst, l, [len; 4])?;
                     }
                 }
                 Op::Deriv {
@@ -826,7 +970,10 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if active != M::first(4) {
                             return Err("a quad's lanes diverge at a derivative".into());
                         }
-                        let v: [Reg; 4] = std::array::from_fn(|l| self.regs[*src as usize * N + l]);
+                        let mut v = [[0u32; 4]; 4];
+                        for (l, lane) in v.iter_mut().enumerate() {
+                            *lane = self.rd(slot_at::<N>(*src), l)?;
+                        }
                         for l in 0..4 {
                             let (from, to) = match (*axis == 0, *fine) {
                                 (true, false) => (0, 1),
@@ -847,25 +994,31 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                 }
                             };
                             let mut r = [0u32; 4];
-                            for i in 0..*n as usize {
-                                r[i] = fl(fl(f(v[to][i]), ftz) - fl(f(v[from][i]), ftz), ftz).to_bits();
+                            let (a, b) = (
+                                v.get(to).copied().unwrap_or_default(),
+                                v.get(from).copied().unwrap_or_default(),
+                            );
+                            for (out, (&x, &y)) in r.iter_mut().zip(a.iter().zip(&b)).take(*n as usize) {
+                                *out = fl(fl(f(x), ftz) - fl(f(y), ftz), ftz).to_bits();
                             }
-                            self.regs[dst + l] = r;
+                            self.wr(dst, l, r)?;
                         }
                     } else {
                         let p = prov.as_ref().ok_or("a derivative of a computed value (a scalar evaluation has those of its inputs only)")?;
                         let d = self.derivs.ok_or("no derivatives given")?;
                         let mut r = [0u32; 4];
-                        for i in 0..*n as usize {
-                            let (arg, lane) = p[i];
-                            r[i] = d
+                        for (out, &(arg, lane)) in r.iter_mut().zip(p.iter()).take(*n as usize) {
+                            *out = d
                                 .get(arg as usize)
                                 .ok_or("no derivatives given for the argument")?
-                                [*axis as usize][lane as usize];
+                                .get(*axis as usize)
+                                .and_then(|axis| axis.get(lane as usize))
+                                .copied()
+                                .ok_or("no derivative given for the axis or the lane")?;
                         }
                         for l in 0..N {
                             if active.has(l) {
-                                self.regs[dst + l] = r;
+                                self.wr(dst, l, r)?;
                             }
                         }
                     }
@@ -884,9 +1037,10 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     depth,
                 } => {
                     let cn = *cn as usize;
-                    let c3 = |me: &Self, l: usize, s: u32| -> [f32; 3] {
-                        let r = me.regs[s as usize * N + l];
-                        std::array::from_fn(|i| if i < cn { fl(f(r[i]), ftz) } else { 0.0 })
+                    let c3 = |me: &Self, l: usize, s: u32| -> Result<[f32; 3], String> {
+                        let [x, y, z, _] = me.rd(slot_at::<N>(s), l)?;
+                        let lane = |i: usize, w: u32| if i < cn { fl(f(w), ftz) } else { 0.0 };
+                        Ok([lane(0, x), lane(1, y), lane(2, z)])
                     };
                     // a quad's implicit level of detail comes from the coordinates' differences
                     let footprint = if self.grouping == Grouping::Quad
@@ -895,9 +1049,17 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if active != M::first(4) {
                             return Err("a quad's lanes diverge at an implicit-LOD sample".into());
                         }
-                        let uv: [[f32; 3]; 4] = std::array::from_fn(|l| c3(self, l, *coord));
-                        let d = |a: usize| -> [f32; 3] { std::array::from_fn(|i| uv[a][i] - uv[0][i]) };
-                        Some([d(1), d(2)])
+                        let mut uv = [[0f32; 3]; 4];
+                        for (l, corner) in uv.iter_mut().enumerate() {
+                            *corner = c3(self, l, *coord)?;
+                        }
+                        let [origin, right, below, _] = uv;
+                        let d = |a: [f32; 3]| -> [f32; 3] {
+                            let [ax, ay, az] = a;
+                            let [ox, oy, oz] = origin;
+                            [ax - ox, ay - oy, az - oz]
+                        };
+                        Some([d(right), d(below)])
                     } else {
                         None
                     };
@@ -905,35 +1067,40 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if !active.has(l) {
                             continue;
                         }
-                        let rd = |s: u32, me: &Self| me.regs[s as usize * N + l];
+                        let rd = |s: u32, me: &Self| me.rd(slot_at::<N>(s), l);
                         let lod = match (level, footprint) {
                             (LevelOp::Auto, None) => ImageLod::Implicit,
                             (LevelOp::Auto, Some(g)) => ImageLod::Gradients(g),
                             (LevelOp::Zero, _) => ImageLod::Level(0.0),
-                            (LevelOp::Exact(s), _) => ImageLod::Level(fl(f(rd(*s, self)[0]), ftz)),
-                            (LevelOp::Bias(s), None) => ImageLod::Bias(fl(f(rd(*s, self)[0]), ftz)),
+                            (LevelOp::Exact(s), _) => ImageLod::Level(fl(f(rd(*s, self)?[0]), ftz)),
+                            (LevelOp::Bias(s), None) => ImageLod::Bias(fl(f(rd(*s, self)?[0]), ftz)),
                             (LevelOp::Bias(s), Some(g)) => {
-                                ImageLod::GradientsBias(g, fl(f(rd(*s, self)[0]), ftz))
+                                ImageLod::GradientsBias(g, fl(f(rd(*s, self)?[0]), ftz))
                             }
                             (LevelOp::Gradient(x, y), _) => {
-                                ImageLod::Gradients([c3(self, l, *x), c3(self, l, *y)])
+                                ImageLod::Gradients([c3(self, l, *x)?, c3(self, l, *y)?])
                             }
                         };
                         let req = ImageSample {
                             texture: self.element(tex, l)?,
                             sampler: self.element(smp, l)?,
                             dim: *dim,
-                            coord: c3(self, l, *coord),
-                            layer: layer.map(|s| rd(s, self)[0] as f32),
+                            coord: c3(self, l, *coord)?,
+                            layer: layer.map(|s| rd(s, self).map(|r| r[0] as f32)).transpose()?,
                             lod,
                             offset: *offset,
                             gather: *gather,
-                            depth_ref: depth_ref.map(|s| fl(f(rd(s, self)[0]), ftz)),
+                            depth_ref: depth_ref
+                                .map(|s| rd(s, self).map(|r| fl(f(r[0]), ftz)))
+                                .transpose()?,
                             depth: *depth,
                         };
                         let r = self.sampler.sample(req)?;
-                        self.samples[l] += 1;
-                        self.regs[dst + l] = [r[0].to_bits(), r[1].to_bits(), r[2].to_bits(), r[3].to_bits()];
+                        if let Some(count) = self.samples.get_mut(l) {
+                            *count = count.saturating_add(1);
+                        }
+                        let [r, g, b, a] = r;
+                        self.wr(dst, l, [r.to_bits(), g.to_bits(), b.to_bits(), a.to_bits()])?;
                     }
                 }
                 Op::Texel {
@@ -950,18 +1117,22 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if !active.has(l) {
                             continue;
                         }
-                        let cd = self.regs[*coord as usize * N + l];
-                        let one = |s: &Option<u32>| s.map(|s| self.regs[s as usize * N + l][0] as i32);
+                        let cd = self.rd(slot_at::<N>(*coord), l)?;
+                        let one = |s: &Option<u32>| -> Result<Option<i32>, String> {
+                            s.map(|s| self.rd(slot_at::<N>(s), l).map(|r| r[0] as i32))
+                                .transpose()
+                        };
                         let req = ImageLoad {
                             texture: self.element(tex, l)?,
                             dim: *dim,
                             storage: *storage,
-                            texel: std::array::from_fn(|i| if i < *cn as usize { cd[i] as i32 } else { 0 }),
-                            layer: one(layer),
-                            sample: one(sample),
-                            mip: one(mip),
+                            texel: texel_of(&cd, *cn as usize).map(|t| t as i32),
+                            layer: one(layer)?,
+                            sample: one(sample)?,
+                            mip: one(mip)?,
                         };
-                        self.regs[dst + l] = self.sampler.load(req)?;
+                        let loaded = self.sampler.load(req)?;
+                        self.wr(dst, l, loaded)?;
                     }
                 }
                 Op::Query {
@@ -974,14 +1145,17 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if !active.has(l) {
                             continue;
                         }
-                        let level = level.map(|s| self.regs[s as usize * N + l][0]);
+                        let level = level
+                            .map(|s| self.rd(slot_at::<N>(s), l).map(|r| r[0]))
+                            .transpose()?;
                         let texture = self.element(tex, l)?;
-                        self.regs[dst + l] = self.sampler.query(ImageQuery {
+                        let answer = self.sampler.query(ImageQuery {
                             texture,
                             dim: *dim,
                             kind: *kind,
                             level,
                         })?;
+                        self.wr(dst, l, answer)?;
                     }
                 }
             }
@@ -990,15 +1164,26 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
     }
 
     /// The lanes' states of ray query `q`.
-    fn query_slots(&mut self, q: u32) -> &mut Vec<Option<Query>> {
+    fn query_slots(&mut self, q: u32) -> Result<&mut Vec<Option<Query>>, String> {
         if self.queries.len() <= q as usize {
-            self.queries.resize_with(q as usize + 1, Vec::new);
+            self.queries.resize_with((q as usize).saturating_add(1), Vec::new);
         }
-        let slots = &mut self.queries[q as usize];
+        let len = self.queries.len();
+        let slots = self
+            .queries
+            .get_mut(q as usize)
+            .ok_or_else(|| format!("internal error: ray query {q}, where the run has {len}"))?;
         if slots.len() < N {
             slots.resize(N, None);
         }
-        slots
+        Ok(slots)
+    }
+
+    /// The state of ray query `q` in lane `lane`.
+    fn query_slot(&mut self, q: u32, lane: usize) -> Result<&mut Option<Query>, String> {
+        self.query_slots(q)?
+            .get_mut(lane)
+            .ok_or_else(|| format!("internal error: ray query lane {lane}"))
     }
 
     /// The wave width and the lane count of a compute run; wave operations outside one are errors.
@@ -1014,7 +1199,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         let index = match res.pick {
             Pick::One => 0,
             Pick::Fixed(i) => i,
-            Pick::Slot(s) => self.regs[s as usize * N + l][0],
+            Pick::Slot(s) => self.rd(slot_at::<N>(s), l)?[0],
         };
         if !matches!(res.pick, Pick::One) && res.count != iridia::Resource::UNBOUNDED && index >= res.count {
             return Err(format!(
@@ -1042,13 +1227,13 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     let (base, n, src) = (
                         self.locals(*o as usize, *n as usize)?,
                         *n as usize,
-                        *src as usize * N,
+                        slot_at::<N>(*src),
                     );
                     for l in 0..N {
                         if active.has(l) {
-                            let v = self.regs[src + l];
+                            let v = self.rd(src, l)?;
                             for (i, w) in v.iter().take(n).enumerate() {
-                                self.mem[Self::local(base + i, l)] = *w;
+                                self.set_local_word(base.saturating_add(i), l, *w)?;
                             }
                         }
                     }
@@ -1056,7 +1241,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 St::Store { loc, src, n } => {
                     for l in 0..N {
                         if active.has(l) {
-                            let v = self.regs[*src as usize * N + l];
+                            let v = self.rd(slot_at::<N>(*src), l)?;
                             self.mem_put(*loc, l, 0, *n, v)?;
                         }
                     }
@@ -1065,7 +1250,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     for l in 0..N {
                         if active.has(l) {
                             let x = self.dyn_extra(ptr, l)?;
-                            let v = self.regs[*src as usize * N + l];
+                            let v = self.rd(slot_at::<N>(*src), l)?;
                             self.mem_put(ptr.loc, l, x, *n, v)?;
                         }
                     }
@@ -1081,15 +1266,17 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 } => {
                     for l in 0..N {
                         if active.has(l) {
-                            let cd = self.regs[*coord as usize * N + l];
+                            let cd = self.rd(slot_at::<N>(*coord), l)?;
                             let element = self.element(tex, l)?;
                             self.sampler.store_image(ImageStore {
                                 view: element.id,
                                 index: element.index,
                                 dim: *dim,
-                                texel: std::array::from_fn(|i| if i < *cn as usize { cd[i] } else { 0 }),
-                                layer: layer.map(|s| self.regs[s as usize * N + l][0]),
-                                value: self.regs[*value as usize * N + l],
+                                texel: texel_of(&cd, *cn as usize),
+                                layer: layer
+                                    .map(|s| self.rd(slot_at::<N>(s), l).map(|r| r[0]))
+                                    .transpose()?,
+                                value: self.rd(slot_at::<N>(*value), l)?,
                                 lanes: *vn,
                             })?;
                         }
@@ -1108,20 +1295,22 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 } => {
                     for l in 0..N {
                         if active.has(l) {
-                            let cd = self.regs[*coord as usize * N + l];
+                            let cd = self.rd(slot_at::<N>(*coord), l)?;
                             let element = self.element(tex, l)?;
                             let old = self.sampler.atomic_image(ImageAtomic {
                                 view: element.id,
                                 index: element.index,
                                 dim: *dim,
-                                texel: std::array::from_fn(|i| if i < *cn as usize { cd[i] } else { 0 }),
-                                layer: layer.map(|s| self.regs[s as usize * N + l][0]),
+                                texel: texel_of(&cd, *cn as usize),
+                                layer: layer
+                                    .map(|s| self.rd(slot_at::<N>(s), l).map(|r| r[0]))
+                                    .transpose()?,
                                 op: *op,
                                 signed: *signed,
-                                value: self.regs[*value as usize * N + l][0],
+                                value: self.rd(slot_at::<N>(*value), l)?[0],
                             })?;
                             if let Some(r) = result {
-                                self.regs[*r as usize * N + l] = [old, 0, 0, 0];
+                                self.wr(slot_at::<N>(*r), l, [old, 0, 0, 0])?;
                             }
                         }
                     }
@@ -1142,9 +1331,12 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                 Loc::Elem(g, o, pick) => (g, o, Some(self.element_index(g, pick, l)?)),
                                 Loc::Local(_) => return Err("atomic on a local".into()),
                             };
-                            let word = (o + self.dyn_extra(ptr, l)?) as usize;
-                            let v = self.regs[*value as usize * N + l][0];
-                            let expected = compare.map_or(0, |c| self.regs[c as usize * N + l][0]);
+                            let word = offset(o, self.dyn_extra(ptr, l)?)?;
+                            let v = self.rd(slot_at::<N>(*value), l)?[0];
+                            let expected = match compare {
+                                Some(c) => self.rd(slot_at::<N>(*c), l)?[0],
+                                None => 0,
+                            };
                             let memory = match elem {
                                 Some(e) => self
                                     .elem_store
@@ -1159,7 +1351,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                 *cell = new;
                                 (old, swapped)
                             } else {
-                                let view = match self.c.globals[g as usize].kind {
+                                let view = match self.c.globals.at(g as usize)?.kind {
                                     GlobalKind::Storage(view) => view,
                                     GlobalKind::StorageArray(..) => {
                                         return Err("atomic on an element of an array of buffers this run does not hold (only a compute run writes them; the backend is not asked for element atomics)".into());
@@ -1171,13 +1363,21 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                         "atomic {fun:?} on a buffer the backend holds (only add is passed on)"
                                     ));
                                 }
-                                (self.sampler.atomic_add(view, word as u32, v)?, true)
+                                (
+                                    self.sampler.atomic_add(
+                                        view,
+                                        u32::try_from(word)
+                                            .map_err(|_| "atomic past the end of the memory")?,
+                                        v,
+                                    )?,
+                                    true,
+                                )
                             };
                             if let Some(r) = result {
-                                self.regs[*r as usize * N + l] = [old; 4];
+                                self.wr(slot_at::<N>(*r), l, [old; 4])?;
                             }
                             if let Some(x) = exchanged {
-                                self.regs[*x as usize * N + l] = [u32::from(swapped); 4];
+                                self.wr(slot_at::<N>(*x), l, [u32::from(swapped); 4])?;
                             }
                         }
                     }
@@ -1185,17 +1385,25 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 St::WaveBallot { predicate, result } => {
                     let (w, lanes) = self.wave_shape()?;
                     for base in (0..lanes).step_by(w) {
-                        let end = (base + w).min(lanes);
+                        let end = base.saturating_add(w).min(lanes);
                         let mut bits = [0u32; 4];
                         for l in base..end {
-                            let on = predicate.is_none_or(|p| self.regs[p as usize * N + l][0] != 0);
+                            let on = match predicate {
+                                Some(p) => self.rd(slot_at::<N>(*p), l)?[0] != 0,
+                                None => true,
+                            };
                             if active.has(l) && on {
-                                bits[(l - base) / 32] |= 1 << ((l - base) % 32);
+                                let bit = l.saturating_sub(base);
+                                if let Some(word) = bits.get_mut(bit / 32) {
+                                    *word |= 1u32
+                                        .checked_shl(u32::try_from(bit % 32).unwrap_or(0))
+                                        .unwrap_or(0);
+                                }
                             }
                         }
                         for l in base..end {
                             if active.has(l) {
-                                self.regs[*result as usize * N + l] = bits;
+                                self.wr(slot_at::<N>(*result), l, bits)?;
                             }
                         }
                     }
@@ -1208,36 +1416,45 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 } => {
                     let (w, lanes) = self.wave_shape()?;
                     for base in (0..lanes).step_by(w) {
-                        let end = (base + w).min(lanes);
+                        let end = base.saturating_add(w).min(lanes);
                         let first = (base..end).find(|&l| active.has(l));
                         let mut taken: Vec<(usize, Reg)> = Vec::new();
                         for l in base..end {
                             if !active.has(l) {
                                 continue;
                             }
-                            let at = l - base;
-                            let arg = |s: u32| self.regs[s as usize * N + l][0] as usize;
+                            let at = l.saturating_sub(base);
+                            let arg = |s: u32| -> Result<usize, String> {
+                                self.rd(slot_at::<N>(s), l).map(|r| r[0] as usize)
+                            };
                             let from = match mode {
                                 WaveGather::First => first.unwrap_or(l),
-                                WaveGather::Lane(s) => base + arg(*s),
-                                WaveGather::Shuffle(s) => base + arg(*s),
-                                WaveGather::Down(s) => base + at + arg(*s),
-                                WaveGather::Up(s) if arg(*s) <= at => base + at - arg(*s),
-                                WaveGather::Up(_) => base + at,
-                                WaveGather::Xor(s) => base + (at ^ arg(*s)),
-                                WaveGather::QuadLane(s) => base + (at & !3) + (arg(*s) & 3),
-                                WaveGather::QuadSwap(x) => base + (at ^ *x as usize),
+                                WaveGather::Lane(s) | WaveGather::Shuffle(s) => base.saturating_add(arg(*s)?),
+                                WaveGather::Down(s) => base.saturating_add(at).saturating_add(arg(*s)?),
+                                WaveGather::Up(s) => {
+                                    let step = arg(*s)?;
+                                    if step <= at {
+                                        base.saturating_add(at.saturating_sub(step))
+                                    } else {
+                                        base.saturating_add(at)
+                                    }
+                                }
+                                WaveGather::Xor(s) => base.saturating_add(at ^ arg(*s)?),
+                                WaveGather::QuadLane(s) => {
+                                    base.saturating_add(at & !3).saturating_add(arg(*s)? & 3)
+                                }
+                                WaveGather::QuadSwap(x) => base.saturating_add(at ^ *x as usize),
                             };
                             // a lane outside the wave is undefined in D3D: the lane's own value
                             let from = if from < end { from } else { l };
-                            let mut r = self.regs[*value as usize * N + from];
+                            let mut r = self.rd(slot_at::<N>(*value), from)?;
                             for w in r.iter_mut().skip(*n as usize) {
                                 *w = 0;
                             }
                             taken.push((l, r));
                         }
                         for (l, r) in taken {
-                            self.regs[*result as usize * N + l] = r;
+                            self.wr(slot_at::<N>(*result), l, r)?;
                         }
                     }
                 }
@@ -1252,13 +1469,16 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     let (w, lanes) = self.wave_shape()?;
                     let ftz = self.ftz;
                     for base in (0..lanes).step_by(w) {
-                        let end = (base + w).min(lanes);
+                        let end = base.saturating_add(w).min(lanes);
                         let members: Vec<usize> = (base..end).filter(|&l| active.has(l)).collect();
                         for i in 0..*n as usize {
                             let values: Vec<u32> = members
                                 .iter()
-                                .map(|&l| self.regs[*value as usize * N + l][i])
-                                .collect();
+                                .map(|&l| {
+                                    self.rd(slot_at::<N>(*value), l)
+                                        .map(|r| r.get(i).copied().unwrap_or(0))
+                                })
+                                .collect::<Result<_, _>>()?;
                             let total = values
                                 .iter()
                                 .copied()
@@ -1266,27 +1486,32 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                 .unwrap_or(0);
                             let mut running = wave_identity(*op, *kind);
                             for (k, &l) in members.iter().enumerate() {
+                                let value = values.get(k).copied().unwrap_or(0);
                                 let out = match scan {
                                     WaveScan::Reduce => total,
                                     WaveScan::Inclusive => {
                                         running = if k == 0 {
-                                            values[0]
+                                            value
                                         } else {
-                                            wave_combine(*op, *kind, running, values[k], ftz)
+                                            wave_combine(*op, *kind, running, value, ftz)
                                         };
                                         running
                                     }
                                     WaveScan::Exclusive => {
                                         let before = running;
                                         running = if k == 0 {
-                                            values[0]
+                                            value
                                         } else {
-                                            wave_combine(*op, *kind, running, values[k], ftz)
+                                            wave_combine(*op, *kind, running, value, ftz)
                                         };
                                         before
                                     }
                                 };
-                                self.regs[*result as usize * N + l][i] = out;
+                                let mut r = self.rd(slot_at::<N>(*result), l)?;
+                                if let Some(lane) = r.get_mut(i) {
+                                    *lane = out;
+                                }
+                                self.wr(slot_at::<N>(*result), l, r)?;
                             }
                         }
                     }
@@ -1296,9 +1521,9 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if active.has(l) {
                             let mut at = 0;
                             for &(s, n) in members {
-                                let v = self.regs[s as usize * N + l];
+                                let v = self.rd(slot_at::<N>(s), l)?;
                                 self.mem_put(*loc, l, at, n, v)?;
-                                at += u32::from(n);
+                                at = at.saturating_add(u32::from(n));
                             }
                         }
                     }
@@ -1321,26 +1546,22 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     }
                     for l in 0..N {
                         if active.has(l) {
-                            let reg = |s: u32| self.regs[s as usize * N + l];
-                            let float = |s: u32| fl(f(reg(s)[0]), self.ftz);
-                            let vec3 = |s: u32| -> [f32; 3] {
-                                let r = reg(s);
-                                [
-                                    fl(f(r[0]), self.ftz),
-                                    fl(f(r[1]), self.ftz),
-                                    fl(f(r[2]), self.ftz),
-                                ]
+                            let reg = |s: u32| self.rd(slot_at::<N>(s), l);
+                            let float = |s: u32| -> Result<f32, String> { Ok(fl(f(reg(s)?[0]), self.ftz)) };
+                            let vec3 = |s: u32| -> Result<[f32; 3], String> {
+                                let [x, y, z, _] = reg(s)?;
+                                Ok([fl(f(x), self.ftz), fl(f(y), self.ftz), fl(f(z), self.ftz)])
                             };
                             let query = Query::new(
                                 *scene,
-                                reg(*flags)[0],
-                                reg(*mask)[0],
-                                float(*tmin),
-                                float(*tmax),
-                                vec3(*origin),
-                                vec3(*direction),
+                                reg(*flags)?[0],
+                                reg(*mask)?[0],
+                                float(*tmin)?,
+                                float(*tmax)?,
+                                vec3(*origin)?,
+                                vec3(*direction)?,
                             );
-                            self.query_slots(*q)[l] = Some(query);
+                            *self.query_slot(*q, l)? = Some(query);
                         }
                     }
                 }
@@ -1348,7 +1569,8 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     for l in 0..N {
                         if active.has(l) {
                             let b = self.b;
-                            let query = self.query_slots(*q)[l]
+                            let query = self
+                                .query_slot(*q, l)?
                                 .as_mut()
                                 .ok_or("a ray query proceeded before it was initialized")?;
                             let scene = b
@@ -1356,14 +1578,14 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                                 .get(&query.scene())
                                 .ok_or("a ray query without its scene")?;
                             let more = query.proceed(scene);
-                            self.regs[*result as usize * N + l] = [u32::from(more); 4];
+                            self.wr(slot_at::<N>(*result), l, [u32::from(more); 4])?;
                         }
                     }
                 }
                 St::RqConfirm { q } => {
                     for l in 0..N {
                         if active.has(l) {
-                            self.query_slots(*q)[l]
+                            self.query_slot(*q, l)?
                                 .as_mut()
                                 .ok_or("a ray query confirmed before it was initialized")?
                                 .confirm()?;
@@ -1372,8 +1594,10 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 }
                 St::RtDecide(decision) => {
                     for l in 0..N {
-                        if active.has(l) {
-                            self.decisions[l] = *decision;
+                        if active.has(l)
+                            && let Some(slot) = self.decisions.get_mut(l)
+                        {
+                            *slot = *decision;
                         }
                     }
                 }
@@ -1386,22 +1610,26 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         if !active.has(l) {
                             continue;
                         }
-                        let word = |k: usize| self.regs[operands[k] as usize * N + l][0];
-                        let vec3 = |k: usize| -> [f32; 3] {
-                            let r = self.regs[operands[k] as usize * N + l];
-                            [f(r[0]), f(r[1]), f(r[2])]
+                        let operand = |k: usize| -> Result<Reg, String> {
+                            let slot = operands.at(k)?;
+                            self.rd(slot_at::<N>(*slot), l)
                         };
-                        let (flags, mask, offset, stride, miss) =
-                            (word(0), word(1), word(2), word(3), word(4));
-                        let (origin, direction) = (vec3(5), vec3(7));
-                        let (t_min, t_max) = (f(word(6)), f(word(8)));
+                        let word = |k: usize| -> Result<u32, String> { Ok(operand(k)?[0]) };
+                        let vec3 = |k: usize| -> Result<[f32; 3], String> {
+                            let [x, y, z, _] = operand(k)?;
+                            Ok([f(x), f(y), f(z)])
+                        };
+                        let (flags, mask, hit_offset, stride, miss) =
+                            (word(0)?, word(1)?, word(2)?, word(3)?, word(4)?);
+                        let (origin, direction) = (vec3(5)?, vec3(7)?);
+                        let (t_min, t_max) = (f(word(6)?), f(word(8)?));
                         let at = payload.0 as usize;
-                        let mut words = self.read_locals(l, at, payload.1 as usize);
+                        let mut words = self.read_locals(l, at, payload.1 as usize)?;
                         self.sampler.trace_ray(super::request::TraceRay {
                             scene: *scene,
                             flags,
                             mask,
-                            hit_group_offset: offset,
+                            hit_group_offset: hit_offset,
                             hit_group_stride: stride,
                             miss_index: miss,
                             origin,
@@ -1410,7 +1638,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                             t_max,
                             payload: &mut words,
                         })?;
-                        self.write_locals(l, at, &words);
+                        self.write_locals(l, at, &words)?;
                     }
                 }
                 St::RtReport {
@@ -1424,15 +1652,15 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                             continue;
                         }
                         let at = attributes.0 as usize;
-                        let mut words = self.read_locals(l, at, attributes.1 as usize);
+                        let mut words = self.read_locals(l, at, attributes.1 as usize)?;
                         let accepted = self.sampler.report_hit(super::request::ReportHit {
-                            t: f(self.regs[*t as usize * N + l][0]),
-                            hit_kind: self.regs[*kind as usize * N + l][0],
+                            t: f(self.rd(slot_at::<N>(*t), l)?[0]),
+                            hit_kind: self.rd(slot_at::<N>(*kind), l)?[0],
                             attributes: &mut words,
                         })?;
-                        self.write_locals(l, at, &words);
+                        self.write_locals(l, at, &words)?;
                         if let Some(r) = result {
-                            self.regs[*r as usize * N + l] = [u32::from(accepted); 4];
+                            self.wr(slot_at::<N>(*r), l, [u32::from(accepted); 4])?;
                         }
                     }
                 }
@@ -1442,19 +1670,19 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                             continue;
                         }
                         let at = parameter.0 as usize;
-                        let mut words = self.read_locals(l, at, parameter.1 as usize);
+                        let mut words = self.read_locals(l, at, parameter.1 as usize)?;
                         self.sampler.call_shader(super::request::CallShader {
-                            index: self.regs[*index as usize * N + l][0],
+                            index: self.rd(slot_at::<N>(*index), l)?[0],
                             parameter: &mut words,
                         })?;
-                        self.write_locals(l, at, &words);
+                        self.write_locals(l, at, &words)?;
                     }
                 }
                 St::RqGenerate { q, t } => {
                     for l in 0..N {
                         if active.has(l) {
-                            let t = fl(f(self.regs[*t as usize * N + l][0]), self.ftz);
-                            self.query_slots(*q)[l]
+                            let t = fl(f(self.rd(slot_at::<N>(*t), l)?[0]), self.ftz);
+                            self.query_slot(*q, l)?
                                 .as_mut()
                                 .ok_or("an intersection generated before the query was initialized")?
                                 .generate(t)?;
@@ -1464,7 +1692,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 St::RqTerminate { q } => {
                     for l in 0..N {
                         if active.has(l) {
-                            self.query_slots(*q)[l]
+                            self.query_slot(*q, l)?
                                 .as_mut()
                                 .ok_or("a ray query ended before it was initialized")?
                                 .terminate();
@@ -1484,7 +1712,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                 St::If { c, a, r } => {
                     let mut take = M::none();
                     for l in 0..N {
-                        if active.has(l) && self.regs[*c as usize * N + l][0] != 0 {
+                        if active.has(l) && self.rd(slot_at::<N>(*c), l)?[0] != 0 {
                             take.insert(l);
                         }
                     }
@@ -1511,7 +1739,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                         lm = lm.minus(e2.ret.or(e2.brk));
                         if let Some(bi) = break_if {
                             for l in 0..N {
-                                if lm.has(l) && self.regs[*bi as usize * N + l][0] != 0 {
+                                if lm.has(l) && self.rd(slot_at::<N>(*bi), l)?[0] != 0 {
                                     lm.remove(l);
                                 }
                             }
@@ -1526,7 +1754,7 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     let mut chosen = [usize::MAX; N];
                     for (l, slot) in chosen.iter_mut().enumerate() {
                         if active.has(l) {
-                            let v = self.regs[*sel as usize * N + l][0];
+                            let v = self.rd(slot_at::<N>(*sel), l)?[0];
                             *slot = cases
                                 .iter()
                                 .position(|c| c.0 == Some(v))
@@ -1569,31 +1797,40 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
                     for l in 0..N {
                         if active.has(l) {
                             // into the lane's own room, kept from run to run
-                            let mut members = std::mem::take(&mut self.outs[l]);
+                            let mut members = std::mem::take(
+                                self.outs
+                                    .get_mut(l)
+                                    .ok_or("internal error: a result for a lane the run does not have")?,
+                            );
                             members.clear();
                             for member in result {
                                 match *member {
                                     Member::Reg(s, n) => {
                                         let mut r = [0u32; 4];
-                                        r[..n as usize]
-                                            .copy_from_slice(&self.regs[s as usize * N + l][..n as usize]);
+                                        let v = self.rd(slot_at::<N>(s), l)?;
+                                        for (to, from) in r.iter_mut().zip(v.iter()).take(n as usize) {
+                                            *to = *from;
+                                        }
                                         members.push(r);
                                     }
                                     Member::Mem {
                                         word, count, width, ..
                                     } => {
                                         for k in 0..count as usize {
-                                            let at = word as usize + k * width as usize;
+                                            let at = (word as usize)
+                                                .saturating_add(k.saturating_mul(width as usize));
                                             let mut r = [0u32; 4];
                                             for (i, w) in r.iter_mut().take(width as usize).enumerate() {
-                                                *w = self.mem[Self::local(at + i, l)];
+                                                *w = self.local_word(at.saturating_add(i), l)?;
                                             }
                                             members.push(r);
                                         }
                                     }
                                 }
                             }
-                            self.outs[l] = members;
+                            if let Some(room) = self.outs.get_mut(l) {
+                                *room = members;
+                            }
                         }
                     }
                     ex.ret = ex.ret.or(active);
@@ -1621,21 +1858,25 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
     pub fn run_first(&mut self, args: [&[[u32; 4]]; N], count: usize) -> Result<[Output; N], String> {
         self.run_in_place(args, count)?;
         let c: &'a Executable = self.c;
-        Ok(std::array::from_fn(|l| {
+        let mut outputs = Vec::with_capacity(N);
+        for l in 0..N {
             let (values, discarded, steps, samples) = self.lane(l);
-            Output {
+            outputs.push(Output {
                 pointees: c
                     .pointer_args
                     .iter()
                     .map(|&(_, off, words)| self.read_locals(l, off as usize, words as usize))
-                    .collect(),
-                decision: self.decisions[l],
+                    .collect::<Result<_, _>>()?,
+                decision: self.decisions.get(l).copied().unwrap_or_default(),
                 values: values.to_vec(),
                 discarded,
                 steps,
                 samples,
-            }
-        }))
+            });
+        }
+        outputs
+            .try_into()
+            .map_err(|_| "internal error: a run of N lanes made another number of outputs".to_owned())
     }
 
     /// [`Runner::run_first`] with the results left in the runner, for [`Runner::lane`] to read: a run that
@@ -1656,30 +1897,33 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
         for o in self.outs.iter_mut() {
             o.clear();
         }
-        for l in 0..N {
-            if args[l].len() < self.c.arg_len {
+        for (l, given) in args.iter().enumerate() {
+            if given.len() < self.c.arg_len {
                 return Err(format!(
                     "{} argument registers given, the function takes {}",
-                    args[l].len(),
+                    given.len(),
                     self.c.arg_len
                 ));
             }
             for (i, (s, n)) in self.c.args.iter().enumerate() {
                 if *n != 0 {
-                    self.regs[*s as usize * N + l] = args[l][self.c.arg_at[i]];
+                    let argument = given.at(*self.c.arg_at.at(i)?)?;
+                    self.wr(slot_at::<N>(*s), l, *argument)?;
                 }
             }
             for &(at, off, count, width) in &self.c.array_args {
                 for k in 0..count as usize {
-                    let base = off as usize + k * width as usize;
-                    for (i, w) in args[l][at + k][..width as usize].iter().enumerate() {
-                        self.mem[Self::local(base + i, l)] = *w;
+                    let base = (off as usize).saturating_add(k.saturating_mul(width as usize));
+                    let element = given.at(at.saturating_add(k))?;
+                    for (i, w) in element.iter().take(width as usize).enumerate() {
+                        self.set_local_word(base.saturating_add(i), l, *w)?;
                     }
                 }
             }
             for &(at, off, words) in &self.c.pointer_args {
                 for w in 0..words as usize {
-                    self.mem[Self::local(off as usize + w, l)] = args[l][at + w / 4][w % 4];
+                    let register = given.at(at.saturating_add(w / 4))?;
+                    self.set_local_word((off as usize).saturating_add(w), l, comp(register, w % 4))?;
                 }
             }
         }
@@ -1691,10 +1935,15 @@ impl<'a, const N: usize, M: Mask> Runner<'a, N, M> {
     /// Lane `l` of the last run: its result members, whether it was discarded, its steps and its samples.
     pub(super) fn lane(&self, l: usize) -> (&[Reg], bool, u64, u64) {
         let steps = match self.grouping {
-            Grouping::Independent => self.lane_steps[l],
+            Grouping::Independent => self.lane_steps.get(l).copied().unwrap_or(0),
             Grouping::Quad | Grouping::Group => self.steps,
         };
-        (&self.outs[l], self.killed.has(l), steps, self.samples[l])
+        (
+            self.outs.get(l).map_or(&[], Vec::as_slice),
+            self.killed.has(l),
+            steps,
+            self.samples.get(l).copied().unwrap_or(0),
+        )
     }
 }
 
@@ -1807,7 +2056,7 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
     if mf == MathOp::Dot {
         let mut acc = 0.0f32;
         for i in 0..n as usize {
-            let prod = fl(fl(f(a[i]), z) * fl(f(b[i]), z), z);
+            let prod = fl(fl(f(comp(&a, i)), z) * fl(f(comp(&b, i)), z), z);
             acc = if i == 0 { prod } else { fl(acc + prod, z) };
         }
         r[0] = acc.to_bits();
@@ -1815,21 +2064,21 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
     }
     match mf {
         MathOp::All => {
-            r[0] = u32::from(a[..n as usize].iter().all(|&w| w != 0));
+            r[0] = u32::from(a.iter().take(n as usize).all(|&w| w != 0));
             return r;
         }
         MathOp::Any => {
-            r[0] = u32::from(a[..n as usize].iter().any(|&w| w != 0));
+            r[0] = u32::from(a.iter().take(n as usize).any(|&w| w != 0));
             return r;
         }
         MathOp::Normalize => {
-            let lanes = &a[..n as usize];
+            let lanes = a.get(..n as usize).unwrap_or_default();
             let mut sum = 0.0f32;
             for (i, &lane) in lanes.iter().enumerate() {
                 let sq = fl(fl(f(lane), z) * fl(f(lane), z), z);
                 sum = if i == 0 { sq } else { fl(sum + sq, z) };
             }
-            let length = fl((sum as f64).sqrt() as f32, z);
+            let length = fl(crate::narrow(f64::from(sum).sqrt()), z);
             for (out, &lane) in r.iter_mut().zip(lanes) {
                 *out = fl(fl(f(lane), z) / length, z).to_bits();
             }
@@ -1843,15 +2092,21 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
         return r;
     }
     if mf == MathOp::UnpackHalf {
-        r[0] = half::f16::from_bits(a[0] as u16).to_f32().to_bits();
-        r[1] = half::f16::from_bits((a[0] >> 16) as u16).to_f32().to_bits();
+        let packed = comp(&a, 0);
+        let half = |bits: u32| {
+            half::f16::from_bits(u16::try_from(bits & 0xffff).unwrap_or(0))
+                .to_f32()
+                .to_bits()
+        };
+        r[0] = half(packed);
+        r[1] = half(packed >> 16);
         return r;
     }
     for i in 0..n as usize {
-        let (x, y, w) = (a[i], b[i], c[i]);
+        let (x, y, w) = (comp(&a, i), comp(&b, i), comp(&c, i));
         let g = |v: f32| fl(v, z);
         let one = |h: &dyn Fn(f32) -> f32| g(h(g(f(x)))).to_bits();
-        r[i] = match mf {
+        let out = match mf {
             MathOp::AbsF => (f(x).abs()).to_bits(),
             MathOp::AbsI => (x as i32).wrapping_abs() as u32,
             MathOp::MinF => g(g(f(x)).min(g(f(y)))).to_bits(),
@@ -1867,23 +2122,23 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
             MathOp::Trunc => one(&|v| v.trunc()),
             MathOp::Round => one(&|v| v.round_ties_even()),
             MathOp::Fract => one(&|v| v - v.floor()),
-            MathOp::Exp2 => one(&|v| (v as f64).exp2() as f32),
-            MathOp::Log2 => one(&|v| (v as f64).log2() as f32),
-            MathOp::Sin => one(&|v| (v as f64).sin() as f32),
-            MathOp::Cos => one(&|v| (v as f64).cos() as f32),
+            MathOp::Exp2 => one(&|v| crate::narrow(f64::from(v).exp2())),
+            MathOp::Log2 => one(&|v| crate::narrow(f64::from(v).log2())),
+            MathOp::Sin => one(&|v| crate::narrow(f64::from(v).sin())),
+            MathOp::Cos => one(&|v| crate::narrow(f64::from(v).cos())),
             // to the nearest half, ties to even, and back
             MathOp::QuantizeF16 => one(&|v| half::f16::from_f32(v).to_f32()),
-            MathOp::Tan => one(&|v| (v as f64).tan() as f32),
-            MathOp::Asin => one(&|v| (v as f64).asin() as f32),
-            MathOp::Acos => one(&|v| (v as f64).acos() as f32),
-            MathOp::Atan => one(&|v| (v as f64).atan() as f32),
-            MathOp::Sinh => one(&|v| (v as f64).sinh() as f32),
-            MathOp::Cosh => one(&|v| (v as f64).cosh() as f32),
-            MathOp::Tanh => one(&|v| (v as f64).tanh() as f32),
+            MathOp::Tan => one(&|v| crate::narrow(f64::from(v).tan())),
+            MathOp::Asin => one(&|v| crate::narrow(f64::from(v).asin())),
+            MathOp::Acos => one(&|v| crate::narrow(f64::from(v).acos())),
+            MathOp::Atan => one(&|v| crate::narrow(f64::from(v).atan())),
+            MathOp::Sinh => one(&|v| crate::narrow(f64::from(v).sinh())),
+            MathOp::Cosh => one(&|v| crate::narrow(f64::from(v).cosh())),
+            MathOp::Tanh => one(&|v| crate::narrow(f64::from(v).tanh())),
             // one rounding, as a fused multiply-add
             MathOp::Fma => g(g(f(x)).mul_add(g(f(y)), g(f(w)))).to_bits(),
-            MathOp::Sqrt => one(&|v| (v as f64).sqrt() as f32),
-            MathOp::Rsqrt => one(&|v| (1.0 / (v as f64).sqrt()) as f32),
+            MathOp::Sqrt => one(&|v| crate::narrow(f64::from(v).sqrt())),
+            MathOp::Rsqrt => one(&|v| crate::narrow(1.0 / f64::from(v).sqrt())),
             MathOp::Popcnt => x.count_ones(),
             MathOp::RevBits => x.reverse_bits(),
             MathOp::Clz => x.leading_zeros(),
@@ -1907,7 +2162,7 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
                 })
                 .to_bits()
             }
-            MathOp::Pow => g((g(f(x)) as f64).powf(g(f(y)) as f64) as f32).to_bits(),
+            MathOp::Pow => g(crate::narrow(f64::from(g(f(x))).powf(f64::from(g(f(y)))))).to_bits(),
             MathOp::SignI => (x as i32).signum() as u32,
             MathOp::IsNan => u32::from(f(x).is_nan()),
             MathOp::IsInf => u32::from(f(x).is_infinite()),
@@ -1916,8 +2171,11 @@ fn math(mf: MathOp, a: Reg, b: Reg, c: Reg, n: u8, z: bool) -> Reg {
             | MathOp::UnpackHalf
             | MathOp::All
             | MathOp::Any
-            | MathOp::Normalize => unreachable!(),
+            | MathOp::Normalize => 0,
         };
+        if let Some(slot) = r.get_mut(i) {
+            *slot = out;
+        }
     }
     r
 }
@@ -1979,7 +2237,7 @@ impl Executable {
             .flat_map(move |z| (0..groups[1]).flat_map(move |y| (0..groups[0]).map(move |x| [x, y, z])));
         let mut buffers = BTreeMap::new();
         let mut elements = BTreeMap::new();
-        match size[0] * size[1] * size[2] {
+        match group_lanes(size)? {
             0 => Err("a thread group of no invocations".into()),
             1..=64 => self.groups::<64>(
                 bound,
@@ -2032,7 +2290,7 @@ impl Executable {
         }
         let ids = (0..groups[2])
             .flat_map(move |z| (0..groups[1]).flat_map(move |y| (0..groups[0]).map(move |x| [x, y, z])));
-        match size[0] * size[1] * size[2] {
+        match group_lanes(size)? {
             0 => Err("a thread group of no invocations".into()),
             1..=64 => self.groups::<64>(bound, backend, buffers, elements, ids, size, wave, None),
             65..=256 => self.groups::<256>(bound, backend, buffers, elements, ids, size, wave, None),
@@ -2053,7 +2311,7 @@ impl Executable {
         wave: u32,
         mut after: Option<(usize, &mut GroupHook<'_>)>,
     ) -> Result<Dispatched, String> {
-        let lanes = (size[0] * size[1] * size[2]) as usize;
+        let lanes = group_lanes(size)? as usize;
         // the buffers move into the run, and back whatever happens
         let store: Vec<Option<Vec<u32>>> = self
             .globals
@@ -2102,10 +2360,14 @@ impl Executable {
         for id in ids {
             match runner.run_group(id, size, wave) {
                 Ok(steps) => {
-                    done.groups += 1;
-                    done.steps += steps;
+                    done.groups = done.groups.saturating_add(1);
+                    done.steps = done.steps.saturating_add(steps);
                     if let Some((global, hook)) = after.as_mut() {
-                        let words = runner.store[*global].as_deref().unwrap_or(&[]);
+                        let words = runner
+                            .store
+                            .get(*global)
+                            .and_then(|memory| memory.as_deref())
+                            .unwrap_or(&[]);
                         if let Err(e) = hook(id, words) {
                             result = Err(format!("group {id:?}: {e}"));
                             break;
@@ -2127,7 +2389,7 @@ impl Executable {
             if let GlobalKind::StorageArray(id, _) = g.kind {
                 for (k, words) in held.into_iter().enumerate() {
                     if let Some(words) = words {
-                        elements.insert((id, k as u32), words);
+                        elements.insert((id, u32::try_from(k).unwrap_or(u32::MAX)), words);
                     }
                 }
             }
@@ -2140,24 +2402,31 @@ impl<'a, const N: usize> Runner<'a, N, Wide> {
     /// Run one thread group: `id` its position in the dispatch, `size` its `numthreads`. Returns the steps taken.
     fn run_group(&mut self, id: [u32; 3], size: [u32; 3], wave: u32) -> Result<u64, String> {
         let c: &'a Executable = self.c;
-        let lanes = (size[0] * size[1] * size[2]) as usize;
+        let lanes = group_lanes(size)? as usize;
         self.steps = 0;
         self.killed = Wide::none();
         self.retired = Wide::none();
         self.queries.clear();
         for (i, g) in c.globals.iter().enumerate() {
             if let GlobalKind::Workgroup(words) = g.kind {
-                match &mut self.store[i] {
-                    Some(v) => v.iter_mut().for_each(|w| *w = 0),
-                    slot => *slot = Some(vec![0; words as usize]),
+                match self.store.get_mut(i) {
+                    Some(Some(v)) => v.iter_mut().for_each(|w| *w = 0),
+                    Some(slot) => *slot = Some(vec![0; words as usize]),
+                    None => return Err(format!("internal error: global {i} has no memory in the run")),
                 }
             }
         }
         for l in 0..lanes {
+            let [width, height, _] = size;
+            let index = u32::try_from(l).map_err(|_| "a thread group of over 4294967295 invocations")?;
             let local = [
-                l as u32 % size[0],
-                (l as u32 / size[0]) % size[1],
-                l as u32 / (size[0] * size[1]),
+                index.checked_rem(width).unwrap_or(0),
+                index
+                    .checked_div(width)
+                    .unwrap_or(0)
+                    .checked_rem(height)
+                    .unwrap_or(0),
+                index.checked_div(width.saturating_mul(height)).unwrap_or(0),
             ];
             for (i, (slot, n)) in c.args.iter().enumerate() {
                 if *n == 0 {
@@ -2166,23 +2435,29 @@ impl<'a, const N: usize> Runner<'a, N, Wide> {
                 let value = match c.builtins.get(i).copied().flatten() {
                     Some(naga::BuiltIn::WorkGroupId) => [id[0], id[1], id[2], 0],
                     Some(naga::BuiltIn::LocalInvocationId) => [local[0], local[1], local[2], 0],
-                    Some(naga::BuiltIn::GlobalInvocationId) => [
-                        id[0] * size[0] + local[0],
-                        id[1] * size[1] + local[1],
-                        id[2] * size[2] + local[2],
-                        0,
-                    ],
-                    Some(naga::BuiltIn::LocalInvocationIndex) => [l as u32, 0, 0, 0],
-                    Some(naga::BuiltIn::SubgroupInvocationId) => [l as u32 % wave, 0, 0, 0],
+                    Some(naga::BuiltIn::GlobalInvocationId) => {
+                        let global = |axis: usize| {
+                            comp3(id, axis)
+                                .saturating_mul(comp3(size, axis))
+                                .saturating_add(comp3(local, axis))
+                        };
+                        [global(0), global(1), global(2), 0]
+                    }
+                    Some(naga::BuiltIn::LocalInvocationIndex) => [index, 0, 0, 0],
+                    Some(naga::BuiltIn::SubgroupInvocationId) => {
+                        [index.checked_rem(wave).unwrap_or(0), 0, 0, 0]
+                    }
                     Some(naga::BuiltIn::SubgroupSize) => [wave, 0, 0, 0],
-                    Some(naga::BuiltIn::SubgroupId) => [l as u32 / wave, 0, 0, 0],
-                    Some(naga::BuiltIn::NumSubgroups) => [(lanes as u32).div_ceil(wave), 0, 0, 0],
+                    Some(naga::BuiltIn::SubgroupId) => [index.checked_div(wave).unwrap_or(0), 0, 0, 0],
+                    Some(naga::BuiltIn::NumSubgroups) => {
+                        [u32::try_from(lanes).unwrap_or(u32::MAX).div_ceil(wave), 0, 0, 0]
+                    }
                     other => return Err(format!("compute entry argument {i} carries {other:?}")),
                 };
-                self.regs[*slot as usize * N + l] = value;
+                self.wr(slot_at::<N>(*slot), l, value)?;
             }
             for w in 0..c.local_words {
-                self.mem[Self::local(w, l)] = 0;
+                self.set_local_word(w, l, 0)?;
             }
         }
         self.block(&c.body, self.group)?;

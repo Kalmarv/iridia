@@ -186,6 +186,7 @@ pub struct UvMap {
 /// is off the exact map. Where the points are not on such a map, a 2D affine map of three of them tells why: one that
 /// every point is on is a rotation or a shear (an axis takes the other); none, and the coordinate is not affine in the
 /// input (a warp, or one made from another input or from time). Each is refused with its reason.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)] // axes are 0 or 1 of two-component arrays, point indices run over the (at least four) points, and the rest is float math
 pub fn affine_uv(points: &[([f32; 2], [f32; 2])]) -> Result<UvMap, String> {
     if points.len() < 4 {
         return Err(format!(
@@ -201,7 +202,9 @@ pub fn affine_uv(points: &[([f32; 2], [f32; 2])]) -> Result<UvMap, String> {
         (predicted - sampled).abs() <= 4. * f64::from(f32::EPSILON) * (terms + sampled.abs())
     };
     // three inputs not on one line, for the 2D map
-    let (p0, _) = points[0];
+    let Some(&(p0, _)) = points.first() else {
+        return Err("no points".into());
+    };
     let triangle = (1..points.len()).find_map(|i| {
         (i + 1..points.len()).find_map(|j| {
             let (pi, pj) = (points[i].0, points[j].0);
@@ -219,11 +222,11 @@ pub fn affine_uv(points: &[([f32; 2], [f32; 2])]) -> Result<UvMap, String> {
         let low = points
             .iter()
             .min_by(|a, b| a.0[axis].total_cmp(&b.0[axis]))
-            .expect("points");
+            .ok_or("no points")?;
         let high = points
             .iter()
             .max_by(|a, b| a.0[axis].total_cmp(&b.0[axis]))
-            .expect("points");
+            .ok_or("no points")?;
         let a = (high.1[axis] - low.1[axis]) / (high.0[axis] - low.0[axis]);
         let c = low.1[axis] - a * low.0[axis];
         separable &= points.iter().all(|(input, sampled)| {

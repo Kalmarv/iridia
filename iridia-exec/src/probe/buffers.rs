@@ -49,7 +49,7 @@ impl<S, F> AnsweredBuffers<S, F> {
                     extent.stride
                 ));
             }
-            if u64::from(extent.stride / 4) * u64::from(extent.elements) > u64::from(u32::MAX) {
+            if u64::from(extent.stride / 4).saturating_mul(u64::from(extent.elements)) > u64::from(u32::MAX) {
                 return Err(format!(
                     "t{slot}: structured extent exceeds the executor's word address range"
                 ));

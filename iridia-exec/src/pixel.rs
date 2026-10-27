@@ -106,7 +106,11 @@ impl ProgramShader {
         // the module's arguments: the interface's inputs the entry point carries, in order
         let io = iridia::entry_io(interface).map_err(error)?;
         for item in &io.arguments {
-            let v = &interface.inputs[item.varyings[0]];
+            let v = item
+                .varyings
+                .first()
+                .and_then(|&i| interface.inputs.get(i))
+                .ok_or_else(|| error("an entry argument names no input varying"))?;
             let name = Program::varying_name(&v.label);
             // the primitive and coverage inputs have no register in the signature: the register view cannot carry
             // them, they read as 0
@@ -142,7 +146,7 @@ impl ProgramShader {
             }
             arguments.push(Argument {
                 register: sig.register as usize,
-                lanes: lanes[..width].to_vec(),
+                lanes: lanes.iter().take(width).copied().collect(),
                 boolean: v.system == Some(SystemValue::FrontFacing),
                 used: v.used,
             });
@@ -275,8 +279,8 @@ impl ProgramShader {
         for a in &self.arguments {
             let mut value = [0u32; 4];
             if let Some(register) = inputs.get(a.register) {
-                for (i, lane) in a.lanes.iter().enumerate() {
-                    value[i] = register[*lane as usize];
+                for (slot, lane) in value.iter_mut().zip(&a.lanes) {
+                    *slot = register.get(*lane as usize).copied().unwrap_or(0);
                 }
             } else if a.used {
                 return Err(error(format!("input register {} not given", a.register)));
@@ -295,9 +299,9 @@ impl ProgramShader {
             .map(|a| {
                 let mut value = [[0u32; 4]; 2];
                 if let Some(d) = derivatives.get(a.register) {
-                    for axis in 0..2 {
-                        for (i, lane) in a.lanes.iter().enumerate() {
-                            value[axis][i] = d[axis][*lane as usize];
+                    for (out, from) in value.iter_mut().zip(d) {
+                        for (slot, lane) in out.iter_mut().zip(&a.lanes) {
+                            *slot = from.get(*lane as usize).copied().unwrap_or(0);
                         }
                     }
                 }
@@ -329,10 +333,16 @@ impl ProgramShader {
             if m.register == usize::MAX {
                 continue;
             }
-            for (i, lane) in m.lanes.iter().enumerate() {
-                e.outputs[m.register][*lane as usize] = value[i];
+            if let Some(register) = e.outputs.get_mut(m.register) {
+                for (lane, word) in m.lanes.iter().zip(value) {
+                    if let Some(slot) = register.get_mut(*lane as usize) {
+                        *slot = *word;
+                    }
+                }
             }
-            e.output_masks[m.register] |= m.written;
+            if let Some(mask) = e.output_masks.get_mut(m.register) {
+                *mask |= m.written;
+            }
         }
         e.instructions = usize::try_from(steps).unwrap_or(usize::MAX);
         e.samples = usize::try_from(samples).unwrap_or(usize::MAX);
@@ -430,7 +440,11 @@ impl SlotBackend<'_> {
         match self.buffers.get(&id) {
             Some(BufferKind::Structured { stride }) if *stride >= 4 => {
                 let per = stride / 4;
-                [word / per, word % per * 4, 0]
+                [
+                    word.checked_div(per).unwrap_or(0),
+                    word.checked_rem(per).unwrap_or(0).saturating_mul(4),
+                    0,
+                ]
             }
             // raw and typed views are addressed by the word
             _ => [word, 0, 0],
@@ -526,7 +540,7 @@ impl Backend for SlotBackend<'_> {
         match self.buffers.get(&view) {
             // a typed view's element is four lanes, one load answers all of them
             Some(BufferKind::Typed(_)) => {
-                let (mut at, end) = (word, word + u32::from(count));
+                let (mut at, end) = (word, word.saturating_add(u32::from(count)));
                 while at < end {
                     let element = at / 4;
                     let lanes = self.sampler.load(crate::Load {
@@ -535,14 +549,18 @@ impl Backend for SlotBackend<'_> {
                         mip: 0,
                     })?;
                     while at < end && at / 4 == element {
-                        out[(at - word) as usize] = lanes[(at % 4) as usize];
-                        at += 1;
+                        let from = lanes.get((at % 4) as usize).copied().unwrap_or(0);
+                        if let Some(slot) = out.get_mut(at.saturating_sub(word) as usize) {
+                            *slot = from;
+                        }
+                        at = at.saturating_add(1);
                     }
                 }
             }
             _ => {
                 for (i, w) in out.iter_mut().take(usize::from(count)).enumerate() {
-                    let [element, offset, _] = self.address(view, word + i as u32);
+                    let [element, offset, _] =
+                        self.address(view, word.saturating_add(u32::try_from(i).unwrap_or(0)));
                     *w = self.sampler.structured(slot, element, offset)?;
                 }
             }
@@ -617,7 +635,7 @@ impl PixelShader for ProgramShader {
                 buffers,
                 sampler,
                 &mut room,
-                &mut |i, e| each(k * LANES + i, e),
+                &mut |i, e| each(k.saturating_mul(LANES).saturating_add(i), e),
             );
             // a run that stops is run again one invocation after another: the error is then the first failing
             // one's, as alone, and the invocations before it are given
@@ -625,8 +643,8 @@ impl PixelShader for ProgramShader {
                 for (i, one) in chunk.iter().enumerate() {
                     let done = self
                         .run_scalar(one, Some(derivatives), buffers, sampler)
-                        .map_err(|e| (k * LANES + i, e))?;
-                    each(k * LANES + i, &done);
+                        .map_err(|e| (k.saturating_mul(LANES).saturating_add(i), e))?;
+                    each(k.saturating_mul(LANES).saturating_add(i), &done);
                 }
             }
         }
@@ -725,8 +743,11 @@ impl ProgramShader {
         // the lanes past the invocations are given the last one's arguments and not run
         let arguments = &room.arguments;
         let args: [&[[u32; 4]]; LANES] = std::array::from_fn(|l| {
-            let i = l.min(count - 1);
-            &arguments[i * width..(i + 1) * width]
+            let i = l.min(count.saturating_sub(1));
+            let from = i.saturating_mul(width);
+            arguments
+                .get(from..from.saturating_add(width))
+                .unwrap_or_default()
         });
         let mut backend = self.backend(sampler);
         let scratch = take(&self.lane_scratch).unwrap_or_else(|| Scratch::new(&self.executable));

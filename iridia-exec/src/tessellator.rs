@@ -236,6 +236,7 @@ fn fmax(a: f32, b: f32) -> f32 {
 }
 
 /// `floatToFixed`: a float to 16.16 unsigned fixed point, to nearest even, NaN and negative to 0, saturating.
+#[allow(clippy::arithmetic_side_effects)] // bit-field arithmetic on the float's own exponent and fraction, whose ranges the comparisons above bound
 fn float_to_fixed(input: f32) -> Fxp {
     const BIAS: i32 = 127;
     const HIDDEN: i32 = 1 << 23;
@@ -279,6 +280,7 @@ fn fixed_to_float(input: Fxp) -> f32 {
     (input >> FRACTION_BITS) as f32 + (input & FRACTION_MASK) as f32 / (1u32 << FRACTION_BITS) as f32
 }
 
+#[allow(clippy::cast_possible_truncation)] // the float is a clamped factor, at most 64
 fn is_even(input: f32) -> bool {
     (input as i32) & 1 == 0
 }
@@ -296,6 +298,7 @@ fn fxp_floor(input: Fxp) -> Fxp {
 }
 
 /// The most significant set bit removed (0 stays 0).
+#[allow(clippy::arithmetic_side_effects)] // the argument is a positive i32; the shift is by a leading-zeros count below 32
 fn remove_msb(val: i32) -> i32 {
     if val <= 0 {
         0
@@ -431,6 +434,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn finish(mut self) -> Tessellation {
         self.points.truncate(self.num_points.max(0) as usize);
         Tessellation {
@@ -460,15 +464,18 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn define_point(&mut self, u: Fxp, v: Fxp, at: i32) {
         self.points[at as usize] = [fixed_to_float(u), fixed_to_float(v)];
     }
 
+    #[allow(clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn define_index(&mut self, index: i32, at: i32) {
         self.index[at as usize] = self.patch_index_value(index);
     }
 
     /// A triangle given clockwise, stored clockwise or counter-clockwise as the output wants.
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn define_clockwise_triangle(&mut self, i0: i32, i1: i32, i2: i32, at: i32) {
         self.define_index(i0, at);
         if self.output == OutputPrimitive::TriangleCw {
@@ -480,6 +487,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn dump_all_points(&mut self) {
         for p in 0..self.num_points {
             let at = self.num_indices;
@@ -488,6 +496,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn dump_all_points_as_in_order_line_list(&mut self) {
         for p in 1..self.num_points {
             for index in [p - 1, p] {
@@ -498,6 +507,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn num_points_for_factor(&self, fxp: Fxp) -> i32 {
         if self.odd() {
             (fxp_ceil(FXP_ONE_HALF.wrapping_add(fxp.wrapping_add(1) / 2)).wrapping_mul(2) >> FRACTION_BITS)
@@ -507,6 +517,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn factor_context(&self, fxp: Fxp) -> FactorContext {
         let mut half = fxp.wrapping_add(1) / 2;
         if self.odd() || half == FXP_ONE_HALF {
@@ -546,6 +557,7 @@ impl Tessellator {
 
     /// Where point `point` of an edge is, in 16.16: points are introduced in ruler-function order as the factor
     /// grows, and an edge is mirrored about its middle.
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn place_point_in_1d(&self, ctx: &FactorContext, point: i32) -> Fxp {
         let mut point = point;
         let flip = point >= ctx.num_half_points;
@@ -575,6 +587,7 @@ impl Tessellator {
         location
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn patch_index_value(&self, mut index: i32) -> i32 {
         if self.using_patch {
             let p = &self.patch;
@@ -606,6 +619,7 @@ impl Tessellator {
 
     /// Two parallel rows of points stitched as the same number of points on each side (a trapezoid at each end when
     /// `trapezoid`), with the diagonals as `diagonals` says.
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn stitch_regular(
         &mut self,
         trapezoid: bool,
@@ -696,6 +710,7 @@ impl Tessellator {
 
     /// Two parallel rows of points with different factors stitched, in the order the points of an edge appear as its
     /// factor grows (the ruler function), walking in from one end to the middle and back out of it.
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn stitch_transition(&mut self, mut base: i32, inside: Row, outside: Row) {
         // where point i of the half edge ends up on the half edge at the largest tessellation
         const FINAL_POINT_POSITION: [i32; 33] = [
@@ -811,6 +826,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn quad_process(
         &mut self,
         mut u0: f32,
@@ -915,6 +931,7 @@ impl Tessellator {
         q
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn quad_generate_points(&mut self, q: &Quad) {
         // the exterior ring's edge points, clockwise from the top left
         let mut offset = 0;
@@ -986,6 +1003,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn quad_generate_connectivity(&mut self, q: &Quad) {
         // the primitives of the concentric rings, one side at a time for each
         let rows_to_center = [
@@ -1181,6 +1199,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn tri_process(&mut self, mut u0: f32, mut v0: f32, mut w0: f32, mut inside: f32) -> Tri {
         let mut t = Tri {
             outside: [0; 3],
@@ -1268,6 +1287,7 @@ impl Tessellator {
         t
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn tri_generate_points(&mut self, t: &Tri) {
         // the exterior ring's edge points, clockwise from point V (edge VW, the U = 0 edge)
         let mut offset = 0;
@@ -1327,6 +1347,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn tri_generate_connectivity(&mut self, t: &Tri) {
         let rings = (t.points_for_inside + 1) >> 1; // so that even tessellation includes the center point
         let mut outside_ctx = t.outside_ctx;
@@ -1406,6 +1427,7 @@ impl Tessellator {
 
     // --- isolines ---
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn isolines(&mut self, density: f32, detail: f32) {
         let l = self.isoline_process(density, detail);
         if l.culled {
@@ -1450,6 +1472,7 @@ impl Tessellator {
         }
     }
 
+    #[allow(clippy::arithmetic_side_effects)] // indices and counters are bounded by the factors clamped to at most 64 points per edge and by the lengths of the tables
     fn isoline_process(&mut self, mut density: f32, mut detail: f32) -> Isolines {
         let mut l = Isolines {
             line_density_parity: Parity::Even,
