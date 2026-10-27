@@ -1,6 +1,6 @@
 [package]
-name = "primase-core"
-description = "primase core: the world store, core components, frames, the pass manager and gates"
+name = "iridia-interface"
+description = "A shader program's interface as plain data: varyings, resources, constant layouts, binding roles and render state"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,9 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-thiserror.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
 serde_json.workspace = true
 
 [lints]

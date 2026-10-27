@@ -1,23 +1,31 @@
-//! `core.shader_binding`: on a material entity, which shader programs draw it and what each thing they read stands
-//! for. It states roles, never frozen values: a bake or a renderer decides what a role is worth (a camera position,
+//! What each thing a shader program reads and writes stands for: input, constant, texture, buffer and output roles,
+//! their encodings, and render state. It states roles, never frozen values: a bake or a renderer decides what a role is worth (a camera position,
 //! the time, the frame's exposure) and says so.
 
 use serde::Serialize;
-use serde_json::Value;
 
-use super::{BufferKind, Interface, Label, ResourceId, ResourceKind, Shader, Stage, SystemValue};
-use crate::TextureLayers;
-use crate::components::{Semantic, Texture, TextureFile};
-use crate::json::JsonError;
-use crate::pbr::Filters;
-use crate::world::{Component, Entity};
+use crate::{Label, ResourceId};
+
+/// A vertex attribute a program's input reads: what the drawn mesh's stream holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum Attribute {
+    Position,
+    Normal,
+    /// Tangent set: xyz tangent, w the bitangent sign. Set 0 is glTF's standard TANGENT.
+    Tangent(u8),
+    /// u right, v down: (0, 0) is the image's top-left corner (glTF).
+    TexCoord(u8),
+    Color(u8),
+    Joints(u8),
+    Weights(u8),
+}
 
 /// What a pixel or vertex stage's input is.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputRole {
     /// A vertex attribute of the drawn mesh.
-    Stream(Semantic),
+    Stream(Attribute),
     /// An input whose lanes are different vertex attributes the source packed into one register (two texture
     /// coordinate sets in one four-lane input), or one component of an attribute the source feeds as an input of its own
     /// (a tangent's sign as a byte): each entry is the attribute, the components it takes and the lanes it fills.
@@ -29,13 +37,12 @@ pub enum InputRole {
     /// Nothing known: the source's own meaning is not resolved, and why.
     Unknown { why: String },
 }
-
 /// The lanes `first..first + count` of an input: `count` components of the vertex attribute `semantic`, from component
 /// `component` (the attribute's own components: x 0, y 1, z 2, w 3), each in the encoding the input's scalar type has, as
 /// the other packed inputs take theirs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct LaneStream {
-    pub semantic: Semantic,
+    pub semantic: Attribute,
     /// The first lane (0 for x).
     pub first: u8,
     pub count: u8,
@@ -45,7 +52,6 @@ pub struct LaneStream {
     /// from the program's decode of it, not captured from the game).
     pub component: u8,
 }
-
 /// A camera or view-wide value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,7 +89,6 @@ pub enum ViewParameter {
     /// The previous frame's view-projection matrix (what a motion vector is measured against).
     PreviousViewProjection,
 }
-
 /// A transform built from the drawn object's object-to-world matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,7 +100,6 @@ pub enum ObjectMatrix {
     /// Object space to clip space.
     WorldViewProjection,
 }
-
 /// A value of the drawn object or instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -169,7 +173,6 @@ pub enum ObjectParameter {
     /// (a program reads both, and fades only where both are on).
     DitherEnabled,
 }
-
 /// A value of the frame being drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -191,7 +194,6 @@ pub enum FrameParameter {
     /// scales the ambient terms a vertex carries, growing from 1 (no change) with distance.
     DirectionalAmbientColour,
 }
-
 /// What a constant of a buffer stands for.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,7 +216,6 @@ pub enum ConstantRole {
         why: String,
     },
 }
-
 /// The scalar compared against an alpha reference, proved from the program's data flow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -233,7 +234,6 @@ pub enum AlphaComparison {
     /// evaluates that expression with the values its binding states, or does not cut.
     Unwritten,
 }
-
 /// One constant: the bytes `offset..offset + size` of a constant buffer resource of the shader, named when the
 /// source names it (a stripped program has fields by offset only), and what it stands for.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -250,7 +250,6 @@ pub struct ConstantBinding {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lines: Option<MatrixLines>,
 }
-
 /// How a matrix constant's 16-byte lines hold its role's matrix, the one that maps column vectors (a view-projection's
 /// clip position is `M * p`). Neither the layout's packing (`row_major`, `column_major`) nor the role decides it, since
 /// a program may multiply on either side (`mul(M, v)`, `mul(v, M)`): the source states it from what the program does
@@ -266,7 +265,6 @@ pub enum MatrixLines {
     /// to its transpose (a camera's) cannot bind it, one that writes the identity can.
     Unshown(Unshown),
 }
-
 /// Why a program does not show a matrix's lines ([`MatrixLines::Unshown`]): the kind a consumer branches on, its text
 /// ([`std::fmt::Display`]) the reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -282,7 +280,6 @@ pub enum Unshown {
     /// could not be found in it.
     Unexamined { why: String },
 }
-
 impl std::fmt::Display for Unshown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -299,7 +296,6 @@ impl std::fmt::Display for Unshown {
         }
     }
 }
-
 impl ConstantRole {
     /// Whether the role is a matrix, whose binding states its lines ([`ConstantBinding::lines`]): the view's and the
     /// object's transforms, their inverses and previous-frame and camera-relative forms, and the palettes.
@@ -335,6 +331,34 @@ impl ConstantRole {
         }
     }
 }
+/// How texels are filtered when a texture is magnified or minified (glTF's sampler filters).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum Filter {
+    /// The nearest texel: crisp texels.
+    Nearest,
+    /// Bilinear between the four nearest texels.
+    Linear,
+}
+/// How mip levels are used when a texture is minified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum MipFilter {
+    /// No mip levels: the base level only (glTF's `NEAREST` or `LINEAR` minification filter).
+    None,
+    /// The nearest mip level.
+    Nearest,
+    /// Between the two nearest mip levels (trilinear with a linear `min`).
+    Linear,
+}
+/// A sampler's filters as the source states them: each `None` where it states none (the renderer's default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct Filters {
+    /// Magnification.
+    pub mag: Option<Filter>,
+    /// Minification within a level.
+    pub min: Option<Filter>,
+    /// Minification across mip levels.
+    pub mip: Option<MipFilter>,
+}
 
 /// What a texture coordinate outside 0 to 1 reads, along one axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -351,7 +375,6 @@ pub enum AddressMode {
     /// Mirrored once about the origin, then the edge texel.
     MirrorOnce,
 }
-
 /// A sampler's state as the source stores it, for a texture slot: each part `None` where the source states none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct SamplerState {
@@ -366,7 +389,6 @@ pub struct SamplerState {
     /// Added to the mip level the hardware computes, where the source states a non-zero bias.
     pub mip_lod_bias: Option<f32>,
 }
-
 /// An image of the frame being drawn that a program reads: the consumer supplies it from its own frame, as it supplies a view or
 /// frame constant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -394,7 +416,6 @@ pub enum FrameTexture {
     /// coefficients the surface samples at its position).
     LightProbeVolume,
 }
-
 impl FrameTexture {
     /// The dimension of the image: a probe's is a cube, the light probes' a volume, every other a plane.
     pub fn dim(self) -> super::TextureDim {
@@ -409,31 +430,6 @@ impl FrameTexture {
         }
     }
 }
-
-/// What a texture slot samples.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TextureSource {
-    /// A texture entity (`core.texture`, `core.texture_layers` or `core.texture_file`), with the sampler state stored
-    /// with it.
-    Texture { texture: Entity, sampler: SamplerState },
-    /// No texture; the slot reads this value everywhere, and why.
-    Default { value: [f32; 4], why: String },
-    /// An image of the frame being drawn, which the consumer supplies.
-    Frame(FrameTexture),
-    /// Nothing is bound and the source says no default: a consumer must not invent one.
-    Missing,
-}
-
-/// One texture slot: the texture resource of the shader, the sampler resource it is read through when the program
-/// has one, and what is bound.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct TextureBinding {
-    pub resource: ResourceId,
-    pub sampler: Option<ResourceId>,
-    pub source: TextureSource,
-}
-
 /// One buffer slot: a buffer resource of the shader (a structured, raw or typed buffer a program indexes at run time) and
 /// what the source binds to it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -441,7 +437,6 @@ pub struct BufferBinding {
     pub resource: ResourceId,
     pub source: BufferSource,
 }
-
 /// What a buffer slot holds.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -453,7 +448,6 @@ pub enum BufferSource {
     /// constant).
     Unknown { why: String },
 }
-
 /// A table of the draw's data a program reads from a buffer.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -511,7 +505,6 @@ pub enum BufferTable {
         matrices: ResourceId,
     },
 }
-
 /// What the first prefix element of a [`BufferTable::SkinnedMatrices`] holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -521,7 +514,6 @@ pub enum SkinPrefix {
     /// (so a vertex at `p` with one influence of weight `w` ends at `w * (M p) + xyz`); the w lane is not read.
     Translation,
 }
-
 /// Where a normal vector is expressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -530,7 +522,6 @@ pub enum NormalSpace {
     View,
     Tangent,
 }
-
 /// How a normal is stored in the lanes of an output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -568,7 +559,6 @@ pub enum NormalEncoding {
     /// ([`NormalEncoding::decode_cube_face`]).
     CubeFace { minor: LaneAffine, payload: LaneAffine },
 }
-
 /// One lane's affine map, `v * scale + bias`, by the f32 bits of each so that it compares and hashes exactly; it is written
 /// as the numbers `scale` and `bias`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -576,7 +566,6 @@ pub struct LaneAffine {
     pub scale_bits: u32,
     pub bias_bits: u32,
 }
-
 impl Serialize for LaneAffine {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
@@ -586,7 +575,6 @@ impl Serialize for LaneAffine {
         out.end()
     }
 }
-
 impl LaneAffine {
     /// A signed value stored in 0 to 1: `v * 0.5 + 0.5`.
     pub const UNORM: Self = Self {
@@ -620,7 +608,6 @@ impl LaneAffine {
         v * self.scale() + self.bias()
     }
 }
-
 /// The cube-map faces of [`NormalEncoding::CubeFace`] by face index: the axis of the major component and, for lanes 0
 /// and 1, the axis and sign of the normal's component each holds.
 pub(super) const CUBE_FACES: [(usize, [(usize, f64); 2]); 6] = [
@@ -631,7 +618,6 @@ pub(super) const CUBE_FACES: [(usize, [(usize, f64); 2]); 6] = [
     (2, [(0, 1.0), (1, -1.0)]),
     (2, [(0, -1.0), (1, -1.0)]),
 ];
-
 impl NormalEncoding {
     /// The unit normal and the payload of four lanes stored as [`NormalEncoding::CubeFace`] with `minor` and
     /// `payload`; `steps` is each lane's quantisation step in the target's format (1/1023 for a 10-bit UNORM lane,
@@ -727,7 +713,6 @@ impl NormalEncoding {
         ]
     }
 }
-
 /// How a scalar is stored in the lanes of an output: `stored = (value / scale)^(root / power)`, so the value is
 /// `stored^(power / root) * scale` (the scale given by its f32 bits). Power and root 1 are linear; power 2 a square root
 /// stored (a value kept in a perceptual range), 4 a fourth root; root 2 a square stored (a value the lighting takes the
@@ -743,7 +728,6 @@ pub struct ScalarEncoding {
     /// number `scale`.
     pub scale_bits: u32,
 }
-
 impl Serialize for ScalarEncoding {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
@@ -759,7 +743,6 @@ impl Serialize for ScalarEncoding {
         out.end()
     }
 }
-
 impl ScalarEncoding {
     /// The value as it is (scale 1).
     pub const LINEAR: Self = Self {
@@ -807,7 +790,6 @@ impl ScalarEncoding {
         value * f32::from_bits(self.scale_bits)
     }
 }
-
 /// What an [`OutputRole::Occlusion`] occludes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -822,7 +804,6 @@ pub enum Occluded {
     /// environment's own ([`Occluded::NaturalAmbient`]).
     ArtificialAmbient,
 }
-
 /// What lanes of an output stand for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -890,7 +871,6 @@ pub enum OutputRole {
         why: String,
     },
 }
-
 impl OutputRole {
     /// [`OutputRole::Unknown`] with `why`.
     pub fn unknown(why: impl Into<String>) -> OutputRole {
@@ -910,7 +890,6 @@ impl OutputRole {
         }
     }
 }
-
 impl ScalarEncoding {
     /// Whether the encoding is one: a power and a root other than 0, and a finite scale.
     pub fn check(&self) -> Result<(), String> {
@@ -924,7 +903,6 @@ impl ScalarEncoding {
         Ok(())
     }
 }
-
 /// Lanes of one output varying and their role: an output's lanes may carry different things (albedo in rgb and
 /// occlusion in a), as several bindings of one label.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -934,14 +912,12 @@ pub struct OutputBinding {
     pub lanes: u8,
     pub role: OutputRole,
 }
-
 /// A stage's input binding: the role of an input varying the shader declares.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InputBinding {
     pub label: Label,
     pub role: InputRole,
 }
-
 /// What picks one of several stages of one kind in a binding: the mesh-side field a consumer reads, named by the
 /// dialect's component and field that holds it (`<component>.<field>`), and the value that picks this stage. A
 /// consumer draws a mesh with the stage whose key names a field it has and whose value that field equals; a mesh whose
@@ -957,7 +933,6 @@ pub struct VariantKey {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<KeyPart>,
 }
-
 /// One named number of what a [`VariantKey`] stands for (a program's place in its row, a pixel output count, a
 /// permutation id). It describes and never identifies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -965,32 +940,6 @@ pub struct KeyPart {
     pub name: String,
     pub value: u64,
 }
-
-/// One shader program in a material, with the role of everything it reads and writes.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct StageBinding {
-    pub stage: Stage,
-    /// The variant of the draw this stage is for, where the source draws one material with different programs of a
-    /// stage depending on the mesh (its vertex layout, whether it is skinned): the key the mesh's own data must equal
-    /// ([`VariantKey`]). A binding holds one stage of each kind, or several of one kind each for a distinct value of one
-    /// key.
-    pub variant: Option<VariantKey>,
-    /// The `core.shader` entity.
-    pub shader: Entity,
-    pub inputs: Vec<InputBinding>,
-    pub constants: Vec<ConstantBinding>,
-    pub textures: Vec<TextureBinding>,
-    /// The buffers the program indexes at run time (tables of the draw's matrices and instances). A stage that states
-    /// any states every buffer resource of its program (a table, or [`BufferSource::Unknown`] with why); empty for a
-    /// source that states none, whose buffers a consumer takes as [`StageBinding::buffer`] says: unknown, with the
-    /// reason it prints.
-    pub buffers: Vec<BufferBinding>,
-    /// The constant buffers the source binds at other than their declared size ([`ConstantBufferBinding`]); a buffer
-    /// with no entry is bound at its declared size.
-    pub constant_buffers: Vec<ConstantBufferBinding>,
-    pub outputs: Vec<OutputBinding>,
-}
-
 /// What the source states of how it binds a constant buffer of the program, beyond what its constants are.
 ///
 /// A program declares a constant buffer at the size it indexes it, and a source can bind more: D3D12 bounds a constant
@@ -1007,7 +956,6 @@ pub struct ConstantBufferBinding {
     /// a consumer that fills fewer rows leaves the rest zero.
     pub bound_size: Option<u32>,
 }
-
 /// A blend factor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1023,7 +971,6 @@ pub enum BlendFactor {
     DstAlpha,
     OneMinusDstAlpha,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlendOp {
@@ -1033,7 +980,6 @@ pub enum BlendOp {
     Min,
     Max,
 }
-
 /// `op(src * source, dst * destination)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct BlendEquation {
@@ -1041,14 +987,12 @@ pub struct BlendEquation {
     pub destination: BlendFactor,
     pub op: BlendOp,
 }
-
 /// Blending of the colour and the alpha channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Blend {
     pub colour: BlendEquation,
     pub alpha: BlendEquation,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Compare {
@@ -1061,7 +1005,6 @@ pub enum Compare {
     GreaterEqual,
     Always,
 }
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cull {
@@ -1069,21 +1012,18 @@ pub enum Cull {
     Front,
     Back,
 }
-
 /// Depth test and write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct DepthState {
     pub test: Compare,
     pub write: bool,
 }
-
 /// Alpha test: a pixel is kept where `alpha compare reference`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct AlphaTest {
     pub compare: Compare,
     pub reference: f32,
 }
-
 /// A stencil operation (D3D12 and Vulkan have the same eight).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1101,7 +1041,6 @@ pub enum StencilOp {
     /// Decrement, wrapping to the maximum.
     DecrementWrap,
 }
-
 /// What the stencil test does for one facing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct StencilFace {
@@ -1113,7 +1052,6 @@ pub struct StencilFace {
     pub pass: StencilOp,
     pub compare: Compare,
 }
-
 /// An enabled stencil test (a disabled one is `None` in [`RenderState::stencil`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Stencil {
@@ -1125,7 +1063,6 @@ pub struct Stencil {
     pub front: StencilFace,
     pub back: StencilFace,
 }
-
 /// What one render target does with a fragment: its blend and which channels it writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct TargetState {
@@ -1134,7 +1071,6 @@ pub struct TargetState {
     /// The channels written: bit 0 red, 1 green, 2 blue, 3 alpha (`0xf` all).
     pub write_mask: u8,
 }
-
 /// A depth bias, D3D12's three terms: `bias = constant * r + slope_scaled * max_slope`, limited to `clamp` when that
 /// is not zero (r the smallest resolvable depth difference).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -1143,7 +1079,6 @@ pub struct DepthBias {
     pub slope_scaled: f32,
     pub clamp: f32,
 }
-
 /// How a triangle is filled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1151,7 +1086,6 @@ pub enum Fill {
     Solid,
     Wireframe,
 }
-
 /// Fixed-function state as the source stores it; each `None` where it states none. D3D12-shaped: `blend` is render
 /// target 0's blend (what a consumer with one render target reads), and `targets` has every render target's blend
 /// and write mask where the source states them, with `targets[0]`'s blend equal to `blend` ([`ShaderBinding`]'s
@@ -1171,7 +1105,6 @@ pub struct RenderState {
     /// Whether counter-clockwise triangles are front faces.
     pub front_counter_clockwise: Option<bool>,
 }
-
 impl RenderState {
     /// The state is consistent: the write masks fit four channels, the bias is finite, and `blend` is the first
     /// target's blend (a state with a blend has a first target, and the other way round).
@@ -1209,513 +1142,6 @@ impl RenderState {
     }
 }
 
-/// `core.shader_binding`, on a material entity: the shader programs it is drawn with, one per stage, what each reads
-/// and writes, and its render state. Everything a program reads has a role, never a frozen value: textures are the
-/// entities bound, constants are roles with the material's own words as stored, views and frames are named, not
-/// valued. What can't be resolved is `Unknown` with the reason, or `Missing`, so nothing is silently made up.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ShaderBinding {
-    /// At most one binding per stage.
-    pub stages: Vec<StageBinding>,
-    pub state: RenderState,
-}
-
-impl ShaderBinding {
-    /// The binding of this stage.
-    pub fn stage(&self, stage: Stage) -> Option<&StageBinding> {
-        self.stages.iter().find(|s| s.stage == stage)
-    }
-}
-
-impl StageBinding {
-    /// The constants whose role is [`ConstantRole::Unknown`], by name (or offset when the source names none) and why.
-    /// A consumer that evaluates the stage uses it to refuse, or to say which values it left out, where zero is not a
-    /// neutral value (a scale, say): it never reads an unknown constant as zero without naming it.
-    pub fn unknown_constants(&self) -> impl Iterator<Item = (String, &str)> {
-        self.constants.iter().filter_map(|c| match &c.role {
-            ConstantRole::Unknown { why } => Some((
-                c.name.clone().unwrap_or_else(|| format!("+{}", c.offset)),
-                why.as_str(),
-            )),
-            _ => None,
-        })
-    }
-
-    /// The lanes the program writes that no output binding states, per output of `interface` (the stage's program's):
-    /// written as its source states it, the D3D signature's lanes less those it never writes (DXBC's `OSGN`, DXIL's
-    /// `OSG1`), in the output's own lanes (bit k its lane k). An output whose source states no written lanes (no D3D
-    /// signature: MojoShader's, SPIR-V's and GLSL's programs) has none here, nor a system value other than a render
-    /// target (a depth, a coverage mask), which states what it is itself.
-    pub fn unbound_written_lanes<'i>(&self, interface: &'i Interface) -> Vec<(&'i Label, u8)> {
-        let mut out = Vec::new();
-        for v in &interface.outputs {
-            if v.system.is_some_and(|s| !matches!(s, SystemValue::Target(_))) {
-                continue;
-            }
-            let Some(d3d) = v.provenance.d3d else {
-                continue;
-            };
-            // the element's own lanes: the register's from its first, as many as it is wide
-            let first = d3d.mask.trailing_zeros();
-            let width = u32::from(v.value.width).min(4);
-            let written = ((d3d.mask & !d3d.read_write_mask) >> first) & ((1u8 << width) - 1);
-            let bound = self
-                .outputs
-                .iter()
-                .filter(|o| o.label == v.label)
-                .fold(0u8, |acc, o| acc | o.lanes);
-            let unbound = written & !bound;
-            if unbound != 0 {
-                out.push((&v.label, unbound));
-            }
-        }
-        out
-    }
-
-    fn verify(&self, w: &crate::World) -> Result<(), String> {
-        let shader = w
-            .get::<Shader>(self.shader)
-            .ok_or_else(|| format!("the {:?} stage's shader entity has no core.shader", self.stage))?;
-        let interface: &Interface = &shader.interface;
-        let at = |detail: String| format!("{:?} stage: {detail}", self.stage);
-        if interface.stage != self.stage {
-            return Err(at(format!("its shader is a {:?} program", interface.stage)));
-        }
-        for (n, i) in self.inputs.iter().enumerate() {
-            if !interface.inputs.iter().any(|v| v.label == i.label) {
-                return Err(at(format!(
-                    "input {}{} is not in the shader",
-                    i.label.name, i.label.index
-                )));
-            }
-            if self.inputs[..n].iter().any(|before| before.label == i.label) {
-                return Err(at(format!(
-                    "input {}{} is bound twice",
-                    i.label.name, i.label.index
-                )));
-            }
-        }
-        for (n, o) in self.outputs.iter().enumerate() {
-            let Some(v) = interface.outputs.iter().find(|v| v.label == o.label) else {
-                return Err(at(format!(
-                    "output {}{} is not in the shader",
-                    o.label.name, o.label.index
-                )));
-            };
-            if o.lanes == 0 || u32::from(o.lanes) >> v.value.width != 0 {
-                return Err(at(format!(
-                    "output {}{} has {} lanes, not the mask {:#x}",
-                    o.label.name, o.label.index, v.value.width, o.lanes
-                )));
-            }
-            if let Some(Err(why)) = o.role.scalar_encoding().map(|e| e.check()) {
-                return Err(at(format!("output {}{}: {why}", o.label.name, o.label.index)));
-            }
-            if let OutputRole::Unknown { why } = &o.role
-                && why.trim().is_empty()
-            {
-                return Err(at(format!(
-                    "output {}{} is Unknown with no why",
-                    o.label.name, o.label.index
-                )));
-            }
-            // one label may carry several roles, each on its own lanes
-            if let Some(before) = self.outputs[..n]
-                .iter()
-                .find(|before| before.label == o.label && before.lanes & o.lanes != 0)
-            {
-                return Err(at(format!(
-                    "output {}{} has two roles on lanes {:#x}",
-                    o.label.name,
-                    o.label.index,
-                    before.lanes & o.lanes
-                )));
-            }
-        }
-        // a pixel program's outputs are the draw's targets: each lane it writes has a role, or is Unknown with why. Any
-        // other stage's outputs are the next stage's inputs, bound there.
-        if self.stage == Stage::Pixel
-            && let Some((label, lanes)) = self.unbound_written_lanes(interface).first()
-        {
-            return Err(at(format!(
-                "output {}{} lanes {lanes:#06b} are written and have no binding",
-                label.name, label.index
-            )));
-        }
-        for c in &self.constants {
-            let Some(ResourceKind::ConstantBuffer { layout }) =
-                interface.resource(c.resource).map(|r| &r.kind)
-            else {
-                return Err(at(format!(
-                    "constant resource {} is not a constant buffer",
-                    c.resource.0
-                )));
-            };
-            if c.size == 0 || c.offset.checked_add(c.size).is_none_or(|end| end > layout.size) {
-                return Err(at(format!(
-                    "constant of {} bytes at {} is outside buffer {} of {} bytes",
-                    c.size, c.offset, c.resource.0, layout.size
-                )));
-            }
-            let named = c.name.as_deref().map_or(String::new(), |n| format!("{n} "));
-            match (c.role.is_matrix(), &c.lines) {
-                (true, None) => {
-                    return Err(at(format!(
-                        "constant {named}at {} is a matrix ({:?}) whose lines are not stated",
-                        c.offset, c.role
-                    )));
-                }
-                (true, Some(MatrixLines::Unshown(Unshown::Unexamined { why }))) if why.trim().is_empty() => {
-                    return Err(at(format!(
-                        "constant {named}at {} is a matrix whose lines are unshown with no reason",
-                        c.offset
-                    )));
-                }
-                (false, Some(lines)) => {
-                    return Err(at(format!(
-                        "constant {named}at {} states lines ({lines:?}) for a role that is no matrix ({:?})",
-                        c.offset, c.role
-                    )));
-                }
-                _ => {}
-            }
-            if let ConstantRole::AlphaReference { value: r, .. } = c.role
-                && (!r.is_finite() || c.size != 4)
-            {
-                return Err(at(format!(
-                    "the alpha reference {r} at {} is not one finite float ({} bytes)",
-                    c.offset, c.size
-                )));
-            }
-            if let ConstantRole::Material(words) = &c.role
-                && words.len() as u64 * 4 > u64::from(c.size)
-            {
-                return Err(at(format!(
-                    "{} material words for a constant of {} bytes at {}",
-                    words.len(),
-                    c.size,
-                    c.offset
-                )));
-            }
-        }
-        // the bytes of a constant buffer belong to one constant
-        let mut spans: Vec<(u32, u32, u32)> = self
-            .constants
-            .iter()
-            .map(|c| (c.resource.0, c.offset, c.offset + c.size))
-            .collect();
-        spans.sort_unstable();
-        if let Some(pair) = spans.windows(2).find(|p| p[0].0 == p[1].0 && p[1].1 < p[0].2) {
-            return Err(at(format!(
-                "constants overlap in buffer {}: bytes {}..{} and {}..{}",
-                pair[0].0, pair[0].1, pair[0].2, pair[1].1, pair[1].2
-            )));
-        }
-        for (n, t) in self.textures.iter().enumerate() {
-            let Some(ResourceKind::Texture { dim, arrayed, .. }) =
-                interface.resource(t.resource).map(|r| &r.kind)
-            else {
-                return Err(at(format!("resource {} is not a texture", t.resource.0)));
-            };
-            if self.textures[..n]
-                .iter()
-                .any(|before| before.resource == t.resource)
-            {
-                return Err(at(format!("texture slot {} is bound twice", t.resource.0)));
-            }
-            if let TextureSource::Frame(frame) = &t.source
-                && *dim != frame.dim()
-            {
-                return Err(at(format!(
-                    "texture slot {} is a {dim:?} texture and binds the frame's {frame:?}, a {:?} image",
-                    t.resource.0,
-                    frame.dim()
-                )));
-            }
-            if let Some(s) = t.sampler
-                && !matches!(
-                    interface.resource(s).map(|r| &r.kind),
-                    Some(ResourceKind::Sampler { .. })
-                )
-            {
-                return Err(at(format!("resource {} is not a sampler", s.0)));
-            }
-            if let TextureSource::Texture { texture, .. } = &t.source {
-                if !(w.has::<Texture>(*texture)
-                    || w.has::<TextureLayers>(*texture)
-                    || w.has::<TextureFile>(*texture))
-                {
-                    return Err(at(format!(
-                        "texture slot {} binds an entity that is neither core.texture, core.texture_layers nor core.texture_file",
-                        t.resource.0
-                    )));
-                }
-                // a texture of several images is read as the dimension its shape is
-                if let Some(layers) = w.get::<TextureLayers>(*texture)
-                    && layers.shape.dimension() != (*dim, *arrayed)
-                {
-                    return Err(at(format!(
-                        "texture slot {} is a {dim:?} resource (arrayed {arrayed}) and binds a {:?} texture",
-                        t.resource.0, layers.shape
-                    )));
-                }
-            }
-        }
-        self.verify_buffers(interface).map_err(at)?;
-        self.verify_constant_buffers(interface).map_err(at)
-    }
-
-    /// What buffer `resource` of the program holds: its entry, or, where the source states no buffers for the stage,
-    /// unknown with that reason (never zeros without saying so).
-    pub fn buffer(&self, resource: ResourceId) -> BufferSource {
-        self.buffers
-            .iter()
-            .find(|b| b.resource == resource)
-            .map(|b| b.source.clone())
-            .unwrap_or_else(|| BufferSource::Unknown {
-                why: "the source states no buffers for this stage".into(),
-            })
-    }
-
-    /// The constant buffers the source states a binding for: each a constant buffer of the shader, once, bound at a whole
-    /// number of rows no smaller than the program declares.
-    fn verify_constant_buffers(&self, interface: &Interface) -> Result<(), String> {
-        for (n, c) in self.constant_buffers.iter().enumerate() {
-            let Some(ResourceKind::ConstantBuffer { layout }) =
-                interface.resource(c.resource).map(|r| &r.kind)
-            else {
-                return Err(format!("resource {} is not a constant buffer", c.resource.0));
-            };
-            if self.constant_buffers[..n]
-                .iter()
-                .any(|before| before.resource == c.resource)
-            {
-                return Err(format!("constant buffer {} is bound twice", c.resource.0));
-            }
-            if let Some(bytes) = c.bound_size
-                && (bytes % 16 != 0 || bytes < layout.size)
-            {
-                return Err(format!(
-                    "constant buffer {} is bound at {bytes} bytes: not a whole number of 16-byte rows, or smaller than the {} the program declares",
-                    c.resource.0, layout.size
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// The bytes the constant buffer `resource` is bound with where the source states a size, else `None` (its
-    /// declared size).
-    pub fn bound_size(&self, resource: ResourceId) -> Option<u32> {
-        self.constant_buffers
-            .iter()
-            .find(|c| c.resource == resource)
-            .and_then(|c| c.bound_size)
-    }
-
-    /// How many matrices the joint palette constant holds as the program reads it: the stage's
-    /// [`ObjectParameter::BonePalette`] constant held as rows (three 16-byte lines a matrix, 48 bytes), at its size or, where
-    /// the source binds its buffer larger than the program declares ([`Self::bound_size`]), the bytes from its offset to the
-    /// bound size, whichever is more. `None` where the stage has no such constant, or holds it as columns or does not show
-    /// which (the lab and the census fill rows only).
-    pub fn bone_palette_matrices(&self) -> Option<u32> {
-        let c = self.constants.iter().find(|c| {
-            matches!(c.role, ConstantRole::Object(ObjectParameter::BonePalette))
-                && matches!(c.lines, Some(MatrixLines::Rows))
-        })?;
-        let bound = self
-            .bound_size(c.resource)
-            .map_or(0, |b| b.saturating_sub(c.offset));
-        Some(c.size.max(bound) / 48)
-    }
-
-    /// The buffer slots: each a buffer of the shader, bound once, a matrix table of 16-byte elements, and an instance
-    /// table whose records fit its stride and name a matrix table of this stage; a stage that states any buffer states
-    /// every buffer of its program.
-    fn verify_buffers(&self, interface: &Interface) -> Result<(), String> {
-        let kind = |id: ResourceId| match interface.resource(id).map(|r| &r.kind) {
-            Some(ResourceKind::Buffer(kind)) => Some(*kind),
-            _ => None,
-        };
-        for (n, b) in self.buffers.iter().enumerate() {
-            let Some(buffer) = kind(b.resource) else {
-                return Err(format!("resource {} is not a buffer", b.resource.0));
-            };
-            if self.buffers[..n]
-                .iter()
-                .any(|before| before.resource == b.resource)
-            {
-                return Err(format!("buffer slot {} is bound twice", b.resource.0));
-            }
-            match &b.source {
-                BufferSource::Unknown { why } if why.is_empty() => {
-                    return Err(format!(
-                        "buffer slot {} is unknown and says not why",
-                        b.resource.0
-                    ));
-                }
-                BufferSource::Unknown { .. } => {}
-                BufferSource::Table(
-                    BufferTable::ObjectMatrices { rows }
-                    | BufferTable::HeaderedMatrices { rows }
-                    | BufferTable::SkinnedMatrices { rows, .. },
-                ) => {
-                    if !(3..=4).contains(rows) {
-                        return Err(format!(
-                            "buffer slot {} holds matrices of {rows} rows, not 3 or 4",
-                            b.resource.0
-                        ));
-                    }
-                    if let BufferKind::Structured { stride } = buffer
-                        && stride != 16
-                    {
-                        return Err(format!(
-                            "buffer slot {} holds matrix rows of 16 bytes and has elements of {stride}",
-                            b.resource.0
-                        ));
-                    }
-                    if let BufferSource::Table(BufferTable::SkinnedMatrices {
-                        joint_stride, prefix, ..
-                    }) = &b.source
-                    {
-                        if joint_stride < rows {
-                            return Err(format!(
-                                "buffer slot {} holds joints {joint_stride} elements apart with {rows} rows each",
-                                b.resource.0
-                            ));
-                        }
-                        if *prefix == 0 {
-                            return Err(format!(
-                                "buffer slot {} holds skinned matrices with no prefix element to say what the first one holds",
-                                b.resource.0
-                            ));
-                        }
-                    }
-                }
-                BufferSource::Table(BufferTable::Instances {
-                    stride,
-                    matrix_start,
-                    matrices,
-                }) => {
-                    if *stride == 0 || matrix_start >= stride {
-                        return Err(format!(
-                            "buffer slot {} holds instance records of {stride} words and names word {matrix_start}",
-                            b.resource.0
-                        ));
-                    }
-                    if let BufferKind::Structured { stride: bytes } = buffer
-                        && bytes != u32::from(*stride) * 4
-                    {
-                        return Err(format!(
-                            "buffer slot {} holds instance records of {stride} words and has elements of {bytes} bytes",
-                            b.resource.0
-                        ));
-                    }
-                    let is_matrices = |other: &BufferBinding| {
-                        other.resource == *matrices
-                            && matches!(
-                                other.source,
-                                BufferSource::Table(
-                                    BufferTable::ObjectMatrices { .. }
-                                        | BufferTable::HeaderedMatrices { .. }
-                                        | BufferTable::SkinnedMatrices { .. }
-                                )
-                            )
-                    };
-                    if !self.buffers.iter().any(is_matrices) {
-                        return Err(format!(
-                            "buffer slot {} names slot {} for its matrices, which is no matrix table of this stage",
-                            b.resource.0, matrices.0
-                        ));
-                    }
-                }
-            }
-        }
-        if !self.buffers.is_empty()
-            && let Some(r) = interface.resources.iter().find(|r| {
-                matches!(r.kind, ResourceKind::Buffer(_)) && !self.buffers.iter().any(|b| b.resource == r.id)
-            })
-        {
-            return Err(format!(
-                "buffer slot {} has no entry: a stage that states buffers states every one (a table, or unknown with \
-                 why)",
-                r.id.0
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl Component for ShaderBinding {
-    const NAME: &'static str = "core.shader_binding";
-    const GEOMETRY: crate::Geometry = crate::Geometry::None;
-    fn to_json(&self) -> Result<Option<Value>, JsonError> {
-        crate::json::to_value(self).map(Some)
-    }
-    fn verify(&self, _e: Entity, w: &crate::World) -> Result<(), String> {
-        for (i, s) in self.stages.iter().enumerate() {
-            if let Some(k) = &s.variant {
-                if k.field.is_empty() {
-                    return Err(format!("the {:?} stage's variant key names no field", s.stage));
-                }
-                if let Some(p) = k.parts.iter().enumerate().find_map(|(n, p)| {
-                    k.parts[..n]
-                        .iter()
-                        .any(|before| before.name == p.name)
-                        .then_some(&p.name)
-                }) {
-                    return Err(format!(
-                        "the variant key {} = {} describes {p:?} twice",
-                        k.field, k.value
-                    ));
-                }
-                // the stages of one variant describe it the same way
-                if let Some(other) = self.stages[..i].iter().find(|o| {
-                    o.variant
-                        .as_ref()
-                        .is_some_and(|b| b.field == k.field && b.value == k.value && b.parts != k.parts)
-                }) {
-                    return Err(format!(
-                        "the {:?} and {:?} stages of {} = {} describe it differently",
-                        other.stage, s.stage, k.field, k.value
-                    ));
-                }
-            }
-            // a stage kind may repeat only under distinct values of one key
-            for other in self.stages[..i].iter().filter(|o| o.stage == s.stage) {
-                let distinct = match (&other.variant, &s.variant) {
-                    (Some(a), Some(b)) => a.field == b.field && a.value != b.value,
-                    _ => false,
-                };
-                if !distinct {
-                    return Err(match &s.variant {
-                        None => format!("the {:?} stage is bound twice", s.stage),
-                        Some(k) => format!(
-                            "the {:?} stage is bound twice for {} = {} (several need distinct values of one key)",
-                            s.stage, k.field, k.value
-                        ),
-                    });
-                }
-            }
-            s.verify(w)?;
-        }
-        self.state.verify()
-    }
-    fn references(&self, out: &mut Vec<Entity>) {
-        for s in &self.stages {
-            out.push(s.shader);
-            for t in &s.textures {
-                if let TextureSource::Texture { texture, .. } = &t.source {
-                    out.push(*texture);
-                }
-            }
-        }
-    }
-    fn apply_linear(&self, _l: &crate::Linear) -> crate::world::Linearity<Self> {
-        crate::world::Linearity::Invariant
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1748,7 +1174,6 @@ mod tests {
             }})
         );
     }
-
     /// The cube-face store as the source's G-buffer program writes it (`minor` 511/1023 both, `payload` 0.49804688 and
     /// 0.0014662757, the program's literals) gives the program's own output for the ten normals it was evaluated at
     /// with a payload of 0, and decodes back to them; every face, the edges and corners between faces and a grid of
@@ -1857,7 +1282,6 @@ mod tests {
         );
         assert!(refused([0.5, 0.5, 0.5 + 0.5 / 1023.0, 0.0]).contains("its sign cannot be read"));
     }
-
     /// The diamond octahedral store round-trips: the hand-worked axes (+z stores x = y = 255 and the sign bit; +x
     /// stores u = v = 510, both ninth bits; -y stores u = 0, v = 510), the payload kept, and a grid of normals to
     /// the 9-bit step.
@@ -1902,13 +1326,6 @@ mod tests {
         // a 9-bit coordinate step is 2/510: the direction is within a few of them
         assert!(worst > 1.0 - 2e-4, "worst dot {worst}");
     }
-    use crate::World;
-    use crate::shader::{
-        BufferLayout, Constant, ConstantType, ResourceProvenance, SampleType, ScalarType, ShaderFormat,
-        TextureDim, Value as Lanes, Varying, VaryingProvenance,
-    };
-    use crate::shader::{Resource, ResourceKind as Kind};
-
     #[test]
     fn a_scalar_encoding_decodes_what_it_stores() {
         // stored = sqrt(value / 512): the value is the stored one squared times 512
@@ -1940,7 +1357,6 @@ mod tests {
             serde_json::json!({"power": 1, "root": 2, "scale": 0.95f32})
         );
     }
-
     /// The camera-relative view-projection is a role of its own: a source that states it is not read as the plain matrix.
     #[test]
     fn a_camera_relative_view_projection_is_not_the_plain_one() {
@@ -1953,7 +1369,6 @@ mod tests {
             serde_json::json!("camera_relative_view_projection")
         );
     }
-
     #[test]
     fn a_render_state_is_consistent() {
         let eq = BlendEquation {
@@ -2002,851 +1417,5 @@ mod tests {
             clamp: 0.0,
         });
         assert!(state.verify().unwrap_err().contains("depth bias"));
-    }
-
-    fn varying(name: &str, width: u8) -> Varying {
-        Varying {
-            label: Label {
-                name: name.into(),
-                index: 0,
-            },
-            system: None,
-            value: Lanes {
-                scalar: ScalarType::Float,
-                width,
-            },
-            interp: None,
-            used: true,
-            provenance: VaryingProvenance::default(),
-        }
-    }
-    fn resource(id: u32, kind: Kind) -> Resource {
-        Resource {
-            id: ResourceId(id),
-            kind,
-            count: 1,
-            provenance: ResourceProvenance::default(),
-        }
-    }
-    /// A pixel shader with a constant buffer (0), a texture (1) and a sampler (2).
-    fn shader() -> Shader {
-        Shader {
-            format: ShaderFormat::Dxbc,
-            bytecode: vec![0; 8],
-            interface: Interface {
-                stage: Stage::Pixel,
-                inputs: vec![varying("TEXCOORD", 2)],
-                outputs: vec![varying("SV_Target", 4)],
-                resources: vec![
-                    resource(
-                        0,
-                        Kind::ConstantBuffer {
-                            layout: BufferLayout {
-                                size: 32,
-                                constants: vec![Constant {
-                                    name: "tint".into(),
-                                    offset: 0,
-                                    ty: ConstantType::Vector(Lanes {
-                                        scalar: ScalarType::Float,
-                                        width: 4,
-                                    }),
-                                    default: None,
-                                }],
-                            },
-                        },
-                    ),
-                    resource(
-                        1,
-                        Kind::Texture {
-                            dim: TextureDim::D2,
-                            arrayed: false,
-                            multisampled: false,
-                            sample: SampleType::Float,
-                        },
-                    ),
-                    resource(2, Kind::Sampler { comparison: false }),
-                ],
-                facts: Default::default(),
-            },
-        }
-    }
-    fn binding(shader: Entity, texture: Entity) -> ShaderBinding {
-        ShaderBinding {
-            stages: vec![StageBinding {
-                stage: Stage::Pixel,
-                variant: None,
-                shader,
-                inputs: vec![InputBinding {
-                    label: Label {
-                        name: "TEXCOORD".into(),
-                        index: 0,
-                    },
-                    role: InputRole::Stream(Semantic::TexCoord(0)),
-                }],
-                constants: vec![
-                    ConstantBinding {
-                        resource: ResourceId(0),
-                        offset: 0,
-                        size: 16,
-                        name: Some("tint".into()),
-                        role: ConstantRole::Material(vec![1.0f32.to_bits(); 4]),
-                        lines: None,
-                    },
-                    ConstantBinding {
-                        resource: ResourceId(0),
-                        offset: 16,
-                        size: 16,
-                        name: None,
-                        role: ConstantRole::Unknown {
-                            why: "cb0[1] is not in the recipe".into(),
-                        },
-                        lines: None,
-                    },
-                ],
-                textures: vec![TextureBinding {
-                    resource: ResourceId(1),
-                    sampler: Some(ResourceId(2)),
-                    source: TextureSource::Texture {
-                        texture,
-                        sampler: SamplerState {
-                            wrap: [Some(AddressMode::Repeat); 3],
-                            ..SamplerState::default()
-                        },
-                    },
-                }],
-                buffers: Vec::new(),
-                constant_buffers: Vec::new(),
-                outputs: vec![
-                    OutputBinding {
-                        label: Label {
-                            name: "SV_Target".into(),
-                            index: 0,
-                        },
-                        lanes: 0b0111,
-                        role: OutputRole::Albedo,
-                    },
-                    OutputBinding {
-                        label: Label {
-                            name: "SV_Target".into(),
-                            index: 0,
-                        },
-                        lanes: 0b1000,
-                        role: OutputRole::Occlusion {
-                            of: Occluded::AllLight,
-                            encoding: ScalarEncoding::LINEAR,
-                        },
-                    },
-                ],
-            }],
-            state: RenderState::default(),
-        }
-    }
-    /// A vertex shader with a constant buffer (0) and structured buffers of 16 (10), 8 (11) and 12 (12) bytes an element.
-    fn buffer_shader() -> Shader {
-        let structured =
-            |id, stride| resource(id, Kind::Buffer(crate::shader::BufferKind::Structured { stride }));
-        Shader {
-            format: ShaderFormat::Dxbc,
-            bytecode: vec![0; 8],
-            interface: Interface {
-                stage: Stage::Vertex,
-                inputs: Vec::new(),
-                outputs: Vec::new(),
-                resources: vec![
-                    resource(
-                        0,
-                        Kind::ConstantBuffer {
-                            layout: BufferLayout {
-                                size: 16,
-                                constants: Vec::new(),
-                            },
-                        },
-                    ),
-                    structured(10, 16),
-                    structured(11, 8),
-                    structured(12, 12),
-                ],
-                facts: Default::default(),
-            },
-        }
-    }
-    fn buffer_binding(shader: Entity, buffers: Vec<BufferBinding>) -> ShaderBinding {
-        ShaderBinding {
-            stages: vec![StageBinding {
-                stage: Stage::Vertex,
-                variant: None,
-                shader,
-                inputs: Vec::new(),
-                constants: Vec::new(),
-                textures: Vec::new(),
-                buffers,
-                constant_buffers: Vec::new(),
-                outputs: Vec::new(),
-            }],
-            state: RenderState::default(),
-        }
-    }
-    fn matrices(resource: u32, rows: u8) -> BufferBinding {
-        BufferBinding {
-            resource: ResourceId(resource),
-            source: BufferSource::Table(BufferTable::ObjectMatrices { rows }),
-        }
-    }
-    fn headered(resource: u32, rows: u8) -> BufferBinding {
-        BufferBinding {
-            resource: ResourceId(resource),
-            source: BufferSource::Table(BufferTable::HeaderedMatrices { rows }),
-        }
-    }
-    fn skinned(resource: u32, rows: u8, joint_stride: u8, prefix: u8) -> BufferBinding {
-        BufferBinding {
-            resource: ResourceId(resource),
-            source: BufferSource::Table(BufferTable::SkinnedMatrices {
-                rows,
-                joint_stride,
-                prefix,
-                first: SkinPrefix::Translation,
-            }),
-        }
-    }
-    fn instances(resource: u32, stride: u8, matrix_start: u8, table: u32) -> BufferBinding {
-        BufferBinding {
-            resource: ResourceId(resource),
-            source: BufferSource::Table(BufferTable::Instances {
-                stride,
-                matrix_start,
-                matrices: ResourceId(table),
-            }),
-        }
-    }
-
-    /// The buffer slots: a matrix table and the instance records that index it verify, each rule broken once is named,
-    /// and the roles serialize under their own names.
-    #[test]
-    fn buffer_slots_name_the_tables_the_program_indexes() {
-        let mut w = World::new();
-        let (s, m) = (w.spawn(), w.spawn());
-        w.insert(s, buffer_shader());
-        // every buffer named: 12 is unknown with a reason
-        let rest = || BufferBinding {
-            resource: ResourceId(12),
-            source: BufferSource::Unknown {
-                why: "not read here".into(),
-            },
-        };
-        let good = vec![matrices(10, 3), instances(11, 2, 0, 10), rest()];
-        w.insert(m, buffer_binding(s, good.clone()));
-        assert_eq!(w.get::<ShaderBinding>(m).unwrap().verify(m, &w), Ok(()));
-        let json = w.get::<ShaderBinding>(m).unwrap().to_json().unwrap().unwrap();
-        assert_eq!(
-            json["stages"][0]["buffers"][0]["source"],
-            serde_json::json!({"table": {"object_matrices": {"rows": 3}}})
-        );
-        assert_eq!(
-            json["stages"][0]["buffers"][1]["source"],
-            serde_json::json!({"table": {"instances": {"stride": 2, "matrix_start": 0, "matrices": 10}}})
-        );
-        let unknown = |why: &str| BufferBinding {
-            resource: ResourceId(12),
-            source: BufferSource::Unknown { why: why.into() },
-        };
-        let cases: Vec<(Vec<BufferBinding>, &str)> = vec![
-            (vec![matrices(0, 3)], "is not a buffer"),
-            (vec![matrices(99, 3)], "is not a buffer"),
-            (vec![matrices(10, 3), matrices(10, 4)], "bound twice"),
-            (vec![matrices(10, 5)], "not 3 or 4"),
-            (vec![matrices(11, 3)], "has elements of 8"),
-            (vec![matrices(10, 3), instances(11, 2, 2, 10)], "names word 2"),
-            (vec![matrices(10, 3), instances(11, 0, 0, 10)], "names word 0"),
-            (
-                vec![matrices(10, 3), instances(11, 3, 0, 10)],
-                "has elements of 8 bytes",
-            ),
-            (
-                vec![matrices(10, 3), instances(11, 2, 0, 12)],
-                "no matrix table of this stage",
-            ),
-            (vec![instances(11, 2, 0, 10)], "no matrix table of this stage"),
-            (
-                vec![matrices(10, 3), instances(11, 2, 0, 11)],
-                "no matrix table of this stage",
-            ),
-            (vec![unknown("")], "says not why"),
-        ];
-        for (buffers, message) in cases {
-            w.insert(m, buffer_binding(s, buffers.clone()));
-            let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-            assert!(err.contains(message), "{buffers:?}: {err}");
-        }
-        // an unknown buffer with a reason, beside a table, is a binding
-        w.insert(
-            m,
-            buffer_binding(
-                s,
-                vec![
-                    matrices(10, 4),
-                    instances(11, 2, 0, 10),
-                    unknown("the engine fills it"),
-                ],
-            ),
-        );
-        assert_eq!(w.get::<ShaderBinding>(m).unwrap().verify(m, &w), Ok(()));
-        // a headered table is a matrix table: records may name it, and it has the same rows and element rules
-        w.insert(
-            m,
-            buffer_binding(s, vec![headered(10, 3), instances(11, 2, 1, 10), rest()]),
-        );
-        assert_eq!(w.get::<ShaderBinding>(m).unwrap().verify(m, &w), Ok(()));
-        let json = w.get::<ShaderBinding>(m).unwrap().to_json().unwrap().unwrap();
-        assert_eq!(
-            json["stages"][0]["buffers"][0]["source"],
-            serde_json::json!({"table": {"headered_matrices": {"rows": 3}}})
-        );
-        // a skinned block is a matrix table too, with the joints no closer than their rows and a prefix to describe
-        w.insert(
-            m,
-            buffer_binding(s, vec![skinned(10, 3, 3, 3), instances(11, 2, 1, 10), rest()]),
-        );
-        assert_eq!(w.get::<ShaderBinding>(m).unwrap().verify(m, &w), Ok(()));
-        let json = w.get::<ShaderBinding>(m).unwrap().to_json().unwrap().unwrap();
-        assert_eq!(
-            json["stages"][0]["buffers"][0]["source"],
-            serde_json::json!({"table": {"skinned_matrices": {
-                "rows": 3, "joint_stride": 3, "prefix": 3, "first": "translation"
-            }}})
-        );
-        for (buffers, message) in [
-            (
-                vec![skinned(10, 3, 2, 3), instances(11, 2, 1, 10), rest()],
-                "elements apart with 3 rows",
-            ),
-            (
-                vec![skinned(10, 3, 3, 0), instances(11, 2, 1, 10), rest()],
-                "no prefix element to say what the first one holds",
-            ),
-            (
-                vec![skinned(10, 5, 5, 3), instances(11, 2, 1, 10), rest()],
-                "not 3 or 4",
-            ),
-        ] {
-            w.insert(m, buffer_binding(s, buffers.clone()));
-            let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-            assert!(err.contains(message), "{buffers:?}: {err}");
-            // no message holds a run of spaces (a line continuation once ate a newline inside one)
-            assert!(!err.contains("  "), "{err}");
-        }
-        // a stage that states buffers states every one; one that states none leaves each unknown with that reason
-        w.insert(
-            m,
-            buffer_binding(s, vec![matrices(10, 3), instances(11, 2, 0, 10)]),
-        );
-        let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-        assert!(err.contains("buffer slot 12 has no entry"), "{err}");
-        w.insert(m, buffer_binding(s, Vec::new()));
-        let binding = w.get::<ShaderBinding>(m).unwrap();
-        assert_eq!(binding.verify(m, &w), Ok(()));
-        assert_eq!(
-            binding.stages[0].buffer(ResourceId(10)),
-            BufferSource::Unknown {
-                why: "the source states no buffers for this stage".into()
-            }
-        );
-        w.insert(m, buffer_binding(s, good.clone()));
-        assert_eq!(
-            w.get::<ShaderBinding>(m).unwrap().stages[0].buffer(ResourceId(10)),
-            BufferSource::Table(BufferTable::ObjectMatrices { rows: 3 })
-        );
-        for (buffers, message) in [
-            (vec![headered(10, 5)], "not 3 or 4"),
-            (vec![headered(11, 3)], "has elements of 8"),
-            (vec![headered(10, 3), matrices(10, 3)], "bound twice"),
-            (vec![headered(0, 3)], "is not a buffer"),
-        ] {
-            w.insert(m, buffer_binding(s, buffers.clone()));
-            let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-            assert!(err.contains(message), "{buffers:?}: {err}");
-        }
-    }
-
-    /// The constant buffers a source binds larger than the program declares: a constant buffer of the shader, once, in whole
-    /// rows and no smaller than the declaration (16 bytes here); `None` is the declared size.
-    #[test]
-    fn a_constant_buffer_is_bound_at_a_whole_number_of_rows_no_smaller_than_declared() {
-        let mut w = World::new();
-        let (s, m) = (w.spawn(), w.spawn());
-        w.insert(s, buffer_shader());
-        let bound = |resource: u32, bound_size| ConstantBufferBinding {
-            resource: ResourceId(resource),
-            bound_size,
-        };
-        let with = |constant_buffers: Vec<ConstantBufferBinding>| {
-            let mut b = buffer_binding(s, Vec::new());
-            b.stages[0].constant_buffers = constant_buffers;
-            b
-        };
-        w.insert(m, with(vec![bound(0, Some(12_288))]));
-        let binding = w.get::<ShaderBinding>(m).unwrap();
-        assert_eq!(binding.verify(m, &w), Ok(()));
-        assert_eq!(binding.stages[0].bound_size(ResourceId(0)), Some(12_288));
-        let json = binding.to_json().unwrap().unwrap();
-        assert_eq!(
-            json["stages"][0]["constant_buffers"][0],
-            serde_json::json!({"resource": 0, "bound_size": 12288})
-        );
-        // the joint palette constant's matrices: its size, or the bound size where the source states one; none when it is
-        // held as columns
-        let palette = |lines| ConstantBinding {
-            resource: ResourceId(0),
-            offset: 0,
-            size: 96,
-            name: None,
-            role: ConstantRole::Object(ObjectParameter::BonePalette),
-            lines,
-        };
-        let mut stage = binding.stages[0].clone();
-        stage.constants = vec![palette(Some(MatrixLines::Rows))];
-        assert_eq!(stage.bone_palette_matrices(), Some(256));
-        stage.constant_buffers.clear();
-        assert_eq!(stage.bone_palette_matrices(), Some(2));
-        stage.constants = vec![palette(Some(MatrixLines::Columns))];
-        assert_eq!(stage.bone_palette_matrices(), None);
-        stage.constants.clear();
-        assert_eq!(stage.bone_palette_matrices(), None);
-        // the declared size, and a buffer with no entry
-        w.insert(m, with(vec![bound(0, None)]));
-        let binding = w.get::<ShaderBinding>(m).unwrap();
-        assert_eq!(binding.verify(m, &w), Ok(()));
-        assert_eq!(binding.stages[0].bound_size(ResourceId(0)), None);
-        assert_eq!(binding.stages[0].bound_size(ResourceId(10)), None);
-        for (buffers, message) in [
-            (vec![bound(10, Some(64))], "is not a constant buffer"),
-            (vec![bound(99, Some(64))], "is not a constant buffer"),
-            (vec![bound(0, Some(32)), bound(0, None)], "bound twice"),
-            (vec![bound(0, Some(40))], "not a whole number of 16-byte rows"),
-            (
-                vec![bound(0, Some(0))],
-                "smaller than the 16 the program declares",
-            ),
-        ] {
-            w.insert(m, with(buffers.clone()));
-            let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-            assert!(err.contains(message), "{buffers:?}: {err}");
-        }
-    }
-
-    /// A world with a shader, a texture and a material carrying the binding built from them.
-    fn world() -> (World, Entity, Entity, Entity) {
-        let mut w = World::new();
-        let (s, t, m) = (w.spawn(), w.spawn(), w.spawn());
-        w.insert(s, shader());
-        w.insert(
-            t,
-            TextureFile {
-                path: "albedo.png".into(),
-            },
-        );
-        w.insert(m, binding(s, t));
-        (w, s, t, m)
-    }
-
-    /// An output's encoding of power or root 0, or of a scale that isn't finite, is refused, naming the output.
-    #[test]
-    fn an_encoding_of_no_power_no_root_or_no_finite_scale_is_refused() {
-        let one = 1f32.to_bits();
-        for bad in [
-            ScalarEncoding {
-                power: 0,
-                root: 1,
-                scale_bits: one,
-            },
-            ScalarEncoding {
-                power: 1,
-                root: 0,
-                scale_bits: one,
-            },
-            ScalarEncoding {
-                power: 1,
-                root: 1,
-                scale_bits: f32::INFINITY.to_bits(),
-            },
-        ] {
-            assert!(bad.check().is_err(), "{bad:?}");
-            let (mut w, _, _, m) = world();
-            let mut b = w.get::<ShaderBinding>(m).unwrap().clone();
-            b.stages[0].outputs[1].role = OutputRole::Occlusion {
-                of: Occluded::AllLight,
-                encoding: bad,
-            };
-            w.insert(m, b);
-            let err = w.get::<ShaderBinding>(m).unwrap().verify(m, &w).unwrap_err();
-            assert!(err.contains("output SV_Target0: an encoding of"), "{err}");
-        }
-        assert_eq!(ScalarEncoding::square_of(0.95).check(), Ok(()));
-        assert_eq!(ScalarEncoding::LINEAR.check(), Ok(()));
-    }
-
-    /// A matrix role's binding states how its lines hold the matrix, and no other role's does: either missing or
-    /// misplaced is refused, naming the constant.
-    #[test]
-    fn a_matrix_role_states_its_lines_and_no_other_role_does() {
-        let (mut w, _, _, m) = world();
-        let verify = |w: &mut World, role: ConstantRole, lines: Option<MatrixLines>| {
-            let mut b = w.get::<ShaderBinding>(m).unwrap().clone();
-            b.stages[0].constants[0].role = role;
-            b.stages[0].constants[0].lines = lines;
-            w.insert(m, b);
-            w.get::<ShaderBinding>(m).unwrap().verify(m, w)
-        };
-        let view_projection = ConstantRole::View(ViewParameter::ViewProjection);
-        let err = verify(&mut w, view_projection.clone(), None).unwrap_err();
-        assert!(
-            err.contains("constant tint at 0 is a matrix") && err.contains("lines are not stated"),
-            "{err}"
-        );
-        let unexamined = |why: &str| MatrixLines::Unshown(Unshown::Unexamined { why: why.into() });
-        for lines in [
-            MatrixLines::Rows,
-            MatrixLines::Columns,
-            MatrixLines::Unshown(Unshown::NotApplied),
-            unexamined("no value graph"),
-        ] {
-            assert_eq!(verify(&mut w, view_projection.clone(), Some(lines)), Ok(()));
-        }
-        let err = verify(&mut w, view_projection.clone(), Some(unexamined(" "))).unwrap_err();
-        assert!(err.contains("unshown with no reason"), "{err}");
-        assert_eq!(
-            verify(
-                &mut w,
-                ConstantRole::Object(ObjectParameter::BonePalette),
-                Some(MatrixLines::Rows)
-            ),
-            Ok(())
-        );
-        let err = verify(
-            &mut w,
-            ConstantRole::Material(vec![0; 4]),
-            Some(MatrixLines::Rows),
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("states lines (Rows) for a role that is no matrix"),
-            "{err}"
-        );
-        assert!(!ConstantRole::Object(ObjectParameter::TextureTransformRow(0)).is_matrix());
-    }
-
-    #[test]
-    fn a_binding_names_what_it_refers_to_and_verifies() {
-        let (w, s, t, m) = world();
-        let b = w.get::<ShaderBinding>(m).unwrap();
-        assert_eq!(b.verify(m, &w), Ok(()));
-        let mut refs = Vec::new();
-        b.references(&mut refs);
-        assert_eq!(refs, [s, t]);
-        let json = b.to_json().unwrap().unwrap();
-        assert_eq!(json["stages"][0]["stage"], "pixel");
-        // the role names what it occludes and how it is stored, the scale as a number
-        assert_eq!(
-            json["stages"][0]["outputs"][1]["role"],
-            serde_json::json!({
-                "occlusion": {"of": "all_light", "encoding": {"power": 1, "scale": 1.0}}
-            })
-        );
-        assert_eq!(
-            json["stages"][0]["constants"][1]["role"]["unknown"]["why"],
-            "cb0[1] is not in the recipe"
-        );
-        assert!(b.stage(Stage::Vertex).is_none() && b.stage(Stage::Pixel).is_some());
-    }
-
-    /// Each rule of `verify`, broken once.
-    #[test]
-    fn each_broken_reference_is_named() {
-        let (w, _, _, m) = world();
-        let good = w.get::<ShaderBinding>(m).unwrap().clone();
-        type Break = Box<dyn Fn(&mut ShaderBinding)>;
-        let cases: Vec<(Break, &str)> = vec![
-            (Box::new(|b| b.stages.push(b.stages[0].clone())), "bound twice"),
-            (
-                Box::new(|b| b.stages[0].inputs[0].label.index = 7),
-                "input TEXCOORD7",
-            ),
-            (Box::new(|b| b.stages[0].outputs[0].lanes = 0b10000), "lanes"),
-            (
-                Box::new(|b| b.stages[0].constants[0].resource = ResourceId(1)),
-                "not a constant buffer",
-            ),
-            (
-                Box::new(|b| b.stages[0].constants[1].offset = 24),
-                "outside buffer",
-            ),
-            (
-                Box::new(|b| b.stages[0].constants[0].role = ConstantRole::Material(vec![0; 5])),
-                "material words",
-            ),
-            (
-                Box::new(|b| b.stages[0].textures[0].resource = ResourceId(0)),
-                "not a texture",
-            ),
-            (
-                Box::new(|b| b.stages[0].textures[0].sampler = Some(ResourceId(1))),
-                "not a sampler",
-            ),
-            (
-                Box::new(|b| {
-                    let first = b.stages[0].inputs[0].clone();
-                    b.stages[0].inputs.push(first);
-                }),
-                "input TEXCOORD0 is bound twice",
-            ),
-            (
-                // the fixture's two roles on SV_Target0 are lanes 0b0111 and 0b1000: widening the second overlaps
-                Box::new(|b| b.stages[0].outputs[1].lanes = 0b1100),
-                "two roles on lanes 0x4",
-            ),
-            (
-                Box::new(|b| b.stages[0].constants[1].offset = 8),
-                "constants overlap in buffer 0: bytes 0..16 and 8..24",
-            ),
-            (
-                Box::new(|b| {
-                    let first = b.stages[0].textures[0].clone();
-                    b.stages[0].textures.push(first);
-                }),
-                "texture slot 1 is bound twice",
-            ),
-            (
-                Box::new(|b| {
-                    b.stages[0].textures[0].source = TextureSource::Frame(FrameTexture::ReflectionProbe)
-                }),
-                "binds the frame's ReflectionProbe, a Cube image",
-            ),
-        ];
-        for (break_it, expect) in cases {
-            let mut b = good.clone();
-            break_it(&mut b);
-            let message = b.verify(m, &w).unwrap_err();
-            assert!(message.contains(expect), "{expect}: {message}");
-        }
-        // an entity that is not a shader, a shader of another stage, a texture slot that binds a non-texture
-        let mut b = good.clone();
-        b.stages[0].shader = m;
-        assert!(b.verify(m, &w).unwrap_err().contains("no core.shader"));
-        let mut b = good.clone();
-        b.stages[0].stage = Stage::Vertex;
-        assert!(b.verify(m, &w).unwrap_err().contains("Pixel program"));
-        let mut b = good;
-        if let TextureSource::Texture { texture, .. } = &mut b.stages[0].textures[0].source {
-            *texture = m;
-        }
-        assert!(b.verify(m, &w).unwrap_err().contains("neither core.texture"));
-    }
-
-    /// A pixel program's written lanes each have a binding: lanes its D3D signature writes and no binding states are
-    /// refused, but not the lanes it never writes, nor a system value other than a target, nor a vertex program's
-    /// outputs (the next stage's inputs); an Unknown output states why.
-    #[test]
-    fn a_pixel_programs_written_lanes_each_have_a_binding() {
-        let (mut w, s, _, m) = world();
-        let signature = |w: &mut World, read_write_mask: u8, system: Option<SystemValue>, stage: Stage| {
-            let mut shader = w.get::<Shader>(s).unwrap().clone();
-            shader.interface.stage = stage;
-            let out = &mut shader.interface.outputs[0];
-            out.system = system;
-            out.provenance.d3d = Some(crate::shader::D3dSignature {
-                register: 0,
-                mask: 0b1111,
-                read_write_mask,
-            });
-            w.insert(s, shader);
-        };
-        let verify = |w: &World, b: &ShaderBinding| b.verify(m, w);
-        let good = w.get::<ShaderBinding>(m).unwrap().clone();
-        // the fixture binds lanes 0b0111 and 0b1000 of SV_Target0, all four written
-        signature(&mut w, 0, None, Stage::Pixel);
-        assert_eq!(verify(&w, &good), Ok(()));
-        let mut rgb = good.clone();
-        rgb.stages[0].outputs.truncate(1);
-        assert_eq!(
-            rgb.stages[0].unbound_written_lanes(&w.get::<Shader>(s).unwrap().interface),
-            [(&good.stages[0].outputs[0].label, 0b1000)]
-        );
-        let err = verify(&w, &rgb).unwrap_err();
-        assert!(
-            err.contains("output SV_Target0 lanes 0b1000 are written and have no binding"),
-            "{err}"
-        );
-        // the program never writes w
-        signature(&mut w, 0b1000, None, Stage::Pixel);
-        assert_eq!(verify(&w, &rgb), Ok(()));
-        // a target stated as a system value is held the same; a depth is not a target
-        signature(&mut w, 0, Some(SystemValue::Target(0)), Stage::Pixel);
-        assert!(verify(&w, &rgb).is_err());
-        signature(&mut w, 0, Some(SystemValue::Depth), Stage::Pixel);
-        assert_eq!(verify(&w, &rgb), Ok(()));
-        // a vertex program's outputs are bound as the pixel program's inputs
-        signature(&mut w, 0, None, Stage::Vertex);
-        let mut vertex = rgb.clone();
-        vertex.stages[0].stage = Stage::Vertex;
-        assert_eq!(verify(&w, &vertex), Ok(()));
-        // the w lane Unknown, with why and without
-        signature(&mut w, 0, None, Stage::Pixel);
-        let mut unknown = good;
-        unknown.stages[0].outputs[1].role = OutputRole::unknown("read by nothing examined");
-        assert_eq!(verify(&w, &unknown), Ok(()));
-        unknown.stages[0].outputs[1].role = OutputRole::unknown(" ");
-        let err = verify(&w, &unknown).unwrap_err();
-        assert!(err.contains("output SV_Target0 is Unknown with no why"), "{err}");
-    }
-
-    /// A frame image on a slot of its own dimension, and a constant colour on any, verify.
-    #[test]
-    fn a_frame_image_fits_the_slot_it_is_bound_to() {
-        let (w, _, _, m) = world();
-        let mut b = w.get::<ShaderBinding>(m).unwrap().clone();
-        b.stages[0].textures[0].source = TextureSource::Frame(FrameTexture::SceneColour);
-        assert_eq!(b.verify(m, &w), Ok(()));
-        b.stages[0].textures[0].source = TextureSource::Default {
-            value: [0.5; 4],
-            why: "a constant".into(),
-        };
-        assert_eq!(b.verify(m, &w), Ok(()));
-        assert_eq!(FrameTexture::LightProbeVolume.dim(), TextureDim::D3);
-        assert_eq!(FrameTexture::ShadowMap.dim(), TextureDim::D2);
-    }
-
-    /// A texture of several images fits a slot read as the dimension its shape is, and no other.
-    #[test]
-    fn a_layered_texture_fits_the_slot_of_its_shape() {
-        use crate::{TexFormat, TextureLayers, TextureShape};
-        let layers = |shape: TextureShape| TextureLayers {
-            shape,
-            width: 1,
-            height: 1,
-            format: TexFormat::Rgba8Unorm,
-            levels: vec![(0..shape.layers_at(0)).map(|_| vec![0; 4]).collect()],
-            color_space: crate::ColorSpace::Linear,
-            role: crate::TexRole::Other,
-            normal: None,
-        };
-        let (mut w, s, t, m) = world();
-        let b = w.get::<ShaderBinding>(m).unwrap().clone();
-        w.remove::<TextureFile>(t);
-        // the fixture's slot is a plain 2D texture: no layered shape is that
-        for shape in [
-            TextureShape::Array { layers: 2 },
-            TextureShape::Cube { cubes: 1 },
-            TextureShape::Volume { depth: 1 },
-        ] {
-            w.insert(t, layers(shape));
-            let why = b.verify(m, &w).unwrap_err();
-            assert!(
-                why.contains("is a D2 resource (arrayed false) and binds"),
-                "{why}"
-            );
-        }
-        // the slot read as an arrayed 2D texture takes an array and nothing else
-        let Kind::Texture { arrayed, .. } = &mut w.get_mut::<Shader>(s).unwrap().interface.resources[1].kind
-        else {
-            panic!("the fixture's second resource is a texture");
-        };
-        *arrayed = true;
-        w.insert(t, layers(TextureShape::Array { layers: 3 }));
-        assert_eq!(b.verify(m, &w), Ok(()));
-        w.insert(t, layers(TextureShape::Cube { cubes: 2 }));
-        assert!(b.verify(m, &w).is_err());
-    }
-
-    /// A variant key names a field, describes each part once, and describes one variant the same way on all its stages.
-    #[test]
-    fn a_variant_keys_description_is_consistent() {
-        let (w, _, _, m) = world();
-        let part = |name: &str, value: u64| KeyPart {
-            name: name.into(),
-            value,
-        };
-        let key = |field: &str, value: u32, parts: Vec<KeyPart>| {
-            Some(VariantKey {
-                field: field.into(),
-                value,
-                parts,
-            })
-        };
-        let good = w.get::<ShaderBinding>(m).unwrap().clone();
-        let with = |a: Option<VariantKey>| {
-            let mut b = good.clone();
-            b.stages[0].variant = a;
-            b
-        };
-        assert_eq!(
-            with(key("f.variant", 0, vec![part("program", 1), part("outputs", 5)])).verify(m, &w),
-            Ok(())
-        );
-        let message = with(key("", 0, Vec::new())).verify(m, &w).unwrap_err();
-        assert!(message.contains("names no field"), "{message}");
-        let message = with(key("f.variant", 0, vec![part("program", 1), part("program", 2)]))
-            .verify(m, &w)
-            .unwrap_err();
-        assert!(message.contains("describes \"program\" twice"), "{message}");
-        // two stages of one variant (a vertex and a pixel stage share the key) must describe it alike; the pixel
-        // fixture stands for both, a second stage of another kind is built from it
-        let mut b = with(key("f.variant", 3, vec![part("program", 1)]));
-        let mut other = b.stages[0].clone();
-        other.stage = Stage::Vertex;
-        other.variant = key("f.variant", 3, vec![part("program", 2)]);
-        b.stages.push(other);
-        let message = b.verify(m, &w).unwrap_err();
-        assert!(message.contains("describe it differently"), "{message}");
-    }
-
-    /// A stage kind repeats only under distinct values of one key: two pixel stages with keys `k = 1` and `k = 2` verify,
-    /// the same value twice, a key and no key, and two different fields do not.
-    #[test]
-    fn a_stage_repeats_only_under_distinct_values_of_one_key() {
-        let (w, _, _, m) = world();
-        let good = w.get::<ShaderBinding>(m).unwrap().clone();
-        let key = |field: &str, value: u32| {
-            Some(VariantKey {
-                field: field.to_owned(),
-                value,
-                parts: Vec::new(),
-            })
-        };
-        let with = |a: Option<VariantKey>, b: Option<VariantKey>| {
-            let mut x = good.clone();
-            x.stages[0].variant = a;
-            let mut y = x.stages[0].clone();
-            y.variant = b;
-            x.stages.push(y);
-            x
-        };
-        assert_eq!(
-            with(key("g.mesh.kind", 1), key("g.mesh.kind", 2)).verify(m, &w),
-            Ok(())
-        );
-        let same = with(key("g.mesh.kind", 1), key("g.mesh.kind", 1))
-            .verify(m, &w)
-            .unwrap_err();
-        assert!(same.contains("g.mesh.kind = 1"), "{same}");
-        assert!(with(key("g.mesh.kind", 1), None).verify(m, &w).is_err());
-        assert!(with(None, key("g.mesh.kind", 1)).verify(m, &w).is_err());
-        assert!(
-            with(None, None)
-                .verify(m, &w)
-                .unwrap_err()
-                .contains("bound twice")
-        );
-        assert!(
-            with(key("g.mesh.kind", 1), key("g.mesh.other", 2))
-                .verify(m, &w)
-                .is_err()
-        );
-        // a third stage repeating the first one's value is refused though it differs from the second's (it is compared
-        // with every earlier stage of its kind)
-        let mut three = with(key("g.mesh.kind", 1), key("g.mesh.kind", 2));
-        let mut z = three.stages[0].clone();
-        z.variant = key("g.mesh.kind", 1);
-        three.stages.push(z);
-        assert!(three.verify(m, &w).is_err());
     }
 }
