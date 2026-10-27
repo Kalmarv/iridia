@@ -563,7 +563,7 @@ impl Lift<'_> {
                             Some(local) => self.f.local_types.get(local).copied(),
                         };
                         match pointee.and_then(|t| self.m.types.get(t).cloned()) {
-                            Some(Type::Pointer(t)) => {
+                            Some(Type::Pointer(t, _)) => {
                                 let (kind, _) = self.value_shape(t)?;
                                 self.b.bitcast_to(v, kind)
                             }

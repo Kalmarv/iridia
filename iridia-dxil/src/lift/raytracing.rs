@@ -29,7 +29,7 @@ impl Lift<'_> {
             Some(local) => self.f.local_types.get(local).copied(),
         };
         match ty.and_then(|t| self.m.types.get(t)) {
-            Some(Type::Pointer(t)) => Ok(*t),
+            Some(Type::Pointer(t, _)) => Ok(*t),
             _ => self.refuse("a ray tracing operation on something that is not a pointer to a structure"),
         }
     }

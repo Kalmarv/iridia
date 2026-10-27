@@ -526,7 +526,7 @@ impl<'m> Lift<'m> {
         if sig.arguments.iter().any(|a| a.ty == iridia::IoType::Memory) {
             let function_type = self.m.value_types.get(f.value).and_then(|&t| self.m.types.get(t));
             let params = match function_type {
-                Some(Type::Pointer(t)) => match self.m.types.get(*t) {
+                Some(Type::Pointer(t, _)) => match self.m.types.get(*t) {
                     Some(Type::Function { params, .. }) => params.clone(),
                     _ => Vec::new(),
                 },
@@ -548,7 +548,7 @@ impl<'m> Lift<'m> {
                 ));
             }
             for (k, (&param, &argument)) in params.iter().zip(&memory).enumerate() {
-                let Some(Type::Pointer(pointee)) = self.m.types.get(param).cloned() else {
+                let Some(Type::Pointer(pointee, _)) = self.m.types.get(param).cloned() else {
                     return self.refuse("a parameter that is not a pointer");
                 };
                 let (structure, _) = self.naga_type(pointee)?;

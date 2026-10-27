@@ -322,3 +322,38 @@ fn a_hull_program_whose_phases_declare_different_temporaries_lifts() {
         iridia_exec::Executable::function(&program, name).unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 }
+
+/// A hull and a domain program with a `min16float` in the patch-constant structure (tests/fixtures/min16_patch.hlsl,
+/// fxc /T hs_5_0 and ds_5_0): fxc writes their patch-constant signature as a `PSG1` part, not `PCSG`. Compiled with the
+/// `min16float`s as `float` (the `.plain` twins) the programs have a `PCSG` part and are otherwise the same source, so the
+/// two lift to the same program and the same WGSL.
+#[test]
+fn a_patch_constant_signature_in_a_psg1_part_lifts_as_the_pcsg_one_does() {
+    for (min16, plain, stage) in [
+        (
+            &include_bytes!("fixtures/min16_patch.hs.dxbc")[..],
+            &include_bytes!("fixtures/min16_patch.plain.hs.dxbc")[..],
+            Stage::Hull,
+        ),
+        (
+            &include_bytes!("fixtures/min16_patch.ds.dxbc")[..],
+            &include_bytes!("fixtures/min16_patch.plain.ds.dxbc")[..],
+            Stage::Domain,
+        ),
+    ] {
+        let from_psg1 = lift(min16).unwrap_or_else(|e| panic!("{stage:?}: {e}"));
+        let from_pcsg = lift(plain).unwrap_or_else(|e| panic!("{stage:?}: {e}"));
+        from_psg1.validate().unwrap_or_else(|p| panic!("{p:?}"));
+        assert_eq!(from_psg1.stage, stage);
+        // both are tessellation programs, written as functions; the text forms differ in the container's digest and
+        // in the note that the minimum precision operands are computed at 32 bits
+        let wgsl = iridia::emit::wgsl_functions(&from_psg1).unwrap_or_else(|e| panic!("{stage:?}: {e}"));
+        assert_eq!(
+            wgsl,
+            iridia::emit::wgsl_functions(&from_pcsg).unwrap(),
+            "{stage:?}"
+        );
+        assert!(wgsl.contains("PCDATA0_"), "{stage:?}");
+        assert!(from_psg1.text().unwrap().contains("min-precision"), "{stage:?}");
+    }
+}
