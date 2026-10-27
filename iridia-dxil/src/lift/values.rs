@@ -8,7 +8,7 @@ use naga::{BinaryOperator as Bo, Expression as E, MathFunction as Mf, UnaryOpera
 use super::setup::const_int;
 use super::{Lift, Lv, Slot, Stored};
 use crate::Result;
-use crate::module::{BinaryOp, CastOp, Constant, Instruction, Op, Type, TypeId, Value, ValueId};
+use dxil_reader::module::{BinaryOp, CastOp, Constant, Instruction, Op, Type, TypeId, Value, ValueId};
 
 impl Lift<'_> {
     /// The lanes a shuffle's constant mask picks (`None` for an undefined lane).
@@ -172,7 +172,7 @@ impl Lift<'_> {
             Some(Slot::Value(lv)) => Ok(lv),
             Some(Slot::Stored(stored)) => Ok(self.load_stored(&stored)),
             None => match &self.f.locals[i] {
-                crate::module::Value::Constant(c) => {
+                dxil_reader::module::Value::Constant(c) => {
                     let c = c.clone();
                     self.constant(&c, ty)
                 }

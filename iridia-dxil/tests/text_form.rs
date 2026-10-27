@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use primase_dxil::lift;
+use iridia_dxil::lift;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(

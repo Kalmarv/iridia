@@ -3,9 +3,9 @@
 //! corners moved by the primitive and the instance; two instances) drawn on the CPU: the primitives a topology makes,
 //! the instances of each, the strips they emit. The values are the arithmetic of the HLSL.
 use iridia::{GsInput, GsOutput};
+use iridia_dxil::lift;
 use iridia_exec::geometry::{GeometryShader, Strip, Topology, Vertex};
 use iridia_exec::{Sample, Sampler};
-use primase_dxil::lift;
 use std::collections::BTreeMap;
 use std::path::Path;
 

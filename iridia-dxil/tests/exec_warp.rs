@@ -7,7 +7,7 @@
 //! arrays, bits; default and -Od builds), the resource arrays (textures of different sizes in space 1, samplers in space 2) and the
 //! pixel operations a texture load at an offset and the half conversions need. Needs `tools.warp` (the oracle program)
 //! and `tools.dxc` (for the oracle's vertex shader); it works in a folder `warp/p<pid>` of its own under the scratch folder (two runs at once do not share files). The vertex shader is
-//! generated from the container's interface ([`primase_dxil::interface`]): every input varying read from
+//! generated from the container's interface ([`iridia_dxil::interface`]): every input varying read from
 //! `cbuffer Case : register(b0, space1) { uint4 r[32]; }`, row by register.
 use iridia::{D3dClass, Interface, InterpMode, InterpSampling, Program, ResourceId, ScalarType, SystemValue};
 use iridia_exec::{
@@ -202,7 +202,7 @@ fn compare(
     tolerance: f64,
 ) -> (usize, Vec<String>) {
     let bytes = std::fs::read(container).unwrap();
-    let program = primase_dxil::lift(&bytes).unwrap();
+    let program = iridia_dxil::lift(&bytes).unwrap();
     let targets: Vec<(u32, &str)> = program
         .interface
         .outputs
@@ -225,7 +225,7 @@ fn compare(
         .replace('.', "_");
     let hlsl = scratch.join(format!("{stem}.lifted.vs.hlsl"));
     let vs = scratch.join(format!("{stem}.lifted.vs.dxil"));
-    std::fs::write(&hlsl, vertex_hlsl(&primase_dxil::interface(&bytes).unwrap())).unwrap();
+    std::fs::write(&hlsl, vertex_hlsl(&iridia_dxil::interface(&bytes).unwrap())).unwrap();
     let out = std::process::Command::new(dxc)
         .args(["-T", "vs_6_0", "-E", "main", "-Fo"])
         .arg(&vs)

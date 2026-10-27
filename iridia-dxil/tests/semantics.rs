@@ -3,8 +3,8 @@
 //! both the default and the -Od build of each (different instruction streams of one source). The evaluator cannot run
 //! them (loops, switches, memory); the values below are the arithmetic of the source, not of the lifter.
 use iridia::{Program, ResourceId, ResourceKind};
+use iridia_dxil::lift;
 use iridia_exec::{Backend, Element, Executable, ImageSample, Output, Resources};
-use primase_dxil::lift;
 use std::path::Path;
 
 fn f(x: f32) -> u32 {

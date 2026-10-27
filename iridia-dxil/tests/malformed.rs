@@ -2,7 +2,7 @@
 //! Containers a damaged file could hold, made from the committed fixtures by changing one byte (found by mutating every fixture
 //! and shrinking each panic of the lifter to the one byte that causes it): each is refused by name, never a panic. The oracle
 //! is the format's own rules (a value, a block or a callee the function has; the arguments an operation takes).
-use primase_dxil::lift;
+use iridia_dxil::lift;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()

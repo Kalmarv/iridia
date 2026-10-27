@@ -32,8 +32,9 @@ use iridia::build::{Builder, Kind, Val};
 use iridia::{Conventions, D3dModes, Program, Provenance, ShaderFormat, Stage, StageFacts};
 use naga::{Handle, LocalVariable};
 
-use crate::module::{Function, Module, Op, Type, TypeId, ValueId};
-use crate::{Result, error};
+use crate::{Result, error, read};
+use dxil_reader::module::{Function, Module, Op, Type, TypeId, ValueId};
+use dxil_reader::reflection;
 
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
@@ -56,16 +57,19 @@ pub fn lift_with(container: &[u8], bound: &iridia::BoundSizes) -> Result<Program
 }
 
 fn lift_program(container: &[u8], bound: &iridia::BoundSizes) -> Result<Program> {
-    let chunks = crate::parts(container)?;
-    let module = crate::reflection::module(&chunks, b"DXIL")?.ok_or_else(|| error(0, "no DXIL part"))?;
-    let part = crate::program(
+    let chunks = dxil_reader::parts(container).map_err(read)?;
+    let module = dxil_reader::module(&chunks, b"DXIL")
+        .map_err(read)?
+        .ok_or_else(|| error(0, "no DXIL part"))?;
+    let part = dxil_reader::program(
         chunks
             .iter()
             .find(|c| &c.kind == b"DXIL")
             .ok_or_else(|| error(0, "no DXIL part"))?
             .data,
-    )?;
-    let entry_value = crate::reflection::entry(&module)?;
+    )
+    .map_err(read)?;
+    let entry_value = reflection::entry(&module).map_err(read)?;
     let entry = module
         .functions
         .iter()
@@ -73,7 +77,7 @@ fn lift_program(container: &[u8], bound: &iridia::BoundSizes) -> Result<Program>
         .ok_or_else(|| error(0, "the entry point has no body"))?;
     // a hull program is two functions: the control-point phase (the entry) and the patch-constant function
     let patch_constant = if part.program_version >> 16 == 3 {
-        let state = crate::reflection::hull_state(&module)?;
+        let state = reflection::hull_state(&module).map_err(read)?;
         Some(
             module
                 .functions
@@ -107,7 +111,8 @@ fn lift_program(container: &[u8], bound: &iridia::BoundSizes) -> Result<Program>
     );
     let mut lift = Lift::new(&module, entry, functions, setup)?;
     if matches!(lift.setup.interface.stage, Stage::Compute | Stage::Mesh) {
-        lift.b.workgroup_size = crate::reflection::num_threads(&module)?
+        lift.b.workgroup_size = reflection::num_threads(&module)
+            .map_err(read)?
             .ok_or_else(|| error(0, "a compute program that states no thread group size"))?;
     }
     match lift.setup.sigs.clone() {

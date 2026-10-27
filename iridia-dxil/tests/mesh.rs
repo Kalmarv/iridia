@@ -3,7 +3,7 @@
 //! entry point states, it is a mesh entry point with D3D's thread group and the group index as its one argument, it
 //! validates and is written as WGSL with the mesh stage's attributes, and the executor refuses it by name.
 use iridia::{MeshFacts, MeshTopology, Stage, StageFacts};
-use primase_dxil::lift;
+use iridia_dxil::lift;
 
 #[test]
 fn a_mesh_program_is_a_mesh_entry_point_with_its_facts() {

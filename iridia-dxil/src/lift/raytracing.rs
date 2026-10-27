@@ -12,7 +12,7 @@ use naga::{AddressSpace, Expression as E, FunctionArgument, Handle, Statement, T
 use super::setup::{const_int, ray_system_value};
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Instruction, Type, TypeId, ValueId};
+use dxil_reader::module::{Instruction, Type, TypeId, ValueId};
 
 /// The pipeline's operations the program has called, by name and the structure they take a pointer to: the module's
 /// bodiless functions.

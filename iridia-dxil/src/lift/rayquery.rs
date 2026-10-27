@@ -7,7 +7,7 @@ use naga::{Expression as E, Handle, LocalVariable, RayQueryFunction, Statement};
 use super::setup::const_int;
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Instruction, ValueId};
+use dxil_reader::module::{Instruction, ValueId};
 
 /// A field of naga's `RayDesc`, by member index.
 const RAY_FLAGS: u32 = 0;

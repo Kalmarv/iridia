@@ -10,7 +10,7 @@ use iridia::ResourceKind;
 
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Constant, Instruction, Op, Type, TypeId, Value, ValueId};
+use dxil_reader::module::{Constant, Instruction, Op, Type, TypeId, Value, ValueId};
 
 #[derive(Clone, Debug)]
 pub(crate) enum Root {

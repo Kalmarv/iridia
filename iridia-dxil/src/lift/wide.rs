@@ -10,7 +10,7 @@ use naga::MathFunction as Mf;
 
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{BinaryOp, CastOp, Type, TypeId, ValueId};
+use dxil_reader::module::{BinaryOp, CastOp, Type, TypeId, ValueId};
 
 /// A 64-bit integer: its low and high words.
 pub(super) type Wide = (Val, Val);

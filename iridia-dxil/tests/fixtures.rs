@@ -5,9 +5,9 @@ use iridia::{
     ConstantType, InterpMode, InterpSampling, ResourceKind, SampleType, ScalarType, SystemValue, TextureDim,
     Value,
 };
+use iridia_dxil::lift;
 use iridia_exec::ProgramShader;
 use iridia_exec::{PixelShader, Sample};
-use primase_dxil::lift;
 
 const BLEND: &[u8] = include_bytes!("fixtures/blend.dxil");
 

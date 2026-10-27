@@ -8,7 +8,7 @@ use naga::Expression as E;
 use super::Lift;
 use super::setup::const_int;
 use crate::Result;
-use crate::module::{Instruction, ValueId};
+use dxil_reader::module::{Instruction, ValueId};
 
 impl Lift<'_> {
     /// The output variable and its vertex type, once the entry point is declared.

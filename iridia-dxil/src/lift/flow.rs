@@ -7,8 +7,8 @@ use naga::{Expression, Handle, SwitchValue};
 
 use super::Lift;
 use super::setup::const_int;
-use crate::module::Op;
 use crate::{Error, Result, error};
+use dxil_reader::module::Op;
 
 /// The lowering's view of a lift: the builder the lowering writes into is swapped in for each callback.
 struct Blocks<'a, 'm> {

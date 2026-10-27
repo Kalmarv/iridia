@@ -7,10 +7,11 @@ use iridia::{
     EntryIo, Interface, Resource, ResourceId, ResourceKind, Stage, StageFacts, SystemValue, entry_io,
 };
 
-use crate::module::{Constant, Function, Module, Op, Value, ValueId};
-use crate::reflection::{self, Element, Range};
-use crate::{Result, error};
+use crate::reflection;
+use crate::{Result, error, read};
 use dxcontainer::Chunk;
+use dxil_reader::module::{Constant, Function, Module, Op, Value, ValueId};
+use dxil_reader::reflection::{self as records, Element, Range};
 
 /// The constant integer a value is, if it is one.
 pub(super) fn const_int(m: &Module, f: &Function, v: ValueId) -> Option<i64> {
@@ -127,7 +128,7 @@ impl Setup {
     /// The setup of a program whose instructions are those of `functions` (the entry function, and a hull program's
     /// patch-constant function).
     pub(super) fn new(chunks: &[Chunk<'_>], m: &Module, functions: &[&Function]) -> Result<Self> {
-        let named = reflection::module(chunks, b"STAT")?;
+        let named = dxil_reader::module(chunks, b"STAT").map_err(read)?;
         let mut interface = reflection::reflection(chunks, m, named.as_ref())?;
         if !matches!(
             interface.stage,
@@ -142,9 +143,13 @@ impl Setup {
         {
             return Err(error(0, format!("{:?} programs are not lifted", interface.stage)));
         }
-        let (input_elements, output_elements) = reflection::elements(m)?;
-        let patch_elements = reflection::patch_elements(m)?;
-        let program_ranges: Vec<Range> = reflection::ranges(m)?.into_iter().map(|r| r.0).collect();
+        let (input_elements, output_elements) = records::elements(m).map_err(read)?;
+        let patch_elements = records::patch_elements(m).map_err(read)?;
+        let program_ranges: Vec<Range> = records::ranges(m)
+            .map_err(read)?
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
         if program_ranges.len() != interface.resources.len() {
             return Err(error(
                 0,
@@ -327,7 +332,9 @@ impl Setup {
         }
         // WebGPU gives a lane number only to a thread group laid out along x
         let multi_dimensional = interface.stage == Stage::Compute
-            && crate::reflection::num_threads(m)?.is_some_and(|[_, y, z]| y != 1 || z != 1);
+            && records::num_threads(m)
+                .map_err(read)?
+                .is_some_and(|[_, y, z]| y != 1 || z != 1);
         let lane_by_rank = multi_dimensional && system_inputs.remove(&SystemValue::LaneIndex);
         for system in system_inputs {
             if interface.inputs.iter().any(|v| v.system == Some(system)) {

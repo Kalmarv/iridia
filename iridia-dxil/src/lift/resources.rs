@@ -17,7 +17,7 @@ use naga::{
 use super::setup::{binding_of, const_int, dx_opcode};
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Instruction, Op, ValueId};
+use dxil_reader::module::{Instruction, Op, ValueId};
 
 #[derive(Default)]
 pub(super) struct Resources {
@@ -765,7 +765,7 @@ impl Lift<'_> {
             }
         };
         let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
-        let crate::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
+        let dxil_reader::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
             return self.refuse("a constant load whose result is not a struct");
         };
         if elements.len() != 4 {
@@ -886,7 +886,9 @@ impl Lift<'_> {
         };
         matches!(
             value,
-            Some(crate::module::Value::Constant(crate::module::Constant::Undef))
+            Some(dxil_reader::module::Value::Constant(
+                dxil_reader::module::Constant::Undef
+            ))
         )
     }
 
@@ -1314,7 +1316,7 @@ impl Lift<'_> {
         let atomic = self.resources.atomic.get(&resource).copied();
         let index = self.uint(args[2])?;
         let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
-        let crate::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
+        let dxil_reader::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
             return self.refuse("a buffer load whose result is not a struct");
         };
         let lane_kind = self.kind_of_type(elements[0])?;

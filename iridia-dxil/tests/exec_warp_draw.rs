@@ -248,7 +248,7 @@ fn ramp(s: Sample) -> Result<[f32; 4], String> {
 
 fn ours(c: &DrawCase, dir: &Path) -> Surface {
     let lift = |name: &str| {
-        ProgramShader::new(primase_dxil::lift(&std::fs::read(dir.join(name)).unwrap()).unwrap()).unwrap()
+        ProgramShader::new(iridia_dxil::lift(&std::fs::read(dir.join(name)).unwrap()).unwrap()).unwrap()
     };
     let vs = lift("draw_vs.dxil");
     let ps = lift(&format!("draw_{}.dxil", c.ps));

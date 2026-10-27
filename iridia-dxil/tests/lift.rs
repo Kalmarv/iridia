@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 //! Lifting the fixtures (dxc 1.7, default optimisation and -Od): each lifts, validates and writes WGSL.
-use primase_dxil::lift;
+use iridia_dxil::lift;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(

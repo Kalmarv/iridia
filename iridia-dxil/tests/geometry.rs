@@ -4,7 +4,7 @@
 //! the primitive and instance numbers; the emitted vertices as arrays, their count and where strips start), and it
 //! validates and is written as WGSL functions.
 use iridia::{GsInput, GsOutput, Stage, StageFacts, stage_functions};
-use primase_dxil::lift;
+use iridia_dxil::lift;
 
 #[test]
 fn a_geometry_program_is_the_function_its_facts_describe() {

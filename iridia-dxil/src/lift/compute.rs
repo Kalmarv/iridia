@@ -10,7 +10,7 @@ use super::resources::kind_of_atomic;
 use super::setup::const_int;
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Instruction, ValueId};
+use dxil_reader::module::{Instruction, ValueId};
 
 /// DXIL's `atomicBinOp` operation codes.
 const ATOMIC_ADD: i64 = 0;

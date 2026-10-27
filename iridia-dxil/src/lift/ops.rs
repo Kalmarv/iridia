@@ -9,7 +9,7 @@ use naga::{
 use super::setup::{const_int, dx_opcode};
 use super::{Lift, Lv};
 use crate::Result;
-use crate::module::{Instruction, ValueId};
+use dxil_reader::module::{Instruction, ValueId};
 
 impl Lift<'_> {
     pub(crate) fn call(&mut self, inst: &Instruction, function: ValueId, args: &[ValueId]) -> Result<()> {
