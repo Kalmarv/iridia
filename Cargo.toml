@@ -3,7 +3,7 @@ resolver = "3"
 members = ["iridia", "iridia-d3d9", "iridia-dxbc", "iridia-dxil", "iridia-exec", "iridia-interface", "iridia-mojo"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -11,15 +11,15 @@ repository = "https://github.com/Kalmarv/iridia"
 publish = true
 
 [workspace.dependencies]
-dxbc-reader = { version = "0.1.1", git = "https://github.com/Kalmarv/dx", rev = "1e48484d31204ed1d120266bc0ebccdb88f4faa5" }
-dxcontainer = { version = "0.1.1", git = "https://github.com/Kalmarv/dx", rev = "1e48484d31204ed1d120266bc0ebccdb88f4faa5" }
-dxil-reader = { version = "0.1.1", git = "https://github.com/Kalmarv/dx", rev = "1e48484d31204ed1d120266bc0ebccdb88f4faa5" }
+dxbc-reader = { version = "0.2.0", git = "https://github.com/Kalmarv/dx", rev = "91c6b5e1ddcb71472414c92759911949428bba93" }
+dxcontainer = { version = "0.2.0", git = "https://github.com/Kalmarv/dx", rev = "91c6b5e1ddcb71472414c92759911949428bba93" }
+dxil-reader = { version = "0.2.0", git = "https://github.com/Kalmarv/dx", rev = "91c6b5e1ddcb71472414c92759911949428bba93" }
 half = { version = "=2.7.1", default-features = false }
-iridia = { version = "0.1.0", path = "iridia" }
+iridia = { version = "0.2.0", path = "iridia" }
 iridia-dxbc = { path = "iridia-dxbc" }
 iridia-dxil = { path = "iridia-dxil" }
 iridia-exec = { path = "iridia-exec" }
-iridia-interface = { version = "0.1.0", path = "iridia-interface" }
+iridia-interface = { version = "0.2.0", path = "iridia-interface" }
 naga = { version = "30.0.1", package = "primase-naga", git = "https://github.com/Kalmarv/primase-naga", rev = "8e6519c3eac6f08519c61c40cb6516ea95f6dde9", default-features = false, features = ["wgsl-out"] }
 primase-foundations = { version = "0.2.0", git = "https://github.com/Kalmarv/primase-foundations", rev = "b3a3d4b3a892b8342fda081ab4449bb57052a2f8" }
 primase-testdata = { version = "0.1.0", git = "https://github.com/Kalmarv/primase-testdata", rev = "d0258530ca9ca0ca74e957716ae8683e7facc8a7" }

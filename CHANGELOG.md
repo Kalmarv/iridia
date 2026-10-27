@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-27)
 
 - `iridia-dxbc` lifts a hull or domain program whose patch-constant signature is a `PSG1` part (fxc writes it when the
   program holds a `min16float`), as it lifts the `PCSG` one: the WGSL of the test programs equals their float twins'.
   Depends on `dx` at a revision that reads `PSG1`, the Shader Model 4 `RDEF` and address-space pointer types.
+- Depends on `dx` 0.2.0, whose readers these crates' public functions take (`dxbc-reader` signature elements, `dxil-reader` modules), so this release is breaking too.
 
 ## 0.1.0 (2026-10-27)
 

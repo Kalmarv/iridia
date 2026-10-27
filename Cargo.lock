@@ -101,8 +101,8 @@ dependencies = [
 
 [[package]]
 name = "dxbc-reader"
-version = "0.1.1"
-source = "git+https://github.com/Kalmarv/dx?rev=1e48484d31204ed1d120266bc0ebccdb88f4faa5#1e48484d31204ed1d120266bc0ebccdb88f4faa5"
+version = "0.2.0"
+source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
 dependencies = [
  "dxcontainer",
  "thiserror",
@@ -110,8 +110,8 @@ dependencies = [
 
 [[package]]
 name = "dxcontainer"
-version = "0.1.1"
-source = "git+https://github.com/Kalmarv/dx?rev=1e48484d31204ed1d120266bc0ebccdb88f4faa5#1e48484d31204ed1d120266bc0ebccdb88f4faa5"
+version = "0.2.0"
+source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
 dependencies = [
  "primase-foundations",
  "thiserror",
@@ -119,8 +119,8 @@ dependencies = [
 
 [[package]]
 name = "dxil-reader"
-version = "0.1.1"
-source = "git+https://github.com/Kalmarv/dx?rev=1e48484d31204ed1d120266bc0ebccdb88f4faa5#1e48484d31204ed1d120266bc0ebccdb88f4faa5"
+version = "0.2.0"
+source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
 dependencies = [
  "dxcontainer",
  "primase-foundations",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "iridia"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iridia-dxbc",
  "iridia-dxil",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-d3d9"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iridia",
  "iridia-exec",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxbc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dxbc-reader",
  "dxcontainer",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxil"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dxcontainer",
  "dxil-reader",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-exec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "half",
  "iridia",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-interface"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-mojo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "iridia",
  "primase-naga",
