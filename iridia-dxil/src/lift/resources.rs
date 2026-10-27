@@ -102,37 +102,46 @@ fn kind_of_sample(s: SampleType) -> Kind {
 }
 
 impl Lift<'_> {
-    /// The interface resource a handle value names: a `CreateHandle` call with constant arguments.
-    fn handle_of(&self, v: ValueId) -> Option<usize> {
-        let inst = self
-            .f
-            .instructions
-            .iter()
-            .find(|i| i.result.is_some_and(|(r, _)| r == v))?;
-        let Op::Call { function, args } = &inst.op else {
-            return None;
-        };
-        match dx_opcode(self.m, self.f, *function, args)? {
-            57 => {
-                let class = const_int(self.m, self.f, *args.get(1)?)?;
-                let id = const_int(self.m, self.f, *args.get(2)?)?;
-                self.setup
-                    .resource(u8::try_from(class).ok()?, u32::try_from(id).ok()?)
-            }
-            217 => {
-                let (class, lower, space) = binding_of(self.m, self.f, *args.get(1)?)?;
-                self.setup.resource_by_binding(class, lower, space)
-            }
-            // a handle annotated with its properties is the same handle
-            216 => self.handle_of(*args.get(1)?),
-            // a library's handle is made from the value of the resource's global
-            160 => {
-                self.setup
-                    .resource_of_variable(super::setup::variable_loaded(self.m, self.f, *args.get(1)?)?)
-            }
-            218 => self.setup.heap.get(&v).copied(),
-            _ => None,
+    /// The interface resource a handle value names: a `CreateHandle` call with constant arguments, or a handle
+    /// annotated with its properties (which is the handle it annotates, however many annotations deep). A chain of
+    /// annotations longer than the function has instructions loops back on itself and names no resource.
+    fn handle_of(&self, mut v: ValueId) -> Option<usize> {
+        for _ in 0..=self.f.instructions.len() {
+            let inst = self
+                .f
+                .instructions
+                .iter()
+                .find(|i| i.result.is_some_and(|(r, _)| r == v))?;
+            let Op::Call { function, args } = &inst.op else {
+                return None;
+            };
+            return match dx_opcode(self.m, self.f, *function, args)? {
+                57 => {
+                    let class = const_int(self.m, self.f, *args.get(1)?)?;
+                    let id = const_int(self.m, self.f, *args.get(2)?)?;
+                    self.setup
+                        .resource(u8::try_from(class).ok()?, u32::try_from(id).ok()?)
+                }
+                217 => {
+                    let (class, lower, space) = binding_of(self.m, self.f, *args.get(1)?)?;
+                    self.setup.resource_by_binding(class, lower, space)
+                }
+                // a handle annotated with its properties is the same handle
+                216 => {
+                    v = *args.get(1)?;
+                    continue;
+                }
+                // a library's handle is made from the value of the resource's global
+                160 => self.setup.resource_of_variable(super::setup::variable_loaded(
+                    self.m,
+                    self.f,
+                    *args.get(1)?,
+                )?),
+                218 => self.setup.heap.get(&v).copied(),
+                _ => None,
+            };
         }
+        None
     }
 
     /// Scan the program for how it uses each resource, before the globals are made.

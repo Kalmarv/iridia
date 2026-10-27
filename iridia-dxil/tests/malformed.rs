@@ -189,3 +189,14 @@ fn a_float_constant_of_an_integer_type_is_refused() {
         refusal(&bytes)
     );
 }
+
+#[test]
+fn a_handle_annotated_with_itself_does_not_loop() {
+    // an annotated handle whose source is its own result: following the chain of annotations never reaches a handle
+    let bytes = changed("pixel_ops.66.dxil", 5046, 0xb1, 0xb0);
+    assert!(
+        refusal(&bytes).contains("read before it is defined"),
+        "{}",
+        refusal(&bytes)
+    );
+}

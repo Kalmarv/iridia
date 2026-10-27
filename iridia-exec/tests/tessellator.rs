@@ -113,3 +113,93 @@ fn the_smallest_patches() {
             .is_empty()
     );
 }
+
+/// No factors panic the tessellator, and what it returns is consistent: every index names a point, a primitive's indices
+/// come in whole primitives and the sizes stay within what 64 segments per edge can make. The factors are random bit
+/// patterns (so NaN, infinities, subnormals, huge and negative values come up) as well as the limits.
+#[test]
+fn no_factors_make_the_tessellator_panic_or_return_a_dangling_index() {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let special = [
+        0.0,
+        -0.0,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::MAX,
+        f32::MIN,
+        f32::MIN_POSITIVE,
+        1e-40,
+        -1.0,
+        1.0,
+        2.0,
+        63.0,
+        64.0,
+        64.000_01,
+        1e9,
+    ];
+    let partitionings = [
+        Partitioning::Integer,
+        Partitioning::Pow2,
+        Partitioning::FractionalOdd,
+        Partitioning::FractionalEven,
+    ];
+    let outputs = [
+        OutputPrimitive::Point,
+        OutputPrimitive::Line,
+        OutputPrimitive::TriangleCw,
+        OutputPrimitive::TriangleCcw,
+    ];
+    let mut factor = move || {
+        let r = next();
+        if r % 3 == 0 {
+            special[(r >> 8) as usize % special.len()]
+        } else if r % 3 == 1 {
+            f32::from_bits((r >> 16) as u32)
+        } else {
+            (r >> 24) as f32 / 4_194_304.0
+        }
+    };
+    for _ in 0..3000 {
+        let factors = Factors {
+            edges: [factor(), factor(), factor(), factor()],
+            inside: [factor(), factor()],
+        };
+        for partitioning in partitionings {
+            for output in outputs {
+                let isolines = tessellate_isolines(partitioning, output, factors.edges[0], factors.edges[1]);
+                for (tessellation, isoline) in [
+                    (tessellate_triangle(partitioning, output, factors), false),
+                    (tessellate_quad(partitioning, output, factors), false),
+                    (isolines, true),
+                ] {
+                    let Tessellation { points, indices } = tessellation;
+                    assert!(
+                        indices.iter().all(|&i| (i as usize) < points.len()),
+                        "{partitioning:?} {output:?} {factors:?}: an index past the {} points",
+                        points.len()
+                    );
+                    // isolines are points or lines whatever the output primitive says
+                    let whole = match output {
+                        OutputPrimitive::Point => 1,
+                        OutputPrimitive::Line => 2,
+                        _ if isoline => 2,
+                        _ => 3,
+                    };
+                    assert_eq!(
+                        indices.len() % whole,
+                        0,
+                        "{partitioning:?} {output:?} {factors:?}"
+                    );
+                    assert!(points.len() <= 66 * 66 && indices.len() <= 6 * 66 * 66);
+                }
+            }
+        }
+    }
+}
