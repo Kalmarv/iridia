@@ -988,6 +988,41 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_element_past_the_registers_a_stage_has_is_refused() {
+        let element = |row, rows, column, columns, placed| records::Element {
+            id: 0,
+            name: "TEXCOORD".into(),
+            index: 0,
+            component_type: 9,
+            system_value: 0,
+            interpolation: 0,
+            row,
+            column,
+            rows,
+            columns,
+            placed,
+        };
+        check_elements(&[
+            element(0, 1, 0, 4, true),
+            element(31, 1, 2, 2, true),
+            element(7, 1_000_000, 90, 40, false),
+        ])
+        .unwrap();
+        for bad in [
+            element(0, 4_000_000_000, 0, 4, true),
+            element(33, 1, 0, 4, true),
+            element(0, 1, 2, 3, true),
+            element(0, 1, 0, 40, true),
+        ] {
+            let detail = check_elements(&[bad]).unwrap_err().detail;
+            assert!(
+                detail.contains("a stage has 32 registers of four lanes"),
+                "{detail}"
+            );
+        }
+    }
+
+    #[test]
     fn a_mesh_program_past_direct3ds_output_is_refused() {
         let state = |max_vertices, max_primitives| records::MeshState {
             max_vertices,
