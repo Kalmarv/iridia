@@ -103,3 +103,89 @@ fn a_graphics_program_without_its_signature_part_is_refused() {
     bytes[at] = b'X';
     assert!(refusal(&bytes).contains("without its ISG1 part"));
 }
+
+#[test]
+fn a_call_that_reads_an_argument_it_does_not_have_is_refused() {
+    // an operation's opcode made one the pre-scan reads an argument of, which the call does not have
+    let bytes = changed("geometry.66.dxil", 4132, 0x32, 0x33);
+    assert!(
+        refusal(&bytes).contains("an operation reads argument 1, where the call has 1"),
+        "{}",
+        refusal(&bytes)
+    );
+}
+
+#[test]
+fn a_call_made_to_return_a_value_it_does_not_define_is_refused() {
+    for (name, at, was, now) in [
+        ("ray_query_hits.dxil", 4274, 0xbb, 0xbc),
+        ("ray_query_hits.od.dxil", 4330, 0xbb, 0xbc),
+        ("tessellation.vs.od.dxil", 3848, 0x0b, 0x0c),
+        ("tessellation.hs.dxil", 4165, 0x5c, 0x5d),
+        ("vertex.66.dxil", 4963, 0x70, 0x60),
+    ] {
+        let bytes = changed(name, at, was, now);
+        assert!(
+            refusal(&bytes).contains("an instruction that yields a value but defines none"),
+            "{name}: {}",
+            refusal(&bytes)
+        );
+    }
+}
+
+#[test]
+fn an_integer_constant_of_a_float_type_is_refused() {
+    for (name, at, was, now) in [
+        ("blend.dxil", 4954, 0x8c, 0x0c),
+        ("geometry.od.dxil", 2606, 0x73, 0x33),
+        ("half_ops.dxil", 3146, 0x63, 0x43),
+        ("half_ops.od.dxil", 3210, 0x63, 0x43),
+        ("ray_query_grid.dxil", 2656, 0xe6, 0x66),
+        ("tessellation.hs.od.dxil", 4043, 0x46, 0x44),
+    ] {
+        let bytes = changed(name, at, was, now);
+        assert!(
+            refusal(&bytes).contains("an integer constant of a type that holds none (Some(Float))"),
+            "{name}: {}",
+            refusal(&bytes)
+        );
+    }
+}
+
+#[test]
+fn a_lane_past_the_four_of_a_register_is_refused() {
+    // a signature cell read at a column the element, and the register, do not have (it used to shift a mask by that much)
+    for (name, at, was, now, cell) in [
+        (
+            "tessellation.hs.dxil",
+            4213,
+            0x65,
+            0x66,
+            "column 9 of an element that starts at row 0",
+        ),
+        (
+            "tessellation.hs.od.dxil",
+            4314,
+            0x80,
+            0x00,
+            "column 25 of an element that starts at row 3",
+        ),
+    ] {
+        let bytes = changed(name, at, was, now);
+        let detail = refusal(&bytes);
+        assert!(
+            detail.contains(cell) && detail.contains("a register has columns 0 to 3"),
+            "{name}: {detail}"
+        );
+    }
+}
+
+#[test]
+fn a_float_constant_of_an_integer_type_is_refused() {
+    let bytes = changed("ray_tracing.callable.od.dxil", 2520, 0x44, 0x04);
+    assert!(
+        refusal(&bytes).contains("a float constant of a type that holds none (Some(Integer(32)))"),
+        "{}",
+        refusal(&bytes)
+    );
+}

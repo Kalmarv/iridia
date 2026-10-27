@@ -8,7 +8,7 @@ use naga::{Expression, Handle, SwitchValue};
 use super::Lift;
 use super::setup::const_int;
 use crate::{Error, Result, error};
-use dxil_reader::module::Op;
+use dxil_reader::module::{Instruction, Op};
 
 /// The lowering's view of a lift: the builder the lowering writes into is swapped in for each callback.
 struct Blocks<'a, 'm> {
@@ -29,8 +29,8 @@ impl Emit for Blocks<'_, '_> {
 
     fn node(&mut self, b: &mut Builder, node: usize) -> Result<()> {
         self.with(b, |lift| {
-            for i in lift.blocks[node].clone() {
-                let inst = &lift.f.instructions[i];
+            for i in lift.block(node)?.to_vec() {
+                let inst = lift.instruction_at(i)?;
                 if matches!(inst.op, Op::Phi { .. }) {
                     continue;
                 }
@@ -46,10 +46,7 @@ impl Emit for Blocks<'_, '_> {
 
     fn condition(&mut self, b: &mut Builder, node: usize) -> Result<Handle<Expression>> {
         self.with(b, |lift| {
-            let last = *lift.blocks[node]
-                .last()
-                .expect("a block ends with its terminator");
-            let inst = &lift.f.instructions[last];
+            let inst = lift.terminator(node)?;
             lift.at = inst.at;
             let Op::CondBranch { condition, .. } = &inst.op else {
                 return lift.refuse("a conditional branch was expected");
@@ -61,10 +58,7 @@ impl Emit for Blocks<'_, '_> {
 
     fn selector(&mut self, b: &mut Builder, node: usize) -> Result<(Handle<Expression>, Vec<SwitchValue>)> {
         self.with(b, |lift| {
-            let last = *lift.blocks[node]
-                .last()
-                .expect("a block ends with its terminator");
-            let inst = &lift.f.instructions[last];
+            let inst = lift.terminator(node)?;
             lift.at = inst.at;
             let Op::Switch { value, cases, .. } = &inst.op else {
                 return lift.refuse("a switch was expected");
@@ -75,7 +69,7 @@ impl Emit for Blocks<'_, '_> {
                 let Some(k) = const_int(lift.m, lift.f, *case) else {
                     return lift.refuse("a switch case that is not a constant");
                 };
-                values.push(SwitchValue::U32(k as u32));
+                values.push(SwitchValue::U32(super::low32(k as u64)));
             }
             Ok((selector.expr, values))
         })
@@ -83,16 +77,44 @@ impl Emit for Blocks<'_, '_> {
 
     fn exit(&mut self, b: &mut Builder, node: usize) -> Result<()> {
         self.with(b, |lift| {
-            let last = *lift.blocks[node]
-                .last()
-                .expect("a block ends with its terminator");
-            lift.at = lift.f.instructions[last].at;
+            lift.at = lift.terminator(node)?.at;
             lift.epilogue()
         })
     }
 }
 
-impl Lift<'_> {
+impl<'m> Lift<'m> {
+    /// The instructions of basic block `node`, by index into the function's.
+    pub(super) fn block(&self, node: usize) -> Result<&[usize]> {
+        self.blocks.get(node).map(Vec::as_slice).ok_or_else(|| {
+            error(
+                self.at,
+                format!("basic block {node}, where the function has {}", self.blocks.len()),
+            )
+        })
+    }
+
+    /// Instruction `i` of the function.
+    pub(super) fn instruction_at(&self, i: usize) -> Result<&'m Instruction> {
+        self.f.instructions.get(i).ok_or_else(|| {
+            error(
+                self.at,
+                format!(
+                    "instruction {i}, where the function has {}",
+                    self.f.instructions.len()
+                ),
+            )
+        })
+    }
+
+    /// The last instruction of basic block `node`, which ends it.
+    fn terminator(&self, node: usize) -> Result<&'m Instruction> {
+        match self.block(node)?.last() {
+            Some(&last) => self.instruction_at(last),
+            None => Err(error(self.at, format!("basic block {node} is empty"))),
+        }
+    }
+
     /// The graph of the function's basic blocks.
     fn cfg(&self) -> Result<Cfg> {
         let mut terms = Vec::new();
@@ -100,7 +122,8 @@ impl Lift<'_> {
             let Some(&last) = insts.last() else {
                 return Err(error(0, format!("basic block {n} is empty")));
             };
-            terms.push(match &self.f.instructions[last].op {
+            let terminator = self.instruction_at(last)?;
+            terms.push(match &terminator.op {
                 Op::Return(_) | Op::Unreachable => Term::Exit,
                 Op::Branch { target } => Term::Goto(*target),
                 Op::CondBranch { then, otherwise, .. } => Term::If(*then, *otherwise),
@@ -108,10 +131,7 @@ impl Lift<'_> {
                     Term::Switch(cases.iter().map(|(_, t)| *t).chain([*default]).collect())
                 }
                 _ => {
-                    return Err(error(
-                        self.f.instructions[last].at,
-                        "a block that does not end in a terminator",
-                    ));
+                    return Err(error(terminator.at, "a block that does not end in a terminator"));
                 }
             });
         }

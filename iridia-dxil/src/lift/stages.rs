@@ -18,7 +18,9 @@ impl Lift<'_> {
         match self.argument_exprs.get(&index) {
             Some(&e) => e,
             None => {
-                let e = self.b.app(E::FunctionArgument(index as u32));
+                let e = self
+                    .b
+                    .app(E::FunctionArgument(u32::try_from(index).unwrap_or(u32::MAX)));
                 self.argument_exprs.insert(index, e);
                 e
             }
@@ -30,21 +32,31 @@ impl Lift<'_> {
         match &self.sig {
             None => {
                 let io = &self.setup.io;
-                match io.arguments.iter().position(|item| item.varyings[0] == varying) {
-                    Some(index) => Ok((index, io.arguments[index].ty)),
+                match io
+                    .arguments
+                    .iter()
+                    .enumerate()
+                    .find(|(_, item)| item.varyings.first() == Some(&varying))
+                {
+                    Some((index, item)) => Ok((index, item.ty)),
                     None => self.refuse("a kept input varying without an argument"),
                 }
             }
             Some(sig) => {
-                let name = Program::varying_name(&self.setup.interface.inputs[varying].label);
+                let Some(input) = self.setup.interface.inputs.get(varying) else {
+                    return self.refuse(format!(
+                        "input varying {varying}, which the interface does not have"
+                    ));
+                };
+                let name = Program::varying_name(&input.label);
                 self.argument_named(sig, &name)
             }
         }
     }
 
     fn argument_named(&self, sig: &iridia::FunctionSig, name: &str) -> Result<(usize, IoType)> {
-        match sig.arguments.iter().position(|a| a.name == name) {
-            Some(index) => Ok((index, sig.arguments[index].ty)),
+        match sig.arguments.iter().enumerate().find(|(_, a)| a.name == name) {
+            Some((index, argument)) => Ok((index, argument.ty)),
             None => self.refuse(format!("{}: no argument {name}", sig.name)),
         }
     }
@@ -77,7 +89,9 @@ impl Lift<'_> {
 
     /// The result of a call as the type it has, from a value carried as `kind`.
     fn typed_result(&mut self, inst: &Instruction, value: Val) -> Result<()> {
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
+        let Some((_, ty)) = inst.result else {
+            return self.refuse("a call that reads a value but has no result");
+        };
         let kind = self.kind_of_type(ty)?;
         let r = self.b.bitcast_to(value, kind);
         self.define_result(inst.result, Lv::Scalar(r))
@@ -86,9 +100,9 @@ impl Lift<'_> {
     /// `LoadPatchConstant(element, row, column)` in a domain program: one lane of a patch constant.
     pub(super) fn load_patch_constant(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
         let (Some(id), Some(row), Some(col)) = (
-            const_int(self.m, self.f, args[1]),
-            const_int(self.m, self.f, args[2]),
-            const_int(self.m, self.f, args[3]),
+            const_int(self.m, self.f, self.arg(args, 1)?),
+            const_int(self.m, self.f, self.arg(args, 2)?),
+            const_int(self.m, self.f, self.arg(args, 3)?),
         ) else {
             return self.refuse("a patch constant read at a computed element, row or column");
         };
@@ -101,14 +115,19 @@ impl Lift<'_> {
         else {
             return self.refuse(format!("patch constant element {id}"));
         };
-        let (register, lane) = (element.row + row as u32, element.column + col as u8);
+        let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
         let Some((varying, position)) = patch_cell(self.patch_constants(), register, lane) else {
             return self.refuse(format!(
                 "patch constant {} has no lane at register {register}",
                 element.name
             ));
         };
-        let name = Program::varying_name(&self.patch_constants()[varying].label);
+        let Some(patch_constant) = self.patch_constants().get(varying) else {
+            return self.refuse(format!(
+                "patch constant varying {varying}, which the interface does not have"
+            ));
+        };
+        let name = Program::varying_name(&patch_constant.label);
         let value = self.special_argument(&name)?;
         let lane_value = if value.width > 1 {
             self.b.lane(value, position)
@@ -122,9 +141,9 @@ impl Lift<'_> {
     /// bits in its register's local until the function returns.
     pub(super) fn store_patch_constant(&mut self, args: &[ValueId]) -> Result<()> {
         let (Some(id), Some(row), Some(col)) = (
-            const_int(self.m, self.f, args[1]),
-            const_int(self.m, self.f, args[2]),
-            const_int(self.m, self.f, args[3]),
+            const_int(self.m, self.f, self.arg(args, 1)?),
+            const_int(self.m, self.f, self.arg(args, 2)?),
+            const_int(self.m, self.f, self.arg(args, 3)?),
         ) else {
             return self.refuse("a patch constant written at a computed element, row or column");
         };
@@ -137,16 +156,16 @@ impl Lift<'_> {
         else {
             return self.refuse(format!("patch constant element {id}"));
         };
-        let (register, lane) = (element.row + row as u32, element.column + col as u8);
+        let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
         if patch_cell(self.patch_constants(), register, lane).is_none() {
             return self.refuse(format!(
                 "patch constant {} has no lane at register {register}",
                 element.name
             ));
         }
-        let value = self.scalar(args[4])?;
+        let value = self.scalar(self.arg(args, 4)?)?;
         let bits = self.b.bitcast_to(value, Kind::U);
-        let local = self.outputs[&register];
+        let local = self.output_local(register)?;
         let pointer = self.b.local_ptr(local);
         let target = self.b.app(E::AccessIndex {
             base: pointer,
@@ -160,9 +179,9 @@ impl Lift<'_> {
     /// an output control point.
     pub(super) fn load_output_control_point(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
         let (Some(id), Some(row), Some(col)) = (
-            const_int(self.m, self.f, args[1]),
-            const_int(self.m, self.f, args[2]),
-            const_int(self.m, self.f, args[3]),
+            const_int(self.m, self.f, self.arg(args, 1)?),
+            const_int(self.m, self.f, self.arg(args, 2)?),
+            const_int(self.m, self.f, self.arg(args, 3)?),
         ) else {
             return self.refuse("an output control point read at a computed element, row or column");
         };
@@ -175,17 +194,19 @@ impl Lift<'_> {
         else {
             return self.refuse(format!("output element {id}"));
         };
-        let (register, lane) = (element.row + row as u32, element.column + col as u8);
+        let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
         let Some((varying, position)) = self.setup.output_cell(register, lane) else {
             return self.refuse(format!(
                 "output {} has no lane at register {register}",
                 element.name
             ));
         };
-        let name = format!(
-            "out_{}",
-            Program::varying_name(&self.setup.interface.outputs[varying].label)
-        );
+        let Some(output) = self.setup.interface.outputs.get(varying) else {
+            return self.refuse(format!(
+                "output varying {varying}, which the interface does not have"
+            ));
+        };
+        let name = format!("out_{}", Program::varying_name(&output.label));
         let Some(sig) = self.sig.clone() else {
             return self.refuse("an output control point read outside a stage function");
         };
@@ -194,7 +215,7 @@ impl Lift<'_> {
             return self.refuse("output control points are not an array");
         };
         let points = self.argument_expr(index);
-        let point = self.uint(args[4])?;
+        let point = self.uint(self.arg(args, 4)?)?;
         let element = Val {
             expr: self.b.app(E::Access {
                 base: points,
@@ -213,11 +234,12 @@ impl Lift<'_> {
 
     /// `DomainLocation(component)`: a component of the vertex's place in its patch.
     pub(super) fn domain_location(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let Some(component) = const_int(self.m, self.f, args[1]).filter(|c| (0..3).contains(c)) else {
+        let Some(component) = const_int(self.m, self.f, self.arg(args, 1)?).filter(|c| (0..3).contains(c))
+        else {
             return self.refuse("a domain location read at a computed component");
         };
         let location = self.special_argument("SV_DomainLocation")?;
-        let lane = self.b.lane(location, component as u8);
+        let lane = self.b.lane(location, super::lane_u8(component));
         self.typed_result(inst, lane)
     }
 
@@ -270,7 +292,9 @@ impl Lift<'_> {
         let pointer = self.b.local_ptr(pending);
         self.b.store(pointer, first);
         let mut outputs = Vec::new();
-        let sig = self.sig.clone().expect("a stage function");
+        let Some(sig) = self.sig.clone() else {
+            return self.refuse("a geometry epilogue outside a stage function");
+        };
         for (i, v) in self.setup.interface.outputs.clone().into_iter().enumerate() {
             let Some(d3d) = v.provenance.d3d else {
                 return self.refuse("an output without a register");
@@ -309,7 +333,7 @@ impl Lift<'_> {
     /// `EmitStream`, `CutStream`, `EmitThenCutStream` (97 to 99) on stream 0: the output registers become the next
     /// vertex (past the most vertices, nothing), and the next vertex begins a strip after a cut.
     pub(super) fn stream_op(&mut self, code: u64, args: &[ValueId]) -> Result<()> {
-        if const_int(self.m, self.f, args[1]) != Some(0) {
+        if const_int(self.m, self.f, self.arg(args, 1)?) != Some(0) {
             return self.refuse("a vertex emitted to a stream other than 0");
         }
         if code != 98 {
@@ -410,14 +434,21 @@ impl Lift<'_> {
             self.b.push(naga::Statement::Return { value: None });
             return Ok(());
         };
-        let sig = self.sig.clone().expect("a stage function");
+        let Some(sig) = self.sig.clone() else {
+            return self.refuse("a stage function's epilogue outside a stage function");
+        };
         let varyings = self.result_varyings();
         let mut parts = Vec::new();
         for item in &sig.result {
             let (IoType::Value(carried), Some(index)) = (item.ty, item.varying) else {
                 return self.refuse("a result that is not a varying's value");
             };
-            let v = &varyings[index];
+            let Some(v) = varyings.get(index) else {
+                return self.refuse(format!(
+                    "{} names varying {index}, which the interface does not have",
+                    item.name
+                ));
+            };
             let Some(d3d) = v.provenance.d3d else {
                 return self.refuse(format!("{} has no register", item.name));
             };
@@ -448,7 +479,16 @@ impl Lift<'_> {
 fn patch_cell(list: &[Varying], register: u32, lane: u8) -> Option<(usize, u8)> {
     list.iter().enumerate().find_map(|(i, v)| {
         let d3d = v.provenance.d3d?;
-        (d3d.register == register && d3d.mask >> lane & 1 != 0)
-            .then(|| (i, (d3d.mask & ((1u8 << lane) - 1)).count_ones() as u8))
+        (d3d.register == register && lanes_below(d3d.mask, lane).is_some())
+            .then(|| (i, lanes_below(d3d.mask, lane).unwrap_or(0)))
+    })
+}
+
+/// How many lanes of `mask` come before `lane`, where the mask names `lane`.
+pub(super) fn lanes_below(mask: u8, lane: u8) -> Option<u8> {
+    let lane = u32::from(lane);
+    (mask.checked_shr(lane)? & 1 != 0).then(|| {
+        let below = (u32::from(mask) & 1u32.checked_shl(lane).unwrap_or(0).wrapping_sub(1)).count_ones();
+        u8::try_from(below).unwrap_or(0)
     })
 }

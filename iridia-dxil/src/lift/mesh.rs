@@ -35,18 +35,20 @@ impl Lift<'_> {
     }
 
     /// A pointer into the output variable: field `field`, and if given, element `index`.
-    fn mesh_field(&mut self, field: u32, index: Option<Val>) -> naga::Handle<E> {
-        let (output, _) = self.mesh.as_ref().expect("a mesh program");
+    fn mesh_field(&mut self, field: u32, index: Option<Val>) -> Result<naga::Handle<E>> {
+        let Some((output, _)) = self.mesh.as_ref() else {
+            return self.refuse("a mesh output written by a program that is no mesh program");
+        };
         let global = output.global;
         let base = self.b.global_ptr(global);
         let part = self.b.app(E::AccessIndex { base, index: field });
-        match index {
+        Ok(match index {
             Some(i) => self.b.app(E::Access {
                 base: part,
                 index: i.expr,
             }),
             None => part,
-        }
+        })
     }
 
     /// The mesh `dx.op`s: `SetMeshOutputCounts` (168), `EmitIndices` (169), `GetMeshPayload` (170), `StoreVertexOutput`
@@ -57,22 +59,22 @@ impl Lift<'_> {
         };
         match code {
             168 => {
-                let vertices = self.uint(args[1])?;
-                let primitives = self.uint(args[2])?;
-                let p = self.mesh_field(output.vertex_count, None);
+                let vertices = self.uint(self.arg(args, 1)?)?;
+                let primitives = self.uint(self.arg(args, 2)?)?;
+                let p = self.mesh_field(output.vertex_count, None)?;
                 self.b.store(p, vertices);
-                let p = self.mesh_field(output.primitive_count, None);
+                let p = self.mesh_field(output.primitive_count, None)?;
                 self.b.store(p, primitives);
                 Ok(())
             }
             169 => {
-                let primitive = self.uint(args[1])?;
+                let primitive = self.uint(self.arg(args, 1)?)?;
                 let mut indices = Vec::new();
                 for k in 0..facts.topology.indices() as usize {
-                    indices.push(self.uint(args[2 + k])?);
+                    indices.push(self.uint(self.arg(args, 2usize.saturating_add(k))?)?);
                 }
                 let value = self.b.compose(&indices);
-                let element = self.mesh_field(output.primitives, Some(primitive));
+                let element = self.mesh_field(output.primitives, Some(primitive))?;
                 let target = self.b.app(E::AccessIndex {
                     base: element,
                     index: output.indices_member,
@@ -82,9 +84,9 @@ impl Lift<'_> {
             }
             171 => {
                 let (Some(id), Some(row), Some(col)) = (
-                    const_int(self.m, self.f, args[1]),
-                    const_int(self.m, self.f, args[2]),
-                    const_int(self.m, self.f, args[3]),
+                    const_int(self.m, self.f, self.arg(args, 1)?),
+                    const_int(self.m, self.f, self.arg(args, 2)?),
+                    const_int(self.m, self.f, self.arg(args, 3)?),
                 ) else {
                     return self.refuse("a vertex output written at a computed element, row or column");
                 };
@@ -100,21 +102,26 @@ impl Lift<'_> {
                 if !element.placed {
                     return self.refuse(format!("output {} is not placed in a register", element.name));
                 }
-                let (register, lane) = (element.row + row as u32, element.column + col as u8);
+                let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
                 let Some((varying, position)) = self.setup.output_cell(register, lane) else {
                     return self.refuse(format!(
                         "output {} has no lane at register {register}",
                         element.name
                     ));
                 };
-                let carried = self.setup.interface.outputs[varying].value;
-                let value = self.scalar(args[4])?;
+                let Some(carried) = self.setup.interface.outputs.get(varying).map(|v| v.value) else {
+                    return self.refuse(format!(
+                        "output varying {varying}, which the interface does not have"
+                    ));
+                };
+                let value = self.scalar(self.arg(args, 4)?)?;
                 let value = self.b.bitcast_to(value, Kind::of(carried.scalar));
-                let vertex = self.uint(args[5])?;
-                let element = self.mesh_field(output.vertices, Some(vertex));
+                let vertex = self.uint(self.arg(args, 5)?)?;
+                let element = self.mesh_field(output.vertices, Some(vertex))?;
                 let member = self.b.app(E::AccessIndex {
                     base: element,
-                    index: varying as u32,
+                    index: u32::try_from(varying)
+                        .map_err(|_| crate::error(self.at, "more than 4294967295 outputs"))?,
                 });
                 let target = if carried.width > 1 {
                     self.b.app(E::AccessIndex {

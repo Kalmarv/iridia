@@ -27,7 +27,7 @@ impl Lift<'_> {
     /// `Barrier(mode)`: the mode's flags are 1 synchronise the thread group, 2 fence buffer memory across groups, 4
     /// fence it within the group, 8 fence thread-group memory.
     pub(super) fn barrier(&mut self, args: &[ValueId]) -> Result<()> {
-        let Some(mode) = const_int(self.m, self.f, args[1]) else {
+        let Some(mode) = const_int(self.m, self.f, self.arg(args, 1)?) else {
             return self.refuse("a barrier of a computed mode");
         };
         let mut flags = naga::Barrier::empty();
@@ -138,17 +138,20 @@ impl Lift<'_> {
     /// `BufferStore` and `RawBufferStore(handle, index, offset, value x4, mask)`: the masked lanes written at the
     /// buffer's words; a write past the end of the buffer is dropped.
     pub(super) fn buffer_store(&mut self, args: &[ValueId]) -> Result<()> {
-        let (resource, words) = self.buffer_words(args[1], 1)?;
-        let Some(mask) = const_int(self.m, self.f, args[8]) else {
+        let (resource, words) = self.buffer_words(self.arg(args, 1)?, 1)?;
+        let Some(mask) = const_int(self.m, self.f, self.arg(args, 8)?) else {
             return self.refuse("a buffer write with a computed mask");
         };
-        let (word, kind) = self.uav_word(resource, args[2], args[3])?;
+        let (word, kind) = self.uav_word(resource, self.arg(args, 2)?, self.arg(args, 3)?)?;
         let atomic = self.resources.atomic.get(&resource).copied();
         let mut lanes = Vec::new();
         for lane in 0..4usize {
             if mask >> lane & 1 != 0 {
-                let v = self.scalar(args[4 + lane])?;
-                lanes.push((lane as u32, self.b.bitcast_to(v, Kind::U)));
+                let v = self.scalar(self.arg(args, 4usize.saturating_add(lane))?)?;
+                lanes.push((
+                    u32::try_from(lane).unwrap_or(u32::MAX),
+                    self.b.bitcast_to(v, Kind::U),
+                ));
             }
         }
         for (lane, value) in lanes {
@@ -194,7 +197,7 @@ impl Lift<'_> {
     /// `AtomicBinOp` on an unordered-access texture: naga's image atomic, with the old value where the program reads it.
     fn image_atomic(&mut self, inst: &Instruction, args: &[ValueId], resource: usize) -> Result<()> {
         let wants_old = inst.result.is_some_and(|(v, _)| self.value_is_read(v));
-        let fun = match const_int(self.m, self.f, args[2]) {
+        let fun = match const_int(self.m, self.f, self.arg(args, 2)?) {
             Some(ATOMIC_ADD) => AtomicFunction::Add,
             Some(ATOMIC_AND) => AtomicFunction::And,
             Some(ATOMIC_OR) => AtomicFunction::InclusiveOr,
@@ -221,9 +224,9 @@ impl Lift<'_> {
             .get(&resource)
             .copied()
             .unwrap_or(naga::Scalar::U32);
-        let value = self.scalar(args[6])?;
+        let value = self.scalar(self.arg(args, 6)?)?;
         let value = self.b.bitcast_to(value, kind_of_atomic(scalar));
-        let (_, image) = self.handle_expr(args[1], 1)?;
+        let (_, image) = self.handle_expr(self.arg(args, 1)?, 1)?;
         let old = wants_old.then(|| self.b.image_atomic_result(kind_of_atomic(scalar)));
         self.b.push(Statement::ImageAtomic {
             image,
@@ -252,7 +255,7 @@ impl Lift<'_> {
     /// `AtomicBinOp(handle, op, index, offset, unused, value)` on an unordered-access buffer: the old value, zero when
     /// the word is past the end of the buffer (the operation does nothing there, as in D3D).
     pub(super) fn buffer_atomic(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let resource = self.handle_resource(args[1], 1)?;
+        let resource = self.handle_resource(self.arg(args, 1)?, 1)?;
         if let ResourceKind::Storage {
             target: StorageTarget::Image { .. },
             ..
@@ -260,8 +263,8 @@ impl Lift<'_> {
         {
             return self.image_atomic(inst, args, resource);
         }
-        let (_, words) = self.buffer_words(args[1], 1)?;
-        let Some(op) = const_int(self.m, self.f, args[2]) else {
+        let (_, words) = self.buffer_words(self.arg(args, 1)?, 1)?;
+        let Some(op) = const_int(self.m, self.f, self.arg(args, 2)?) else {
             return self.refuse("an atomic operation of a computed kind");
         };
         let fun = match op {
@@ -274,11 +277,11 @@ impl Lift<'_> {
             ATOMIC_EXCHANGE => AtomicFunction::Exchange { compare: None },
             other => return self.refuse(format!("atomic operation {other}")),
         };
-        let (word, kind) = self.uav_word(resource, args[3], args[4])?;
+        let (word, kind) = self.uav_word(resource, self.arg(args, 3)?, self.arg(args, 4)?)?;
         let Some(scalar) = self.resources.atomic.get(&resource).copied() else {
             return self.refuse("an atomic operation on a buffer the lifter did not make atomic");
         };
-        let value = self.scalar(args[6])?;
+        let value = self.scalar(self.arg(args, 6)?)?;
         let inside = self.buffer_word_inside(words, word);
         let typed = matches!(kind, BufferKind::Typed(_));
         let old = self.b.atomic_inside(inside, kind_of_atomic(scalar), |b| {
@@ -290,12 +293,12 @@ impl Lift<'_> {
 
     /// `AtomicCompareExchange(handle, index, offset, unused, compare, value)` on an unordered-access buffer.
     pub(super) fn buffer_compare_exchange(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let (resource, words) = self.buffer_words(args[1], 1)?;
-        let (word, kind) = self.uav_word(resource, args[2], args[3])?;
+        let (resource, words) = self.buffer_words(self.arg(args, 1)?, 1)?;
+        let (word, kind) = self.uav_word(resource, self.arg(args, 2)?, self.arg(args, 3)?)?;
         let Some(scalar) = self.resources.atomic.get(&resource).copied() else {
             return self.refuse("an atomic operation on a buffer the lifter did not make atomic");
         };
-        let (compare, value) = (self.scalar(args[5])?, self.scalar(args[6])?);
+        let (compare, value) = (self.scalar(self.arg(args, 5)?)?, self.scalar(self.arg(args, 6)?)?);
         let inside = self.buffer_word_inside(words, word);
         let typed = matches!(kind, BufferKind::Typed(_));
         let old = self.b.atomic_inside(inside, kind_of_atomic(scalar), |b| {
@@ -385,7 +388,7 @@ impl Lift<'_> {
              the device's, not a fixed 32 or 64"
                 .into(),
         );
-        let konst = |lift: &Self, n: usize| const_int(lift.m, lift.f, args[n]);
+        let konst = |lift: &Self, n: usize| args.get(n).and_then(|&a| const_int(lift.m, lift.f, a));
         let result: Val = match code {
             // IsFirstLane, LaneIndex, LaneCount
             110 => {
@@ -397,39 +400,39 @@ impl Lift<'_> {
             112 => self.system_input(iridia::SystemValue::LaneCount)?,
             // AnyTrue, AllTrue
             113 | 114 => {
-                let c = self.scalar(args[1])?;
+                let c = self.scalar(self.arg(args, 1)?)?;
                 let c = self.b.bitcast_to(c, Kind::B);
                 let op = if code == 113 { Sop::Any } else { Sop::All };
                 self.collective(op, Scan::Reduce, c)
             }
             // ActiveAllEqual: every lane's bits are the first lane's
             115 => {
-                let v = self.scalar(args[1])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
                 let bits = self.b.bitcast_to(v, Kind::U);
                 let first = self.gather(naga::GatherMode::BroadcastFirst, bits);
                 let same = self.b.binary(Bo::Equal, bits, first);
                 self.collective(Sop::All, Scan::Reduce, same)
             }
             116 => {
-                let c = self.scalar(args[1])?;
+                let c = self.scalar(self.arg(args, 1)?)?;
                 let c = self.b.bitcast_to(c, Kind::B);
                 let ballot = self.ballot(c);
                 let lanes: Vec<Lv> = (0..4).map(|k| Lv::Scalar(self.b.lane(ballot, k))).collect();
                 return self.define_result(inst.result, Lv::Agg(lanes));
             }
             117 => {
-                let v = self.scalar(args[1])?;
-                let lane = self.uint(args[2])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
+                let lane = self.uint(self.arg(args, 2)?)?;
                 self.gather(naga::GatherMode::Shuffle(lane.expr), v)
             }
             118 => {
-                let v = self.scalar(args[1])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
                 self.gather(naga::GatherMode::BroadcastFirst, v)
             }
             // ActiveOp, PrefixOp: (value, operation, signedness)
             119 | 121 => {
                 let sign = konst(self, 3);
-                let v = self.wave_operand(args[1], sign)?;
+                let v = self.wave_operand(self.arg(args, 1)?, sign)?;
                 let op = match konst(self, 2) {
                     Some(WAVE_SUM) => Sop::Add,
                     Some(WAVE_PRODUCT) => Sop::Mul,
@@ -446,7 +449,7 @@ impl Lift<'_> {
             }
             // ActiveBit: and, or, xor
             120 => {
-                let v = self.scalar(args[1])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
                 let v = self.b.bitcast_to(v, Kind::U);
                 let op = match konst(self, 2) {
                     Some(0) => Sop::And,
@@ -458,12 +461,12 @@ impl Lift<'_> {
             }
             // QuadReadLaneAt, QuadOp (across x, y, the diagonal)
             122 => {
-                let v = self.scalar(args[1])?;
-                let lane = self.uint(args[2])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
+                let lane = self.uint(self.arg(args, 2)?)?;
                 self.gather(naga::GatherMode::QuadBroadcast(lane.expr), v)
             }
             123 => {
-                let v = self.scalar(args[1])?;
+                let v = self.scalar(self.arg(args, 1)?)?;
                 let direction = match konst(self, 2) {
                     Some(0) => naga::Direction::X,
                     Some(1) => naga::Direction::Y,
@@ -474,7 +477,7 @@ impl Lift<'_> {
             }
             // AllBitCount, PrefixBitCount: the lanes whose condition holds, all of them or those before this one
             135 | 136 => {
-                let c = self.scalar(args[1])?;
+                let c = self.scalar(self.arg(args, 1)?)?;
                 let c = self.b.bitcast_to(c, Kind::B);
                 let ballot = self.ballot(c);
                 let lane = if code == 136 {
@@ -484,11 +487,11 @@ impl Lift<'_> {
                 };
                 let mut total = self.b.lit_u(0);
                 for k in 0..4u32 {
-                    let word = self.b.lane(ballot, k as u8);
+                    let word = self.b.lane(ballot, super::lane_u8(k));
                     let word = match lane {
                         // the bits of this word below the lane: all, none, or the low bits up to it
                         Some(lane) => {
-                            let base = self.b.lit_u(32 * k);
+                            let base = self.b.lit_u(k.saturating_mul(32));
                             let relative = self.b.binary(Bo::Subtract, lane, base);
                             let thirty_two = self.b.lit_u(32);
                             let in_word = self.b.binary(Bo::Less, relative, thirty_two);

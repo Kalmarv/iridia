@@ -24,10 +24,9 @@ pub(super) struct Operations {
 impl Lift<'_> {
     /// The type of the structure a pointer value points to (the payload of a ray, the attributes of a hit).
     fn pointee(&self, v: ValueId) -> Result<TypeId> {
-        let ty = if v < self.f.first {
-            self.m.value_types.get(v).copied()
-        } else {
-            self.f.local_types.get(v - self.f.first).copied()
+        let ty = match v.checked_sub(self.f.first) {
+            None => self.m.value_types.get(v).copied(),
+            Some(local) => self.f.local_types.get(local).copied(),
         };
         match ty.and_then(|t| self.m.types.get(t)) {
             Some(Type::Pointer(t)) => Ok(*t),
@@ -79,9 +78,9 @@ impl Lift<'_> {
 
     fn float3(&mut self, args: &[ValueId], first: usize) -> Result<Val> {
         let parts = [
-            self.float(args[first])?,
-            self.float(args[first + 1])?,
-            self.float(args[first + 2])?,
+            self.float(self.arg(args, first)?)?,
+            self.float(self.arg(args, first.saturating_add(1))?)?,
+            self.float(self.arg(args, first.saturating_add(2))?)?,
         ];
         Ok(self.b.compose(&parts))
     }
@@ -107,8 +106,8 @@ impl Lift<'_> {
             // ObjectToWorld(row, column), WorldToObject(row, column): a lane of a row of the instance's transform
             151 | 152 => {
                 let (Some(row), Some(column)) = (
-                    const_int(self.m, self.f, args[1]),
-                    const_int(self.m, self.f, args[2]),
+                    const_int(self.m, self.f, self.arg(args, 1)?),
+                    const_int(self.m, self.f, self.arg(args, 2)?),
                 ) else {
                     return self.refuse("a transform read at a computed row or column");
                 };
@@ -120,8 +119,8 @@ impl Lift<'_> {
                 } else {
                     SystemValue::WorldToObject
                 };
-                let rows = self.system_input_row(system, row as u32)?;
-                let lane = self.b.lane(rows, column as u8);
+                let rows = self.system_input_row(system, super::low32(row as u64))?;
+                let lane = self.b.lane(rows, super::lane_u8(column));
                 self.define_result(result, Lv::Scalar(lane))
             }
             155 | 156 => {
@@ -139,18 +138,18 @@ impl Lift<'_> {
             157 => {
                 // TraceRay(handle, flags, mask, hit offset, hit stride, miss index, origin, t min, direction, t max,
                 // payload)
-                let (_, structure) = self.handle_expr(args[1], 0)?;
+                let (_, structure) = self.handle_expr(self.arg(args, 1)?, 0)?;
                 let acceleration = structure;
-                let (payload, payload_type) = self.memory_pointer(args[15])?;
-                let flags = self.uint(args[2])?;
-                let mask = self.uint(args[3])?;
-                let offset = self.uint(args[4])?;
-                let stride = self.uint(args[5])?;
-                let miss = self.uint(args[6])?;
+                let (payload, payload_type) = self.memory_pointer(self.arg(args, 15)?)?;
+                let flags = self.uint(self.arg(args, 2)?)?;
+                let mask = self.uint(self.arg(args, 3)?)?;
+                let offset = self.uint(self.arg(args, 4)?)?;
+                let stride = self.uint(self.arg(args, 5)?)?;
+                let miss = self.uint(self.arg(args, 6)?)?;
                 let origin = self.float3(args, 7)?;
-                let tmin = self.float(args[10])?;
+                let tmin = self.float(self.arg(args, 10)?)?;
                 let direction = self.float3(args, 11)?;
-                let tmax = self.float(args[14])?;
+                let tmax = self.float(self.arg(args, 14)?)?;
                 let f = self.operation(
                     iridia::rt::TRACE_RAY,
                     Some(payload_type),
@@ -204,9 +203,9 @@ impl Lift<'_> {
             }
             158 => {
                 // ReportHit(t, kind, attributes) -> accepted
-                let (attributes, attribute_type) = self.memory_pointer(args[3])?;
-                let t = self.float(args[1])?;
-                let kind = self.uint(args[2])?;
+                let (attributes, attribute_type) = self.memory_pointer(self.arg(args, 3)?)?;
+                let t = self.float(self.arg(args, 1)?)?;
+                let kind = self.uint(self.arg(args, 2)?)?;
                 let f = self.operation(
                     iridia::rt::REPORT_HIT,
                     Some(attribute_type),
@@ -229,8 +228,8 @@ impl Lift<'_> {
             }
             159 => {
                 // CallShader(index, parameter)
-                let (parameter, parameter_type) = self.memory_pointer(args[2])?;
-                let index = self.uint(args[1])?;
+                let (parameter, parameter_type) = self.memory_pointer(self.arg(args, 2)?)?;
+                let index = self.uint(self.arg(args, 1)?)?;
                 let f = self.operation(
                     iridia::rt::CALL_SHADER,
                     Some(parameter_type),
@@ -251,15 +250,16 @@ impl Lift<'_> {
                 let value = self.system_input(system)?;
                 // a vector value is read a component at a time
                 let value = if value.width > 1 {
-                    let Some(component) = const_int(self.m, self.f, args[1]).filter(|c| (0..3).contains(c))
+                    let Some(component) =
+                        const_int(self.m, self.f, self.arg(args, 1)?).filter(|c| (0..3).contains(c))
                     else {
                         return self.refuse("a ray value read at a computed component");
                     };
-                    self.b.lane(value, component as u8)
+                    self.b.lane(value, super::lane_u8(component))
                 } else {
                     value
                 };
-                let ty = result.map(|(_, t)| t).expect("a call has a result");
+                let ty = self.result_type(result)?;
                 let kind = self.kind_of_type(ty)?;
                 let r = self.b.bitcast_to(value, kind);
                 self.define_result(result, Lv::Scalar(r))

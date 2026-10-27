@@ -40,7 +40,7 @@ impl Lift<'_> {
             4 => self.load_input(inst, args),
             5 => self.store_output(args),
             6 | 12..=20 | 22 | 24..=29 | 21 | 23 => {
-                let x = self.float(args[1])?;
+                let x = self.float(self.arg(args, 1)?)?;
                 let f = match code {
                     6 => Mf::Abs,
                     12 => Mf::Cos,
@@ -66,12 +66,12 @@ impl Lift<'_> {
                 scalar!(r)
             }
             7 => {
-                let x = self.float(args[1])?;
+                let x = self.float(self.arg(args, 1)?)?;
                 let r = self.b.d3d_saturate(x);
                 scalar!(r)
             }
             8..=11 => {
-                let x = self.float(args[1])?;
+                let x = self.float(self.arg(args, 1)?)?;
                 let r = match code {
                     8 => self.b.is_nan(x),
                     _ => {
@@ -93,13 +93,13 @@ impl Lift<'_> {
                 };
                 scalar!(r)
             }
-            31..=33 if self.is_wide(args[1]) => {
-                let a = self.wide(args[1])?;
+            31..=33 if self.is_wide(self.arg(args, 1)?) => {
+                let a = self.wide(self.arg(args, 1)?)?;
                 let r = self.bits_wide(code, a)?;
                 scalar!(r)
             }
             30 | 31 => {
-                let x = self.uint(args[1])?;
+                let x = self.uint(self.arg(args, 1)?)?;
                 let r = self.b.math(
                     if code == 30 {
                         Mf::ReverseBits
@@ -111,7 +111,7 @@ impl Lift<'_> {
                 scalar!(r)
             }
             32..=34 => {
-                let a = self.uint(args[1])?;
+                let a = self.uint(self.arg(args, 1)?)?;
                 let zero = self.b.lit_u(0);
                 let none = self.b.lit_u(u32::MAX);
                 let r = match code {
@@ -139,14 +139,14 @@ impl Lift<'_> {
                 scalar!(r)
             }
             35 | 36 => {
-                let (a, b) = (self.float(args[1])?, self.float(args[2])?);
+                let (a, b) = (self.float(self.arg(args, 1)?)?, self.float(self.arg(args, 2)?)?);
                 let r = self
                     .b
                     .d3d_min_max(if code == 35 { Mf::Max } else { Mf::Min }, a, b);
                 scalar!(r)
             }
             37..=40 => {
-                let (a, b) = (self.uint(args[1])?, self.uint(args[2])?);
+                let (a, b) = (self.uint(self.arg(args, 1)?)?, self.uint(self.arg(args, 2)?)?);
                 let signed = code <= 38;
                 let f = if code % 2 == 1 { Mf::Max } else { Mf::Min };
                 let r = if signed {
@@ -160,7 +160,7 @@ impl Lift<'_> {
             }
             41 | 42 => {
                 // {high, low} of the 64-bit product
-                let (a, b) = (self.uint(args[1])?, self.uint(args[2])?);
+                let (a, b) = (self.uint(self.arg(args, 1)?)?, self.uint(self.arg(args, 2)?)?);
                 let low = self.b.binary(Bo::Multiply, a, b);
                 let mut high = self.b.mul_high_unsigned(a, b);
                 if code == 41 {
@@ -177,12 +177,12 @@ impl Lift<'_> {
                 self.define_result(result, Lv::Agg(vec![Lv::Scalar(high), Lv::Scalar(low)]))
             }
             43 => {
-                let (a, b) = (self.uint(args[1])?, self.uint(args[2])?);
+                let (a, b) = (self.uint(self.arg(args, 1)?)?, self.uint(self.arg(args, 2)?)?);
                 let (q, r) = self.b.d3d_unsigned_divide(a, b);
                 self.define_result(result, Lv::Agg(vec![Lv::Scalar(q), Lv::Scalar(r)]))
             }
             44 | 45 => {
-                let (a, b) = (self.uint(args[1])?, self.uint(args[2])?);
+                let (a, b) = (self.uint(self.arg(args, 1)?)?, self.uint(self.arg(args, 2)?)?);
                 let subtract = code == 45;
                 let value = self.b.binary(if subtract { Bo::Subtract } else { Bo::Add }, a, b);
                 let condition = if subtract {
@@ -196,29 +196,41 @@ impl Lift<'_> {
             }
             46 => {
                 // separately rounded multiply and add, as the DXBC lift's mad
-                let (a, b, c) = (self.float(args[1])?, self.float(args[2])?, self.float(args[3])?);
+                let (a, b, c) = (
+                    self.float(self.arg(args, 1)?)?,
+                    self.float(self.arg(args, 2)?)?,
+                    self.float(self.arg(args, 3)?)?,
+                );
                 let p = self.b.binary(Bo::Multiply, a, b);
                 let r = self.b.binary(Bo::Add, p, c);
                 scalar!(r)
             }
             47 => {
-                let (a, b, c) = (self.float(args[1])?, self.float(args[2])?, self.float(args[3])?);
+                let (a, b, c) = (
+                    self.float(self.arg(args, 1)?)?,
+                    self.float(self.arg(args, 2)?)?,
+                    self.float(self.arg(args, 3)?)?,
+                );
                 let r = self.b.math(Mf::Fma, &[a, b, c]);
                 scalar!(r)
             }
             48 | 49 => {
-                let (a, b, c) = (self.uint(args[1])?, self.uint(args[2])?, self.uint(args[3])?);
+                let (a, b, c) = (
+                    self.uint(self.arg(args, 1)?)?,
+                    self.uint(self.arg(args, 2)?)?,
+                    self.uint(self.arg(args, 3)?)?,
+                );
                 let p = self.b.binary(Bo::Multiply, a, b);
                 let r = self.b.binary(Bo::Add, p, c);
                 scalar!(r)
             }
             54..=56 => {
-                let n = (code - 52) as usize;
+                let n = usize::try_from(code.saturating_sub(52)).unwrap_or(0);
                 let mut a = Vec::new();
                 let mut b = Vec::new();
                 for k in 0..n {
-                    a.push(self.float(args[1 + k])?);
-                    b.push(self.float(args[1 + n + k])?);
+                    a.push(self.float(self.arg(args, 1usize.saturating_add(k))?)?);
+                    b.push(self.float(self.arg(args, 1usize.saturating_add(n).saturating_add(k))?)?);
                 }
                 let (a, b) = (self.b.compose(&a), self.b.compose(&b));
                 let r = self.b.math(Mf::Dot, &[a, b]);
@@ -259,7 +271,7 @@ impl Lift<'_> {
                 self.notes.insert(
                     "f32tof16 is written through pack2x16float: its rounding is the implementation's".into(),
                 );
-                let x = self.float(args[1])?;
+                let x = self.float(self.arg(args, 1)?)?;
                 let zero = self.b.lit_f(0.0);
                 let pair = self.b.compose(&[x, zero]);
                 let packed = self.b.math(naga::MathFunction::Pack2x16float, &[pair]);
@@ -268,7 +280,7 @@ impl Lift<'_> {
                 scalar!(r)
             }
             131 => {
-                let x = self.uint(args[1])?;
+                let x = self.uint(self.arg(args, 1)?)?;
                 let low = self.b.lit_u(0xffff);
                 let x = self.b.binary(naga::BinaryOperator::And, x, low);
                 let pair = self.b.math(naga::MathFunction::Unpack2x16float, &[x]);
@@ -287,11 +299,12 @@ impl Lift<'_> {
                     _ => SystemValue::GroupThreadId,
                 };
                 let id = self.system_input(system)?;
-                let Some(component) = const_int(self.m, self.f, args[1]).filter(|c| (0..3).contains(c))
+                let Some(component) =
+                    const_int(self.m, self.f, self.arg(args, 1)?).filter(|c| (0..3).contains(c))
                 else {
                     return self.refuse("an invocation id read at a computed component");
                 };
-                let lane = self.b.lane(id, component as u8);
+                let lane = self.b.lane(id, super::lane_u8(component));
                 scalar!(lane)
             }
             96 => {
@@ -299,7 +312,7 @@ impl Lift<'_> {
                 scalar!(index)
             }
             82 => {
-                let c = self.scalar(args[1])?;
+                let c = self.scalar(self.arg(args, 1)?)?;
                 let c = self.b.bitcast_to(c, Kind::B);
                 let mut accept = naga::Block::new();
                 accept.push(Statement::Kill, naga::Span::UNDEFINED);
@@ -311,7 +324,7 @@ impl Lift<'_> {
                 Ok(())
             }
             83..=86 => {
-                let x = self.float(args[1])?;
+                let x = self.float(self.arg(args, 1)?)?;
                 let (axis, ctrl) = match code {
                     83 => (DerivativeAxis::X, DerivativeControl::Coarse),
                     84 => (DerivativeAxis::Y, DerivativeControl::Coarse),
@@ -343,22 +356,25 @@ impl Lift<'_> {
 
     /// `LoadInput(element, row, column)`: one lane of an input element as the call's type.
     fn load_input(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let id = const_int(self.m, self.f, args[1]).expect("checked in the setup");
-        let element = self
+        let Some(id) = const_int(self.m, self.f, self.arg(args, 1)?) else {
+            return self.refuse("an input read at a computed element");
+        };
+        let Some(element) = self
             .setup
             .input_elements
             .iter()
             .find(|e| i64::from(e.id) == id)
             .cloned()
-            .expect("checked in the setup");
+        else {
+            return self.refuse(format!("input element {id}"));
+        };
         let (Some(row), Some(col)) = (
-            const_int(self.m, self.f, args[2]),
-            const_int(self.m, self.f, args[3]),
+            const_int(self.m, self.f, self.arg(args, 2)?),
+            const_int(self.m, self.f, self.arg(args, 3)?),
         ) else {
             return self.refuse("an input read at a computed row or column");
         };
-        let register = element.row + row as u32;
-        let lane = element.column + col as u8;
+        let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
         let Some((varying, position)) = self.setup.input_cell(register, lane) else {
             return self.refuse(format!(
                 "input {} has no lane at register {register}",
@@ -371,7 +387,7 @@ impl Lift<'_> {
         let (expr, carried) = match ty {
             iridia::IoType::Value(carried) => (expr, carried),
             iridia::IoType::Array(carried, _) => {
-                let point = self.uint(args[4])?;
+                let point = self.uint(self.arg(args, 4)?)?;
                 (
                     self.b.app(E::Access {
                         base: expr,
@@ -394,7 +410,7 @@ impl Lift<'_> {
         } else {
             value
         };
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
+        let ty = self.result_type(inst.result)?;
         let kind = self.kind_of_type(ty)?;
         let r = self.b.bitcast_to(lane_value, kind);
         self.define_result(inst.result, Lv::Scalar(r))
@@ -460,14 +476,15 @@ impl Lift<'_> {
             self.input_argument(varying)?
         } else {
             let io = self.setup.io.clone();
-            let Some(index) = io
-                .arguments
-                .iter()
-                .position(|item| self.setup.interface.inputs[item.varyings[0]].system == Some(system))
-            else {
+            let Some((index, item)) = io.arguments.iter().enumerate().find(|(_, item)| {
+                item.varyings
+                    .first()
+                    .and_then(|&v| self.setup.interface.inputs.get(v))
+                    .is_some_and(|v| v.system == Some(system))
+            }) else {
                 return self.refuse(format!("{system:?} has no input"));
             };
-            (index, io.arguments[index].ty)
+            (index, item.ty)
         };
         let iridia::IoType::Value(carried) = ty else {
             return self.refuse("an array-typed input");
@@ -482,32 +499,35 @@ impl Lift<'_> {
 
     /// `StoreOutput(element, row, column, value)`: one lane of an output element, kept as raw bits.
     fn store_output(&mut self, args: &[ValueId]) -> Result<()> {
-        let id = const_int(self.m, self.f, args[1]).expect("checked in the setup");
-        let element = self
+        let Some(id) = const_int(self.m, self.f, self.arg(args, 1)?) else {
+            return self.refuse("an output written at a computed element");
+        };
+        let Some(element) = self
             .setup
             .output_elements
             .iter()
             .find(|e| i64::from(e.id) == id)
             .cloned()
-            .expect("checked in the setup");
-        let value = self.scalar(args[4])?;
+        else {
+            return self.refuse(format!("output element {id}"));
+        };
+        let value = self.scalar(self.arg(args, 4)?)?;
         let bits = self.b.bitcast_to(value, Kind::U);
         let (local, lane) = if element.placed {
             let (Some(row), Some(col)) = (
-                const_int(self.m, self.f, args[2]),
-                const_int(self.m, self.f, args[3]),
+                const_int(self.m, self.f, self.arg(args, 2)?),
+                const_int(self.m, self.f, self.arg(args, 3)?),
             ) else {
                 return self.refuse("an output written at a computed row or column");
             };
-            let register = element.row + row as u32;
-            let lane = element.column + col as u8;
+            let (register, lane) = self.cell_of(element.row, element.column, row, col)?;
             if self.setup.output_cell(register, lane).is_none() {
                 return self.refuse(format!(
                     "output {} has no lane at register {register}",
                     element.name
                 ));
             }
-            (self.outputs[&register], lane)
+            (self.output_local(register)?, lane)
         } else {
             let local = match element.system_value {
                 17..=19 => self.depth,
@@ -547,9 +567,13 @@ impl Lift<'_> {
                 iridia::IoType::ClipDistances(n) => {
                     let mut components = Vec::new();
                     for &i in &item.varyings {
-                        let v = self.setup.interface.outputs[i].clone();
-                        let d3d = v.provenance.d3d.expect("a clip distance has a register");
-                        let local = self.outputs[&d3d.register];
+                        let Some(v) = self.setup.interface.outputs.get(i).cloned() else {
+                            return self.refuse("a clip distance past the interface's outputs");
+                        };
+                        let Some(d3d) = v.provenance.d3d else {
+                            return self.refuse("a clip distance without a register");
+                        };
+                        let local = self.output_local(d3d.register)?;
                         let p = self.b.local_ptr(local);
                         let row = self.b.load(p, Kind::U, 4);
                         for lane in (0..4u8).filter(|l| d3d.mask >> l & 1 != 0) {
@@ -561,29 +585,45 @@ impl Lift<'_> {
                     let ty = self.b.ty(naga::TypeInner::Array {
                         base: f,
                         size: naga::ArraySize::Constant(
-                            std::num::NonZeroU32::new(n).expect("clip distances"),
+                            std::num::NonZeroU32::new(n)
+                                .map_or_else(|| self.refuse("no clip distances"), Ok)?,
                         ),
                         stride: 4,
                     });
                     self.b.app(E::Compose { ty, components })
                 }
                 iridia::IoType::Value(carried) => {
-                    let v = self.setup.interface.outputs[item.varyings[0]].clone();
+                    let Some(v) = item
+                        .varyings
+                        .first()
+                        .and_then(|&v| self.setup.interface.outputs.get(v))
+                        .cloned()
+                    else {
+                        return self.refuse(format!("the output {} names no varying", item.name));
+                    };
+                    let register = || {
+                        v.provenance
+                            .d3d
+                            .map_or_else(|| self.refuse(format!("{} has no register", item.name)), Ok)
+                    };
                     let (local, lanes): (_, Vec<u8>) = match v.system {
                         Some(
                             SystemValue::Depth | SystemValue::DepthGreaterEqual | SystemValue::DepthLessEqual,
-                        ) => (self.depth.expect("a depth output has its local"), vec![0]),
-                        Some(SystemValue::Coverage) => {
-                            (self.coverage.expect("a coverage output has its local"), vec![0])
-                        }
+                        ) => match self.depth {
+                            Some(local) => (local, vec![0]),
+                            None => return self.refuse("a depth output the program does not write"),
+                        },
+                        Some(SystemValue::Coverage) => match self.coverage {
+                            Some(local) => (local, vec![0]),
+                            None => return self.refuse("a coverage output the program does not write"),
+                        },
                         Some(SystemValue::ClipPosition | SystemValue::Target(_)) => {
-                            let d3d = v.provenance.d3d.expect("a signature element has a register");
-                            (self.outputs[&d3d.register], vec![0, 1, 2, 3])
+                            (self.output_local(register()?.register)?, vec![0, 1, 2, 3])
                         }
                         _ => {
-                            let d3d = v.provenance.d3d.expect("a signature element has a register");
+                            let d3d = register()?;
                             (
-                                self.outputs[&d3d.register],
+                                self.output_local(d3d.register)?,
                                 (0..4u8).filter(|l| d3d.mask >> l & 1 != 0).collect(),
                             )
                         }

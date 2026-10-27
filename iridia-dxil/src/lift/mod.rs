@@ -36,6 +36,49 @@ use crate::{Result, error, read};
 use dxil_reader::module::{Function, Module, Op, Type, TypeId, ValueId};
 use dxil_reader::reflection;
 
+/// The low 32 bits of a constant, as an LLVM integer constant of 32 bits or fewer is stored (sign-extended to 64).
+pub(crate) fn low32(value: u64) -> u32 {
+    u32::try_from(value & 0xffff_ffff).unwrap_or(u32::MAX)
+}
+
+/// A lane or component number as a `u8`: a lane is one of at most four.
+pub(crate) fn lane_u8(n: impl TryInto<u8>) -> u8 {
+    n.try_into().unwrap_or(u8::MAX)
+}
+
+/// The basic blocks' instructions, by index into the function's instructions.
+fn blocks_of(f: &Function) -> Result<Vec<Vec<usize>>> {
+    let mut blocks = vec![Vec::new(); f.blocks];
+    for (i, inst) in f.instructions.iter().enumerate() {
+        blocks
+            .get_mut(inst.block)
+            .ok_or_else(|| {
+                error(
+                    inst.at,
+                    format!(
+                        "an instruction in basic block {}, where the function has {}",
+                        inst.block, f.blocks
+                    ),
+                )
+            })?
+            .push(i);
+    }
+    Ok(blocks)
+}
+
+/// Argument `n` of a call at bit `at`, an error naming the call when it has fewer.
+pub(crate) fn argument(args: &[ValueId], n: usize, at: usize) -> Result<ValueId> {
+    args.get(n).copied().ok_or_else(|| {
+        error(
+            at,
+            format!(
+                "an operation reads argument {n}, where the call has {}",
+                args.len()
+            ),
+        )
+    })
+}
+
 /// The version of the lifter: bumped when what it produces for the same bytecode changes, so a cache keyed by the
 /// bytecode's hash knows what is stale; gated by `tests/versions.rs` (the lifted fixtures hashed under it, `iridia::gate`).
 pub const LIFTER_VERSION: u32 = 8;
@@ -225,16 +268,99 @@ impl<'m> Lift<'m> {
         Err(error(self.at, detail))
     }
 
+    /// Argument `n` of a call. An operation's argument count is checked against its table (`dxop::arguments`) before it is
+    /// lifted, and the pre-scan reads only the arguments of operations it has the count of, so a miss is the guard of a
+    /// lookup, not a case of the input.
+    pub(crate) fn arg(&self, args: &[ValueId], n: usize) -> Result<ValueId> {
+        argument(args, n, self.at)
+    }
+
+    /// The type of the value a call or an instruction defines; an error where it defines none.
+    pub(crate) fn result_type(&self, result: Option<(ValueId, TypeId)>) -> Result<TypeId> {
+        result
+            .map(|(_, ty)| ty)
+            .ok_or_else(|| error(self.at, "an instruction that yields a value but defines none"))
+    }
+
+    /// Value `v`: a module value, or one of the function's own.
+    pub(crate) fn value_ref(&self, v: ValueId) -> Option<&'m dxil_reader::module::Value> {
+        match v.checked_sub(self.f.first) {
+            None => self.m.values.get(v),
+            Some(local) => self.f.locals.get(local),
+        }
+    }
+
+    /// The type of value `v`: a module value's, or one of the function's own.
+    pub(crate) fn value_type_id(&self, v: ValueId) -> Option<TypeId> {
+        match v.checked_sub(self.f.first) {
+            None => self.m.value_types.get(v).copied(),
+            Some(local) => self.f.local_types.get(local).copied(),
+        }
+    }
+
+    /// The position of value `v` among the function's own values.
+    pub(crate) fn local_index(&self, v: ValueId) -> Result<usize> {
+        v.checked_sub(self.f.first)
+            .filter(|local| *local < self.f.locals.len())
+            .ok_or_else(|| {
+                error(
+                    self.at,
+                    format!(
+                        "value {v}, where the function's own values are {} to {}",
+                        self.f.first,
+                        self.f.first.saturating_add(self.f.locals.len())
+                    ),
+                )
+            })
+    }
+
+    /// The register and lane of cell (`row`, `column`) of an element that starts at (`first_row`, `first_column`): an
+    /// element's cells are in registers of four lanes.
+    pub(crate) fn cell_of(
+        &self,
+        first_row: u32,
+        first_column: u8,
+        row: i64,
+        column: i64,
+    ) -> Result<(u32, u8)> {
+        let register = u32::try_from(row).ok().and_then(|row| first_row.checked_add(row));
+        let lane = u8::try_from(column)
+            .ok()
+            .and_then(|column| first_column.checked_add(column))
+            .filter(|lane| *lane < 4);
+        match (register, lane) {
+            (Some(register), Some(lane)) => Ok((register, lane)),
+            _ => self.refuse(format!(
+                "row {row}, column {column} of an element that starts at row {first_row}, column {first_column}: a register has columns 0 to 3"
+            )),
+        }
+    }
+
+    /// The local that holds output register `register`.
+    pub(crate) fn output_local(&self, register: u32) -> Result<Handle<LocalVariable>> {
+        self.outputs
+            .get(&register)
+            .copied()
+            .ok_or_else(|| error(self.at, format!("output register o{register} has no local")))
+    }
+
+    /// Type `ty` of the module, which the reader checked the module's ids against.
+    pub(crate) fn type_at(&self, ty: TypeId) -> Result<&'m Type> {
+        self.m.types.get(ty).ok_or_else(|| {
+            error(
+                self.at,
+                format!("type {ty}, where the module has {}", self.m.types.len()),
+            )
+        })
+    }
+
     fn new(
         m: &'m Module,
         f: &'m Function,
         functions: Vec<&'m Function>,
         setup: setup::Setup,
     ) -> Result<Self> {
-        let mut blocks = vec![Vec::new(); f.blocks];
-        for (i, inst) in f.instructions.iter().enumerate() {
-            blocks[inst.block].push(i);
-        }
+        let blocks = blocks_of(f)?;
         let mut lift = Lift {
             m,
             f,
@@ -274,11 +400,14 @@ impl<'m> Lift<'m> {
                 def_block.insert(v, inst.block);
             }
         }
+        // a value of the function's own, by its position among them
+        let local = |v: ValueId| v.checked_sub(f.first);
         let mark = |v: ValueId, at: usize, cross: &mut Vec<bool>| {
             if let Some(&d) = def_block.get(&v)
                 && d != at
+                && let Some(slot) = local(v).and_then(|i| cross.get_mut(i))
             {
-                cross[v - f.first] = true;
+                *slot = true;
             }
         };
         let mut cross = vec![false; f.locals.len()];
@@ -286,8 +415,12 @@ impl<'m> Lift<'m> {
             let at = inst.block;
             if let Op::Phi { incoming } = &inst.op {
                 // a phi's value is always a local; its incoming value is read at the end of its predecessor
-                if let Some((v, _)) = inst.result {
-                    cross[v - f.first] = true;
+                if let Some(slot) = inst
+                    .result
+                    .and_then(|(v, _)| local(v))
+                    .and_then(|i| cross.get_mut(i))
+                {
+                    *slot = true;
                 }
                 for (v, pred) in incoming {
                     mark(*v, *pred, &mut cross);
@@ -304,11 +437,13 @@ impl<'m> Lift<'m> {
             changed = false;
             for inst in &f.instructions {
                 if let (Op::Gep { indices, .. }, Some((p, _))) = (&inst.op, inst.result)
-                    && cross[p - f.first]
+                    && local(p).is_some_and(|i| cross.get(i) == Some(&true))
                 {
-                    for i in indices {
-                        if *i >= f.first && !cross[*i - f.first] {
-                            cross[*i - f.first] = true;
+                    for &i in indices {
+                        if let Some(slot) = local(i).and_then(|i| cross.get_mut(i))
+                            && !*slot
+                        {
+                            *slot = true;
                             changed = true;
                         }
                     }
@@ -372,11 +507,7 @@ impl<'m> Lift<'m> {
     fn run_function(&mut self, f: &'m Function, sig: &iridia::FunctionSig) -> Result<()> {
         // the per-function state: values, blocks, output registers, the argument expressions
         self.f = f;
-        let mut blocks = vec![Vec::new(); f.blocks];
-        for (i, inst) in f.instructions.iter().enumerate() {
-            blocks[inst.block].push(i);
-        }
-        self.blocks = blocks;
+        self.blocks = blocks_of(f)?;
         self.slots = vec![None; f.locals.len()];
         self.cross = vec![false; f.locals.len()];
         self.outputs.clear();
@@ -388,9 +519,10 @@ impl<'m> Lift<'m> {
         // the pointer arguments (a ray tracing program's payload and attributes) are the function's own parameters
         let mut structures = Vec::new();
         if sig.arguments.iter().any(|a| a.ty == iridia::IoType::Memory) {
-            let params = match self.m.types.get(self.m.value_types[f.value]) {
-                Some(Type::Pointer(t)) => match &self.m.types[*t] {
-                    Type::Function { params, .. } => params.clone(),
+            let function_type = self.m.value_types.get(f.value).and_then(|&t| self.m.types.get(t));
+            let params = match function_type {
+                Some(Type::Pointer(t)) => match self.m.types.get(*t) {
+                    Some(Type::Function { params, .. }) => params.clone(),
                     _ => Vec::new(),
                 },
                 _ => Vec::new(),
@@ -416,10 +548,14 @@ impl<'m> Lift<'m> {
                 };
                 let (structure, _) = self.naga_type(pointee)?;
                 structures.push(structure);
-                self.slots[k] = Some(Slot::Value(Lv::Pointer(memory::Ptr {
-                    root: memory::Root::Argument(argument as u32),
-                    steps: Vec::new(),
-                })));
+                let argument =
+                    u32::try_from(argument).map_err(|_| error(self.at, "more than 4294967295 arguments"))?;
+                if let Some(slot) = self.slots.get_mut(k) {
+                    *slot = Some(Slot::Value(Lv::Pointer(memory::Ptr {
+                        root: memory::Root::Argument(argument),
+                        steps: Vec::new(),
+                    })));
+                }
             }
         }
         let decl = self

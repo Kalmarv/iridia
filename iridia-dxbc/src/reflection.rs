@@ -33,7 +33,7 @@ pub fn varying(e: &SignatureElement, stage: Stage, output: bool) -> Result<Varyi
         mask: e.mask,
         read_write_mask: e.read_write_mask,
     };
-    d3d::varying(stage, output, &element).map_err(|detail| error(e.at, detail))
+    d3d::varying(stage, output, &element).map_err(|detail| error(e.at, detail.to_string()))
 }
 
 /// The signature in whichever of these parts the container has, mapped.
@@ -231,16 +231,16 @@ fn constant_type(ty: &RdefType, packing: d3d::Packing) -> Result<ConstantType> {
     let fail = |detail: String| error(ty.word, detail);
     let element = match class {
         0..=3 => {
-            let scalar = d3d::scalar_type(scalar).map_err(fail)?;
+            let scalar = d3d::scalar_type(scalar).map_err(|e| fail(e.to_string()))?;
             match class {
                 0 if (rows, columns) == (1, 1) => ConstantType::Scalar(scalar),
-                1 if rows == 1 => d3d::vector(scalar, columns).map_err(fail)?,
+                1 if rows == 1 => d3d::vector(scalar, columns).map_err(|e| fail(e.to_string()))?,
                 2 => packing
                     .matrix(scalar, rows, columns, Majorness::Row)
-                    .map_err(fail)?,
+                    .map_err(|e| fail(e.to_string()))?,
                 3 => packing
                     .matrix(scalar, rows, columns, Majorness::Column)
-                    .map_err(fail)?,
+                    .map_err(|e| fail(e.to_string()))?,
                 _ => return Err(fail(format!("a {rows} by {columns} variable of class {class}"))),
             }
         }
@@ -254,7 +254,9 @@ fn constant_type(ty: &RdefType, packing: d3d::Packing) -> Result<ConstantType> {
     };
     match ty.elements {
         0 => Ok(element),
-        n => packing.array(element, u32::from(n)).map_err(fail),
+        n => packing
+            .array(element, u32::from(n))
+            .map_err(|e| fail(e.to_string())),
     }
 }
 

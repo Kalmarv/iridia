@@ -7,6 +7,62 @@ use iridia_interface::{
     Stage, SystemValue, Value, Varying, VaryingProvenance,
 };
 
+/// Why a D3D number, element or type is not mapped. Every message says what was expected.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    /// A number the enum has no name for.
+    #[error("{what} {value} is not a known value")]
+    Unknown { what: &'static str, value: u32 },
+    /// A number the enum has, which the vocabulary does not carry.
+    #[error("{what} {value} ({name}) is not mapped")]
+    Unmapped {
+        what: &'static str,
+        value: u32,
+        name: &'static str,
+    },
+    /// A vector or matrix of a number of lanes or lines D3D does not have.
+    #[error("{what} of {value} is not within 1 to 4")]
+    LaneCount { what: &'static str, value: u32 },
+    #[error("an array of no elements")]
+    EmptyArray,
+    #[error("array element size overflow")]
+    ArrayElementSize,
+    #[error("array size overflow")]
+    ArraySize,
+    /// A signature element (its semantic name and index), and what is wrong with it.
+    #[error("{element}: {problem}")]
+    Element {
+        element: String,
+        problem: ElementProblem,
+    },
+}
+
+/// What is wrong with a signature element ([`Error::Element`]).
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ElementProblem {
+    #[error("lane masks {mask:#x} and {read_write_mask:#x} are not within the register's four lanes")]
+    LaneMasks { mask: u8, read_write_mask: u8 },
+    #[error("register {register} is not one of the {limit} a signature has (0 to {last})", last = limit.saturating_sub(1))]
+    Register { register: u32, limit: u32 },
+    #[error(
+        "{} as {} of the {stage:?} stage",
+        describe("D3D_NAME", *value, *name),
+        if *output { "an output" } else { "an input" }
+    )]
+    SystemValue {
+        value: u32,
+        name: Option<&'static str>,
+        stage: Stage,
+        output: bool,
+    },
+    #[error("the semantic disagrees with its stored D3D_NAME {stored}")]
+    SemanticDisagrees { stored: u32 },
+    #[error("system-value semantic {name} is not mapped")]
+    SemanticUnmapped { name: String },
+    #[error("{}", describe("signature component type", *value, None))]
+    ComponentType { value: u32 },
+}
+
 /// One element of a D3D signature as it is stored (`ISGN`, `OSGN`, `ISG1`, `OSG1`).
 #[derive(Clone, Copy, Debug)]
 pub struct Element<'a> {
@@ -48,7 +104,8 @@ pub fn name_of(value: u32) -> Option<&'static str> {
     })
 }
 
-fn refused(what: &str, value: u32, name: Option<&str>) -> String {
+/// A refusal of `value` of the enum `what`, in words.
+fn describe(what: &str, value: u32, name: Option<&str>) -> String {
     match name {
         Some(name) => format!("{what} {value} ({name}) is not mapped"),
         None => format!("{what} {value} is not a known value"),
@@ -62,7 +119,7 @@ fn system_from_number(
     output: bool,
     value: u32,
     index: u32,
-) -> Result<Option<SystemValue>, String> {
+) -> Result<Option<SystemValue>, ElementProblem> {
     use SystemValue::*;
     Ok(Some(match (stage, output, value) {
         (_, _, 0) => return Ok(None),
@@ -109,11 +166,12 @@ fn system_from_number(
         (Stage::Pixel, true, 69) => StencilRef,
         (Stage::Pixel, false, 70) => InnerCoverage,
         _ => {
-            return Err(format!(
-                "{} as {} of the {stage:?} stage",
-                refused("D3D_NAME", value, name_of(value)),
-                if output { "an output" } else { "an input" },
-            ));
+            return Err(ElementProblem::SystemValue {
+                value,
+                name: name_of(value),
+                stage,
+                output,
+            });
         }
     }))
 }
@@ -147,13 +205,12 @@ fn number_of_name(name: &str) -> Option<u32> {
 }
 
 /// `D3D_REGISTER_COMPONENT_TYPE`.
-fn component(value: u32) -> Result<ScalarType, String> {
+fn component(value: u32) -> Result<ScalarType, ElementProblem> {
     match value {
         1 => Ok(ScalarType::Uint),
         2 => Ok(ScalarType::Sint),
         3 => Ok(ScalarType::Float),
-        0 => Err("signature component type 0 (unknown) is not mapped".to_owned()),
-        _ => Err(refused("signature component type", value, None)),
+        _ => Err(ElementProblem::ComponentType { value }),
     }
 }
 
@@ -164,22 +221,24 @@ const MAX_SIGNATURE_REGISTERS: u32 = 32;
 /// `D3D_NAME`, or the `SV_` name when the compiler states it by name), the value type from the component type and the
 /// lanes it occupies, and the register and lanes kept in provenance. `interp` is left for the caller, who has the
 /// program's declarations.
-pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, String> {
-    let at = |detail: String| format!("{}{}: {detail}", e.name, e.index);
+pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, Error> {
+    let at = |problem: ElementProblem| Error::Element {
+        element: format!("{}{}", e.name, e.index),
+        problem,
+    };
     if e.mask == 0 || e.mask > 15 || e.read_write_mask > 15 {
-        return Err(at(format!(
-            "lane masks {:#x} and {:#x} are not within the register's four lanes",
-            e.mask, e.read_write_mask
-        )));
+        return Err(at(ElementProblem::LaneMasks {
+            mask: e.mask,
+            read_write_mask: e.read_write_mask,
+        }));
     }
     // a stage has 32 registers to pass values between stages (`D3D11_VS_OUTPUT_REGISTER_COUNT` and its kin); a system value
     // that takes none states `u32::MAX`
     if e.register != u32::MAX && e.register >= MAX_SIGNATURE_REGISTERS {
-        return Err(at(format!(
-            "register {} is not one of the {MAX_SIGNATURE_REGISTERS} a signature has (0 to {})",
-            e.register,
-            MAX_SIGNATURE_REGISTERS - 1
-        )));
+        return Err(at(ElementProblem::Register {
+            register: e.register,
+            limit: MAX_SIGNATURE_REGISTERS,
+        }));
     }
     let named = e.name.len() > 3
         && e.name
@@ -189,10 +248,9 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, S
     let system = match system_from_number(stage, output, e.system_value, e.index).map_err(at)? {
         Some(s) => {
             if named && number_of_name(e.name) != Some(e.system_value) {
-                return Err(at(format!(
-                    "the semantic disagrees with its stored D3D_NAME {}",
-                    e.system_value
-                )));
+                return Err(at(ElementProblem::SemanticDisagrees {
+                    stored: e.system_value,
+                }));
             }
             Some(s)
         }
@@ -201,8 +259,11 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, S
         // this direction, is refused for an output and is a plain varying for an input: the compiler did not make
         // it a system value, and some engines' pixel programs carry an `SV_InstanceID` that way.
         None if named => {
-            let number = number_of_name(e.name)
-                .ok_or_else(|| at(format!("system-value semantic {} is not mapped", e.name)))?;
+            let number = number_of_name(e.name).ok_or_else(|| {
+                at(ElementProblem::SemanticUnmapped {
+                    name: e.name.to_owned(),
+                })
+            })?;
             match system_from_number(stage, output, number, e.index) {
                 Ok(system) => system,
                 Err(_) if !output => None,
@@ -236,7 +297,7 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, S
 
 /// A pixel input's interpolation from a program declaration's `D3D_INTERPOLATION_MODE` (the instruction token's
 /// bits 11 to 14).
-pub fn interpolation(mode: u32) -> Result<Interpolation, String> {
+pub fn interpolation(mode: u32) -> Result<Interpolation, Error> {
     let (mode, sampling) = match mode {
         1 => (InterpMode::Flat, InterpSampling::Center),
         2 => (InterpMode::Perspective, InterpSampling::Center),
@@ -245,20 +306,28 @@ pub fn interpolation(mode: u32) -> Result<Interpolation, String> {
         5 => (InterpMode::Linear, InterpSampling::Centroid),
         6 => (InterpMode::Perspective, InterpSampling::Sample),
         7 => (InterpMode::Linear, InterpSampling::Sample),
-        _ => return Err(refused("interpolation mode", mode, None)),
+        _ => {
+            return Err(Error::Unknown {
+                what: "interpolation mode",
+                value: mode,
+            });
+        }
     };
     Ok(Interpolation { mode, sampling })
 }
 
 /// `D3D_SHADER_VARIABLE_TYPE` of a constant-buffer scalar.
-pub fn scalar_type(code: u32) -> Result<ScalarType, String> {
+pub fn scalar_type(code: u32) -> Result<ScalarType, Error> {
     match code {
         1 => Ok(ScalarType::Bool),
         2 => Ok(ScalarType::Sint),
         3 => Ok(ScalarType::Float),
         19 => Ok(ScalarType::Uint),
         39 => Ok(ScalarType::Double),
-        _ => Err(refused("constant scalar type", code, None)),
+        _ => Err(Error::Unknown {
+            what: "constant scalar type",
+            value: code,
+        }),
     }
 }
 
@@ -294,7 +363,7 @@ impl Packing {
         rows: u32,
         columns: u32,
         major: Majorness,
-    ) -> Result<ConstantType, String> {
+    ) -> Result<ConstantType, Error> {
         let mut ty = matrix(scalar, rows, columns, major)?;
         if self == Self::Structured
             && let ConstantType::Matrix { stride, .. } = &mut ty
@@ -308,35 +377,35 @@ impl Packing {
     }
 
     /// An array with a checked stride; structured arrays do not acquire constant-register padding.
-    pub fn array(self, element: ConstantType, count: u32) -> Result<ConstantType, String> {
+    pub fn array(self, element: ConstantType, count: u32) -> Result<ConstantType, Error> {
         if count == 0 {
-            return Err("an array of no elements".to_owned());
+            return Err(Error::EmptyArray);
         }
         let alignment = self.alignment(&element);
         let stride = element
             .size()
-            .ok_or("array element size overflow")?
+            .ok_or(Error::ArrayElementSize)?
             .checked_next_multiple_of(alignment)
-            .ok_or("array element size overflow")?;
+            .ok_or(Error::ArrayElementSize)?;
         let ty = ConstantType::Array {
             element: Box::new(element),
             count,
             stride,
         };
-        ty.size().ok_or("array size overflow")?;
+        ty.size().ok_or(Error::ArraySize)?;
         Ok(ty)
     }
 }
 
-fn lanes(what: &str, n: u32) -> Result<u8, String> {
+fn lanes(what: &'static str, n: u32) -> Result<u8, Error> {
     u8::try_from(n)
         .ok()
         .filter(|n| (1..=4).contains(n))
-        .ok_or_else(|| format!("{what} of {n} is not within 1 to 4"))
+        .ok_or(Error::LaneCount { what, value: n })
 }
 
 /// A vector of `width` lanes (1 to 4); a vector of one lane is a scalar.
-pub fn vector(scalar: ScalarType, width: u32) -> Result<ConstantType, String> {
+pub fn vector(scalar: ScalarType, width: u32) -> Result<ConstantType, Error> {
     Ok(match lanes("vector width", width)? {
         1 => ConstantType::Scalar(scalar),
         width => ConstantType::Vector(Value { scalar, width }),
@@ -344,7 +413,7 @@ pub fn vector(scalar: ScalarType, width: u32) -> Result<ConstantType, String> {
 }
 
 /// A matrix under D3D packing: each line (a row for `Row`, a column for `Column`) starts a 16-byte register.
-pub fn matrix(scalar: ScalarType, rows: u32, columns: u32, major: Majorness) -> Result<ConstantType, String> {
+pub fn matrix(scalar: ScalarType, rows: u32, columns: u32, major: Majorness) -> Result<ConstantType, Error> {
     Ok(ConstantType::Matrix {
         scalar,
         rows: lanes("matrix rows", rows)?,
@@ -355,7 +424,7 @@ pub fn matrix(scalar: ScalarType, rows: u32, columns: u32, major: Majorness) -> 
 }
 
 /// An array under D3D packing: each element starts a 16-byte register, and the last takes only its own bytes.
-pub fn array(element: ConstantType, count: u32) -> Result<ConstantType, String> {
+pub fn array(element: ConstantType, count: u32) -> Result<ConstantType, Error> {
     Packing::Constant.array(element, count)
 }
 
@@ -425,7 +494,7 @@ mod tests {
 
     #[test]
     fn what_the_table_does_not_map_is_refused_by_name() {
-        let refusal = |stage, output, e: Element<'_>| varying(stage, output, &e).unwrap_err();
+        let refusal = |stage, output, e: Element<'_>| varying(stage, output, &e).unwrap_err().to_string();
         // a tessellation factor, a name that disagrees with its number, an unknown SV_ name, a position written by a
         // pixel stage, an unknown component type and an empty mask
         assert!(

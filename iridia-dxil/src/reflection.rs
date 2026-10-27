@@ -17,12 +17,35 @@ use iridia::{
     Subobject, TessDomain, TessTopology, TextureDim, Value as Lanes, Varying,
 };
 
+/// Direct3D 11's limits on what a stage states, which the lifter would otherwise allocate for: a geometry program's
+/// output (1024 vertices) and instances (32), the control points of a patch (32), and a mesh program's output
+/// (256 vertices and 256 primitives).
+const MAX_GS_VERTICES: u32 = 1024;
+const MAX_GS_INSTANCES: u32 = 32;
+const MAX_CONTROL_POINTS: u32 = 32;
+const MAX_MESH_OUTPUT: u32 = 256;
+
+/// `value` of what the entry point states as `what`, which Direct3D limits to `max`.
+fn within(what: &str, value: u32, max: u32) -> Result<u32> {
+    if value > max {
+        return Err(error(
+            0,
+            format!("{what} of {value}, where Direct3D allows at most {max}"),
+        ));
+    }
+    Ok(value)
+}
+
 /// What a geometry program's entry point states, mapped: the primitive it reads, how many vertices it emits at most, what
 /// its stream makes and how many invocations run for a primitive. Only stream 0 is carried: another stream is refused by
 /// name.
 fn geometry_facts(m: &Module) -> Result<iridia::GeometryFacts> {
+    geometry_facts_of(records::geometry_state(m).map_err(read)?)
+}
+
+/// [`geometry_facts`] of the state the entry point stated.
+fn geometry_facts_of(state: records::GeometryState) -> Result<iridia::GeometryFacts> {
     use iridia::{GeometryFacts, GsInput, GsOutput};
-    let state = records::geometry_state(m).map_err(read)?;
     let streams = state.streams;
     if streams != 1 {
         return Err(error(
@@ -55,16 +78,28 @@ fn geometry_facts(m: &Module) -> Result<iridia::GeometryFacts> {
                 ));
             }
         },
-        max_vertices: state.max_vertices,
-        instances: state.instances.max(1),
+        max_vertices: within(
+            "a geometry program's output vertices",
+            state.max_vertices,
+            MAX_GS_VERTICES,
+        )?,
+        instances: within(
+            "a geometry program's instances",
+            state.instances.max(1),
+            MAX_GS_INSTANCES,
+        )?,
     })
 }
 
 /// What a mesh program's entry point states, mapped: the most vertices and primitives it writes and what its primitives
 /// are. A payload read from a task program is refused by name.
 fn mesh_facts(m: &Module) -> Result<iridia::MeshFacts> {
+    mesh_facts_of(records::mesh_state(m).map_err(read)?)
+}
+
+/// [`mesh_facts`] of the state the entry point stated.
+fn mesh_facts_of(state: records::MeshState) -> Result<iridia::MeshFacts> {
     use iridia::{MeshFacts, MeshTopology};
-    let state = records::mesh_state(m).map_err(read)?;
     let payload = state.payload;
     if payload != 0 {
         return Err(error(
@@ -80,8 +115,16 @@ fn mesh_facts(m: &Module) -> Result<iridia::MeshFacts> {
             2 => MeshTopology::Triangle,
             other => return Err(error(0, format!("mesh output topology {other} is not mapped"))),
         },
-        max_vertices: state.max_vertices,
-        max_primitives: state.max_primitives,
+        max_vertices: within(
+            "a mesh program's output vertices",
+            state.max_vertices,
+            MAX_MESH_OUTPUT,
+        )?,
+        max_primitives: within(
+            "a mesh program's output primitives",
+            state.max_primitives,
+            MAX_MESH_OUTPUT,
+        )?,
     })
 }
 
@@ -124,16 +167,18 @@ fn constant_type(
     let ty = m.types.get(t).ok_or_else(|| error(0, "type id"))?;
     Ok(match ty {
         Type::Vector(n, e) => {
-            let scalar = scalar(&m.types[*e])?.ok_or_else(|| error(0, "a vector of a non-scalar"))?;
-            d3d::vector(scalar, u32::try_from(*n).map_err(|_| error(0, "vector width"))?).map_err(wrap)?
+            let scalar = scalar(m.types.get(*e).ok_or_else(|| error(0, "a vector element type"))?)?
+                .ok_or_else(|| error(0, "a vector of a non-scalar"))?;
+            d3d::vector(scalar, u32::try_from(*n).map_err(|_| error(0, "vector width"))?)
+                .map_err(|e| wrap(e.to_string()))?
         }
         // a matrix: an array of its lines, each a vector
         Type::Array(lines, e)
-            if hint.matrix.is_some() && matches!(m.types.get(*e), Some(Type::Vector(..))) =>
+            if let Some((rows, columns, orientation)) = hint.matrix
+                && matches!(m.types.get(*e), Some(Type::Vector(..))) =>
         {
-            let (rows, columns, orientation) = hint.matrix.expect("matched");
             let Some(Type::Vector(lanes, inner)) = m.types.get(*e) else {
-                unreachable!("matched")
+                return Err(error(0, "a matrix of something that is no vector"));
             };
             let major = match orientation {
                 1 => Majorness::Row,
@@ -147,22 +192,29 @@ fn constant_type(
             if (*lines, *lanes) != (u64::from(want_lines), u64::from(want_lanes)) {
                 return Err(error(0, "a matrix annotation disagrees with its type"));
             }
-            let scalar = scalar(&m.types[*inner])?.ok_or_else(|| error(0, "a matrix of a non-scalar"))?;
-            packing.matrix(scalar, rows, columns, major).map_err(wrap)?
+            let scalar = scalar(
+                m.types
+                    .get(*inner)
+                    .ok_or_else(|| error(0, "a matrix element type"))?,
+            )?
+            .ok_or_else(|| error(0, "a matrix of a non-scalar"))?;
+            packing
+                .matrix(scalar, rows, columns, major)
+                .map_err(|e| wrap(e.to_string()))?
         }
         Type::Array(n, e) => packing
             .array(
-                constant_type(m, *e, hint, depth + 1, packing)?,
+                constant_type(m, *e, hint, depth.saturating_add(1), packing)?,
                 u32::try_from(*n).map_err(|_| error(0, "array length"))?,
             )
-            .map_err(wrap)?,
+            .map_err(|e| wrap(e.to_string()))?,
         Type::Struct { elements, .. } => {
             // HLSL vectors are structs of one LLVM vector in some reflection modules.
             if let [single] = elements.as_slice()
                 && matches!(m.types.get(*single), Some(Type::Vector(..)))
                 && fields(m, t)?.is_empty()
             {
-                return constant_type(m, *single, hint, depth + 1, packing);
+                return constant_type(m, *single, hint, depth.saturating_add(1), packing);
             }
             let notes = fields(m, t)?;
             if packing == d3d::Packing::Structured && notes.len() < elements.len() {
@@ -173,7 +225,7 @@ fn constant_type(
                 .into_iter()
                 .zip(elements)
                 .map(|(note, &e)| {
-                    let ty = constant_type(m, e, Hint::of(&note), depth + 1, packing)?;
+                    let ty = constant_type(m, e, Hint::of(&note), depth.saturating_add(1), packing)?;
                     // STAT annotation offsets describe constant registers even for host-layout storage types.
                     // Storage member order comes from LLVM; its alignment comes from scalar components.
                     let offset = if packing == d3d::Packing::Structured {
@@ -202,6 +254,30 @@ fn constant_type(
             None => return Err(error(0, "unsupported constant-buffer field type")),
         },
     })
+}
+
+/// The lanes `columns` columns from `column` take of a register, as a mask.
+pub(crate) fn lane_mask(column: u8, columns: u8) -> u32 {
+    (0..u32::from(columns)).fold(0, |mask, k| {
+        mask | 1u32.checked_shl(u32::from(column).saturating_add(k)).unwrap_or(0)
+    })
+}
+
+/// Refuse a signature element that places itself outside the registers a stage has: 32 of four lanes. Every cell of an
+/// element is visited by the lifter, so the extent of one is bounded before it is.
+pub(crate) fn check_elements(elements: &[records::Element]) -> Result<()> {
+    for e in elements.iter().filter(|e| e.placed) {
+        if e.row > 32 || e.rows > 32 || u32::from(e.column).saturating_add(u32::from(e.columns)) > 4 {
+            return Err(error(
+                0,
+                format!(
+                    "signature element {} places {} rows from row {} and {} columns from column {}: a stage has 32 registers of four lanes",
+                    e.name, e.rows, e.row, e.columns, e.column
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What an annotation says of the field whose type is being read.
@@ -312,7 +388,7 @@ fn signature(part: &[u8], stage: Stage, output: bool) -> Result<Vec<Varying>> {
                 mask: e.mask,
                 read_write_mask: e.read_write_mask,
             };
-            d3d::varying(stage, output, &element).map_err(|detail| error(e.bit, detail))
+            d3d::varying(stage, output, &element).map_err(|detail| error(e.bit, detail.to_string()))
         })
         .collect()
 }
@@ -568,7 +644,10 @@ fn structured_layout(source: &Module, ty: Option<TypeId>, stride: u32) -> Result
     let [element] = elements.as_slice() else {
         return Err(error(0, "structured resource wrapper has more than one element"));
     };
-    let ty = constant_type(source, *element, Hint::of(&notes[0]), 0, d3d::Packing::Structured)?;
+    let Some(note) = notes.first() else {
+        return Ok(None);
+    };
+    let ty = constant_type(source, *element, Hint::of(note), 0, d3d::Packing::Structured)?;
     let size = ty
         .size()
         .and_then(|n| n.checked_next_multiple_of(d3d::Packing::Structured.alignment(&ty)))
@@ -625,7 +704,8 @@ pub fn reflection(chunks: &[Chunk<'_>], program: &Module, named: Option<&Module>
     let source = named.unwrap_or(program);
     let mut resources = Vec::new();
     for (i, (range, name, ty)) in records::ranges(source).map_err(read)?.into_iter().enumerate() {
-        resources.push(resource_of(ResourceId(i as u32), &range, name, ty, source)?);
+        let id = u32::try_from(i).map_err(|_| error(0, "more than 4294967295 resources"))?;
+        resources.push(resource_of(ResourceId(id), &range, name, ty, source)?);
     }
     // every program of a stage states its signatures (an empty one is a part with no elements); only a library, whose
     // entry points have none, has no such part
@@ -647,14 +727,15 @@ pub fn reflection(chunks: &[Chunk<'_>], program: &Module, named: Option<&Module>
         .unwrap_or_default();
     // a pixel input's interpolation is the entry point's own signature element's, found by register and lanes
     let (elements, _) = records::elements(program).map_err(read)?;
+    check_elements(&elements)?;
     for input in &mut inputs {
         let Some(d3d) = input.provenance.d3d else {
             continue;
         };
         let found = elements.iter().find(|e| {
-            let lanes = ((1u32 << e.columns) - 1) << e.column;
+            let lanes = lane_mask(e.column, e.columns);
             e.placed
-                && (e.row..e.row + e.rows).contains(&d3d.register)
+                && (e.row..e.row.saturating_add(e.rows)).contains(&d3d.register)
                 && u32::from(d3d.mask) & lanes == u32::from(d3d.mask)
         });
         // only a pixel program's inputs are interpolated
@@ -700,8 +781,16 @@ pub fn reflection(chunks: &[Chunk<'_>], program: &Module, named: Option<&Module>
                         ));
                     }
                 },
-                input_control_points: h.input_control_points,
-                output_control_points: h.output_control_points,
+                input_control_points: within(
+                    "a hull program's input control points",
+                    h.input_control_points,
+                    MAX_CONTROL_POINTS,
+                )?,
+                output_control_points: within(
+                    "a hull program's output control points",
+                    h.output_control_points,
+                    MAX_CONTROL_POINTS,
+                )?,
                 max_tess_factor_bits: h.max_tess_factor.to_bits(),
                 patch_constants: patch(true)?,
             })
@@ -710,7 +799,11 @@ pub fn reflection(chunks: &[Chunk<'_>], program: &Module, named: Option<&Module>
             let (domain, input_control_points) = records::domain_state(program).map_err(read)?;
             StageFacts::Domain(DomainFacts {
                 domain: tess_domain(domain)?,
-                input_control_points,
+                input_control_points: within(
+                    "a domain program's input control points",
+                    input_control_points,
+                    MAX_CONTROL_POINTS,
+                )?,
                 patch_constants: patch(false)?,
             })
         }
@@ -867,5 +960,48 @@ mod structured_tests {
         let members = layout.constants[0].ty.members();
         assert_eq!(members[0].ty, ConstantType::Scalar(ScalarType::Double));
         assert_eq!((members[0].offset, members[1].offset), (0, 8));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_geometry_program_past_direct3ds_output_or_instances_is_refused() {
+        let state = |max_vertices, instances| records::GeometryState {
+            input: 3,
+            max_vertices,
+            streams: 1,
+            topology: 5,
+            instances,
+        };
+        assert_eq!(geometry_facts_of(state(1024, 32)).unwrap().max_vertices, 1024);
+        let detail = |max_vertices, instances| {
+            geometry_facts_of(state(max_vertices, instances))
+                .unwrap_err()
+                .detail
+        };
+        assert!(detail(1025, 1).contains("output vertices of 1025, where Direct3D allows at most 1024"));
+        assert!(detail(u32::MAX, 1).contains("output vertices"));
+        assert!(detail(6, 33).contains("instances of 33, where Direct3D allows at most 32"));
+    }
+
+    #[test]
+    fn a_mesh_program_past_direct3ds_output_is_refused() {
+        let state = |max_vertices, max_primitives| records::MeshState {
+            max_vertices,
+            max_primitives,
+            topology: 2,
+            payload: 0,
+        };
+        assert_eq!(mesh_facts_of(state(256, 256)).unwrap().max_primitives, 256);
+        let detail = |max_vertices, max_primitives| {
+            mesh_facts_of(state(max_vertices, max_primitives))
+                .unwrap_err()
+                .detail
+        };
+        assert!(detail(257, 1).contains("output vertices of 257, where Direct3D allows at most 256"));
+        assert!(detail(1, u32::MAX).contains("output primitives"));
     }
 }

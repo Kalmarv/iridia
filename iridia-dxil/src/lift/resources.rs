@@ -114,20 +114,22 @@ impl Lift<'_> {
         };
         match dx_opcode(self.m, self.f, *function, args)? {
             57 => {
-                let class = const_int(self.m, self.f, args[1])?;
-                let id = const_int(self.m, self.f, args[2])?;
-                self.setup.resource(class as u8, id as u32)
+                let class = const_int(self.m, self.f, *args.get(1)?)?;
+                let id = const_int(self.m, self.f, *args.get(2)?)?;
+                self.setup
+                    .resource(u8::try_from(class).ok()?, u32::try_from(id).ok()?)
             }
             217 => {
-                let (class, lower, space) = binding_of(self.m, self.f, args[1])?;
+                let (class, lower, space) = binding_of(self.m, self.f, *args.get(1)?)?;
                 self.setup.resource_by_binding(class, lower, space)
             }
             // a handle annotated with its properties is the same handle
-            216 => self.handle_of(args[1]),
+            216 => self.handle_of(*args.get(1)?),
             // a library's handle is made from the value of the resource's global
-            160 => self
-                .setup
-                .resource_of_variable(super::setup::variable_loaded(self.m, self.f, args[1])?),
+            160 => {
+                self.setup
+                    .resource_of_variable(super::setup::variable_loaded(self.m, self.f, *args.get(1)?)?)
+            }
             218 => self.setup.heap.get(&v).copied(),
             _ => None,
         }
@@ -167,7 +169,11 @@ impl Lift<'_> {
                     // atomics read and write; a signed min or max (4, 5) makes the buffer's atomics signed
                     78 | 79 => {
                         views.insert(r, (true, true));
-                        let signed = code == 78 && matches!(const_int(self.m, self.f, args[2]), Some(4 | 5));
+                        let signed = code == 78
+                            && matches!(
+                                args.get(2).and_then(|&a| const_int(self.m, self.f, a)),
+                                Some(4 | 5)
+                            );
                         let entry = atomic.entry(r).or_insert(naga::Scalar::U32);
                         if signed {
                             *entry = naga::Scalar::I32;
@@ -189,15 +195,17 @@ impl Lift<'_> {
         let u4 = self.b.ty_of(Kind::U, 4);
         let u1 = self.b.ty_of(Kind::U, 1);
         for i in 0..self.setup.interface.resources.len() {
-            let range = self.setup.ranges[i];
-            let resource = self.setup.interface.resources[i].clone();
+            let (range, resource) = self.resource_parts(i)?;
             let depth = self.resources.depth.contains(&i);
             let (name, space, group, ty) = match &resource.kind {
                 ResourceKind::ConstantBuffer { layout } => {
                     let rows = layout.size.div_ceil(16).max(1);
                     let ty = self.b.ty(TypeInner::Array {
                         base: u4,
-                        size: ArraySize::Constant(NonZeroU32::new(rows).expect("at least one row")),
+                        size: ArraySize::Constant(
+                            NonZeroU32::new(rows)
+                                .map_or_else(|| self.refuse("a constant buffer of no rows"), Ok)?,
+                        ),
                         stride: 16,
                     });
                     (format!("cb{}", range.lower), AddressSpace::Uniform, 0, ty)
@@ -222,12 +230,15 @@ impl Lift<'_> {
                         class,
                     });
                     if depth {
-                        self.setup.interface.resources[i].kind = ResourceKind::Texture {
-                            dim: *dim,
-                            arrayed: *arrayed,
-                            multisampled: *multisampled,
-                            sample: SampleType::Depth,
-                        };
+                        self.set_kind(
+                            i,
+                            ResourceKind::Texture {
+                                dim: *dim,
+                                arrayed: *arrayed,
+                                multisampled: *multisampled,
+                                sample: SampleType::Depth,
+                            },
+                        )?;
                     }
                     (format!("t{}", range.lower), AddressSpace::Handle, 1, ty)
                 }
@@ -255,8 +266,10 @@ impl Lift<'_> {
                     });
                     // a typed buffer is carried as four 32-bit lanes per element, whatever the view's own width
                     if let BufferKind::Typed(v) = kind {
-                        self.setup.interface.resources[i].kind =
-                            ResourceKind::Buffer(BufferKind::Typed(iridia::Value { width: 4, ..*v }));
+                        self.set_kind(
+                            i,
+                            ResourceKind::Buffer(BufferKind::Typed(iridia::Value { width: 4, ..*v })),
+                        )?;
                     }
                     (
                         format!("sb{}", range.lower),
@@ -290,18 +303,21 @@ impl Lift<'_> {
                         arrayed: *arrayed,
                         class: ImageClass::Storage { format, access },
                     });
-                    self.setup.interface.resources[i].kind = ResourceKind::Storage {
-                        target: StorageTarget::Image {
-                            dim: *dim,
-                            arrayed: *arrayed,
-                            sample: *sample,
+                    self.set_kind(
+                        i,
+                        ResourceKind::Storage {
+                            target: StorageTarget::Image {
+                                dim: *dim,
+                                arrayed: *arrayed,
+                                sample: *sample,
+                            },
+                            access: match (load, store) {
+                                (true, true) => Access::ReadWrite,
+                                (false, true) => Access::Write,
+                                _ => Access::Read,
+                            },
                         },
-                        access: match (load, store) {
-                            (true, true) => Access::ReadWrite,
-                            (false, true) => Access::Write,
-                            _ => Access::Read,
-                        },
-                    };
+                    )?;
                     self.notes.insert(
                         "a typed unordered-access view is carried as a storage image of four 32-bit lanes: its format \
                          is the binding's"
@@ -334,14 +350,17 @@ impl Lift<'_> {
                         BufferKind::Typed(v) => BufferKind::Typed(iridia::Value { width: 4, ..*v }),
                         other => *other,
                     };
-                    self.setup.interface.resources[i].kind = ResourceKind::Storage {
-                        target: StorageTarget::Buffer(kind),
-                        access: match (load, store) {
-                            (true, true) => Access::ReadWrite,
-                            (false, true) => Access::Write,
-                            _ => Access::Read,
+                    self.set_kind(
+                        i,
+                        ResourceKind::Storage {
+                            target: StorageTarget::Buffer(kind),
+                            access: match (load, store) {
+                                (true, true) => Access::ReadWrite,
+                                (false, true) => Access::Write,
+                                _ => Access::Read,
+                            },
                         },
-                    };
+                    )?;
                     (
                         format!("u{}", range.lower),
                         AddressSpace::Storage { access },
@@ -427,17 +446,19 @@ impl Lift<'_> {
             self.resources.bound.push((resource.id, g));
             self.resources.globals.push(g);
         }
-        self.declare_counters();
-        Ok(())
+        self.declare_counters()
     }
 
     /// The hidden counter of each unordered-access buffer whose counter the program updates: a resource of its own
     /// (one raw read-write buffer, `counter_of` the view), a buffer of its own in WebGPU, group 4 at the view's binding.
-    fn declare_counters(&mut self) {
+    fn declare_counters(&mut self) -> Result<()> {
         for view in self.resources.counted.clone() {
-            let range = self.setup.ranges[view];
-            let name = self.setup.interface.resources[view].provenance.name.clone();
-            let id = ResourceId(self.setup.interface.resources.len() as u32);
+            let (range, view_resource) = self.resource_parts(view)?;
+            let name = view_resource.provenance.name.clone();
+            let id = ResourceId(
+                u32::try_from(self.setup.interface.resources.len())
+                    .map_err(|_| crate::error(self.at, "more than 4294967295 resources"))?,
+            );
             self.setup.interface.resources.push(Resource {
                 id,
                 kind: ResourceKind::Storage {
@@ -448,7 +469,7 @@ impl Lift<'_> {
                 provenance: ResourceProvenance {
                     name: format!("{name}.counter"),
                     d3d: None,
-                    counter_of: Some(self.setup.interface.resources[view].id),
+                    counter_of: Some(view_resource.id),
                     layout: None,
                 },
             });
@@ -478,17 +499,18 @@ impl Lift<'_> {
             self.resources.globals.push(g);
             self.resources.counters.insert(view, g);
         }
+        Ok(())
     }
 
     /// `BufferUpdateCounter(handle, increment)`: add 1 or subtract 1 from the view's counter. An increment gives the
     /// counter as it was (`IncrementCounter`), a decrement as it is after (`DecrementCounter`), as D3D's append and
     /// consume instructions do.
     pub(super) fn buffer_update_counter(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let view = self.handle_resource(args[1], 1)?;
+        let view = self.handle_resource(self.arg(args, 1)?, 1)?;
         let Some(&counter) = self.resources.counters.get(&view) else {
             return self.refuse("a counter update of a view the scan did not find");
         };
-        let Some(step) = const_int(self.m, self.f, args[2]) else {
+        let Some(step) = const_int(self.m, self.f, self.arg(args, 2)?) else {
             return self.refuse("a counter updated by a step that is not constant");
         };
         if step != 1 && step != -1 {
@@ -505,7 +527,7 @@ impl Lift<'_> {
             base: global,
             index: zero.expr,
         });
-        let amount = self.b.lit_u(step as u32);
+        let amount = self.b.lit_u(super::low32(step as u64));
         let old = self
             .b
             .atomic(slot, naga::AtomicFunction::Add, amount, naga::Scalar::U32);
@@ -579,7 +601,7 @@ impl Lift<'_> {
         if c != class {
             return self.refuse(format!("a handle of class {class} was expected"));
         }
-        let global = self.b.global_ptr(self.global_of(resource));
+        let global = self.b.global_ptr(self.global_of(resource)?);
         let words = match element {
             None => global,
             Some(index) => {
@@ -607,7 +629,7 @@ impl Lift<'_> {
         if c != class {
             return self.refuse(format!("a handle of class {class} was expected"));
         }
-        let global = self.b.global_ptr(self.global_of(resource));
+        let global = self.b.global_ptr(self.global_of(resource)?);
         let expr = match element {
             None => global,
             Some(index) => self.b.app(E::Access {
@@ -620,8 +642,8 @@ impl Lift<'_> {
 
     /// The element of an array a handle's index picks: the index less the range's first register.
     fn element_of(&mut self, resource: usize, index: ValueId, constant: Option<i64>) -> Result<Option<Val>> {
-        let count = self.setup.interface.resources[resource].count;
-        let lower = self.setup.ranges[resource].lower;
+        let (range, described) = self.resource_parts(resource)?;
+        let (count, lower) = (described.count, range.lower);
         if count == 1 {
             return match constant {
                 Some(i) if i == i64::from(lower) => Ok(None),
@@ -646,19 +668,22 @@ impl Lift<'_> {
     /// `CreateHandle(class, range id, index, non-uniform)`: the interface resource of a constant range, at an element
     /// when the range is an array.
     pub(super) fn create_handle(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let konst = |lift: &Self, n: usize| const_int(lift.m, lift.f, args[n]);
+        let konst = |lift: &Self, n: usize| args.get(n).and_then(|&a| const_int(lift.m, lift.f, a));
         let (Some(class), Some(id)) = (konst(self, 1), konst(self, 2)) else {
             return self.refuse("a handle of a computed range");
         };
-        let Some(resource) = self.setup.resource(class as u8, id as u32) else {
+        let (Ok(class), Ok(id)) = (u8::try_from(class), u32::try_from(id)) else {
+            return self.refuse(format!("a handle of range {id} of class {class}"));
+        };
+        let Some(resource) = self.setup.resource(class, id) else {
             return self.refuse("a handle of an undeclared range");
         };
         let constant = konst(self, 3);
-        let element = self.element_of(resource, args[3], constant)?;
+        let element = self.element_of(resource, self.arg(args, 3)?, constant)?;
         self.define_result(
             inst.result,
             Lv::Handle {
-                class: class as u8,
+                class,
                 resource,
                 element,
             },
@@ -668,14 +693,14 @@ impl Lift<'_> {
     /// `CreateHandleFromBinding(binding, index, non-uniform)` (Shader Model 6.6): the resource of a constant binding,
     /// at an element when the binding is an array.
     pub(super) fn create_handle_from_binding(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let Some((class, lower, space)) = binding_of(self.m, self.f, args[1]) else {
+        let Some((class, lower, space)) = binding_of(self.m, self.f, self.arg(args, 1)?) else {
             return self.refuse("a handle of a binding that is not constant");
         };
         let Some(resource) = self.setup.resource_by_binding(class, lower, space) else {
             return self.refuse("a handle of an undeclared binding");
         };
-        let constant = const_int(self.m, self.f, args[2]);
-        let element = self.element_of(resource, args[2], constant)?;
+        let constant = const_int(self.m, self.f, self.arg(args, 2)?);
+        let element = self.element_of(resource, self.arg(args, 2)?, constant)?;
         self.define_result(
             inst.result,
             Lv::Handle {
@@ -707,7 +732,7 @@ impl Lift<'_> {
             ResourceKind::Storage { .. } => 1,
             _ => 0,
         };
-        let index = self.uint(args[1])?;
+        let index = self.uint(self.arg(args, 1)?)?;
         self.define_result(
             inst.result,
             Lv::Handle {
@@ -721,7 +746,7 @@ impl Lift<'_> {
     /// `CreateHandleForLib(resource)` (a library): the value a load of the resource's global gave, which already names
     /// the resource.
     pub(super) fn create_handle_for_lib(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let value = self.get(args[1])?;
+        let value = self.get(self.arg(args, 1)?)?;
         if !matches!(value, Lv::Handle { .. }) {
             return self.refuse("a handle made from something that is not a resource of the library");
         }
@@ -730,42 +755,74 @@ impl Lift<'_> {
 
     /// `AnnotateHandle(handle, properties)`: the handle itself; the properties repeat what the resource declares.
     pub(super) fn annotate_handle(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let handle = self.get(args[1])?;
+        let handle = self.get(self.arg(args, 1)?)?;
         if !matches!(handle, Lv::Handle { .. }) {
             return self.refuse("an annotation of something that is not a handle");
         }
         self.define_result(inst.result, handle)
     }
 
-    pub(super) fn global_of(&self, resource: usize) -> Handle<GlobalVariable> {
-        self.resources.globals[resource]
+    pub(super) fn global_of(&self, resource: usize) -> Result<Handle<GlobalVariable>> {
+        self.resources.globals.get(resource).copied().ok_or_else(|| {
+            crate::error(
+                self.at,
+                format!(
+                    "resource {resource}, where {} have a global",
+                    self.resources.globals.len()
+                ),
+            )
+        })
+    }
+
+    /// The range and the interface's resource of resource `i`, which the setup keeps side by side.
+    fn resource_parts(&self, i: usize) -> Result<(dxil_reader::reflection::Range, Resource)> {
+        match (self.setup.ranges.get(i), self.setup.interface.resources.get(i)) {
+            (Some(range), Some(resource)) => Ok((*range, resource.clone())),
+            _ => self.refuse(format!(
+                "resource {i}, where the program has {}",
+                self.setup.interface.resources.len()
+            )),
+        }
+    }
+
+    /// Make resource `i` of the interface this kind.
+    fn set_kind(&mut self, i: usize, kind: ResourceKind) -> Result<()> {
+        match self.setup.interface.resources.get_mut(i) {
+            Some(resource) => {
+                resource.kind = kind;
+                Ok(())
+            }
+            None => self.refuse(format!("resource {i}, which the interface does not have")),
+        }
     }
 
     /// `CBufferLoadLegacy(handle, row)`: a row of four 32-bit lanes as the call's overload type.
     pub(super) fn cbuffer_load(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let resource = self.handle(args[1], 2)?;
-        let g = self.global_of(resource);
+        let resource = self.handle(self.arg(args, 1)?, 2)?;
+        let g = self.global_of(resource)?;
         let rows = match self.setup.kind(resource) {
             ResourceKind::ConstantBuffer { layout } => layout.size.div_ceil(16).max(1),
             _ => return self.refuse("a constant load from a non-buffer"),
         };
         // a row known to be inside the buffer needs no guard
-        let lanes = match const_int(self.m, self.f, args[2]) {
+        let lanes = match const_int(self.m, self.f, self.arg(args, 2)?) {
             Some(r) if (0..i64::from(rows)).contains(&r) => {
                 let pointer = self.b.global_ptr(g);
                 let element = self.b.app(E::AccessIndex {
                     base: pointer,
-                    index: r as u32,
+                    index: super::low32(r as u64),
                 });
                 self.b.load(element, Kind::U, 4)
             }
             _ => {
-                let row = self.uint(args[2])?;
+                let row = self.uint(self.arg(args, 2)?)?;
                 self.guarded_row(g, row, rows)
             }
         };
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
-        let dxil_reader::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
+        let Some((_, ty)) = inst.result else {
+            return self.refuse("a constant load with no result");
+        };
+        let dxil_reader::module::Type::Struct { elements, .. } = self.type_at(ty)?.clone() else {
             return self.refuse("a constant load whose result is not a struct");
         };
         if elements.len() != 4 {
@@ -776,7 +833,7 @@ impl Lift<'_> {
         let mut out = Vec::new();
         for (lane, &e) in elements.iter().enumerate() {
             let kind = self.kind_of_type(e)?;
-            let x = self.b.lane(lanes, lane as u8);
+            let x = self.b.lane(lanes, super::lane_u8(lane));
             out.push(Lv::Scalar(self.b.bitcast_to(x, kind)));
         }
         self.define_result(inst.result, Lv::Agg(out))
@@ -817,12 +874,12 @@ impl Lift<'_> {
         };
         let mut parts = Vec::new();
         for k in 0..n {
-            let v = self.scalar(args[first + k])?;
+            let v = self.scalar(self.arg(args, first.saturating_add(k))?)?;
             parts.push(self.b.bitcast_to(v, kind));
         }
         let coordinate = self.b.compose(&parts);
         let layer = if arrayed {
-            let v = self.scalar(args[first + n])?;
+            let v = self.scalar(self.arg(args, first.saturating_add(n))?)?;
             Some(self.b.bitcast_to(v, kind))
         } else {
             None
@@ -854,9 +911,9 @@ impl Lift<'_> {
         };
         let mut values = Vec::new();
         for k in 0..n {
-            match const_int(self.m, self.f, args[first + k]) {
-                Some(v) => values.push(v as i32),
-                None if self.is_undef(args[first + k]) => values.push(0),
+            match const_int(self.m, self.f, self.arg(args, first.saturating_add(k))?) {
+                Some(v) => values.push(i32::from_ne_bytes(super::low32(v as u64).to_ne_bytes())),
+                None if self.is_undef(self.arg(args, first.saturating_add(k))?) => values.push(0),
                 None => return self.refuse("a sample offset that is not constant"),
             }
         }
@@ -867,10 +924,10 @@ impl Lift<'_> {
             .iter()
             .map(|&v| self.b.app(E::Literal(naga::Literal::I32(v))))
             .collect();
-        Ok(Some(if n == 1 {
-            parts[0]
+        Ok(Some(if let [only] = parts[..] {
+            only
         } else {
-            let ty = self.b.ty_of(Kind::I, n as u8);
+            let ty = self.b.ty_of(Kind::I, super::lane_u8(parts.len()));
             self.b.app(E::Compose {
                 ty,
                 components: parts,
@@ -879,13 +936,8 @@ impl Lift<'_> {
     }
 
     fn is_undef(&self, v: ValueId) -> bool {
-        let value = if v < self.f.first {
-            self.m.values.get(v)
-        } else {
-            self.f.locals.get(v - self.f.first)
-        };
         matches!(
-            value,
+            self.value_ref(v),
             Some(dxil_reader::module::Value::Constant(
                 dxil_reader::module::Constant::Undef
             ))
@@ -895,8 +947,8 @@ impl Lift<'_> {
     /// The sample operations: `Sample`, `SampleBias`, `SampleLevel`, `SampleGrad`, `SampleCmp`,
     /// `SampleCmpLevelZero`, `TextureGather`, `TextureGatherCmp`.
     pub(super) fn sample(&mut self, inst: &Instruction, code: u64, args: &[ValueId]) -> Result<()> {
-        let (resource, image) = self.handle_expr(args[1], 0)?;
-        let (_, smp) = self.handle_expr(args[2], 3)?;
+        let (resource, image) = self.handle_expr(self.arg(args, 1)?, 0)?;
+        let (_, smp) = self.handle_expr(self.arg(args, 2)?, 3)?;
         let (dim, arrayed, multi, sample_kind, depth) = self.texture_shape(resource)?;
         if multi {
             return self.refuse("a sample of a multisampled texture");
@@ -916,7 +968,7 @@ impl Lift<'_> {
         };
         let (gather, depth_ref, level) = match code {
             60 => {
-                expect_undef(self, args[10])?;
+                expect_undef(self, self.arg(args, 10)?)?;
                 (None, None, SampleLevel::Auto)
             }
             61 if depth => {
@@ -927,12 +979,12 @@ impl Lift<'_> {
                     .refuse("a depth texture sampled with gradients (WGSL's depth sampling has none)");
             }
             61 => {
-                expect_undef(self, args[11])?;
-                let bias = self.float(args[10])?;
+                expect_undef(self, self.arg(args, 11)?)?;
+                let bias = self.float(self.arg(args, 10)?)?;
                 (None, None, SampleLevel::Bias(bias.expr))
             }
             62 => {
-                let lod = self.float(args[10])?;
+                let lod = self.float(self.arg(args, 10)?)?;
                 // level 0 is WGSL's `Zero`, which a depth texture can be sampled at; any other level of a depth
                 // texture is an integer there, which a float level is not
                 if matches!(
@@ -949,7 +1001,7 @@ impl Lift<'_> {
                 }
             }
             63 => {
-                expect_undef(self, args[16])?;
+                expect_undef(self, self.arg(args, 16)?)?;
                 let n = match dim {
                     TextureDim::D1 => 1,
                     TextureDim::D2 => 2,
@@ -958,30 +1010,34 @@ impl Lift<'_> {
                 let mut x = Vec::new();
                 let mut y = Vec::new();
                 for k in 0..n {
-                    x.push(self.float(args[10 + k])?);
-                    y.push(self.float(args[13 + k])?);
+                    x.push(self.float(self.arg(args, 10usize.saturating_add(k))?)?);
+                    y.push(self.float(self.arg(args, 13usize.saturating_add(k))?)?);
                 }
                 let (x, y) = (self.b.compose(&x), self.b.compose(&y));
                 (None, None, SampleLevel::Gradient { x: x.expr, y: y.expr })
             }
             64 => {
-                expect_undef(self, args[11])?;
-                let reference = self.float(args[10])?;
+                expect_undef(self, self.arg(args, 11)?)?;
+                let reference = self.float(self.arg(args, 10)?)?;
                 (None, Some(reference.expr), SampleLevel::Auto)
             }
             65 => {
-                let reference = self.float(args[10])?;
+                let reference = self.float(self.arg(args, 10)?)?;
                 (None, Some(reference.expr), SampleLevel::Zero)
             }
             73 | 74 => {
-                let channel = const_int(self.m, self.f, args[9])
+                let channel = const_int(self.m, self.f, self.arg(args, 9)?)
                     .map_or_else(|| self.refuse("a gather channel that is not constant"), Ok)?;
                 let reference = if code == 74 {
-                    Some(self.float(args[10])?.expr)
+                    Some(self.float(self.arg(args, 10)?)?.expr)
                 } else {
                     None
                 };
-                (Some(component(channel as u8)), reference, SampleLevel::Zero)
+                (
+                    Some(component(super::lane_u8(channel))),
+                    reference,
+                    SampleLevel::Zero,
+                )
             }
             other => return self.refuse(format!("sample operation {other}")),
         };
@@ -1028,11 +1084,11 @@ impl Lift<'_> {
 
     /// `TextureLoad(handle, mip or sample, x, y, z, offsets)`.
     pub(super) fn texture_load(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let class = match self.get(args[1])? {
+        let class = match self.get(self.arg(args, 1)?)? {
             Lv::Handle { class, .. } => class,
             _ => return self.refuse("a load through something that is not a handle"),
         };
-        let (resource, image) = self.handle_expr(args[1], class)?;
+        let (resource, image) = self.handle_expr(self.arg(args, 1)?, class)?;
         let (dim, arrayed, multi, kind, depth) = self.texture_shape(resource)?;
         let (coordinate, array_index) = self.coordinates(args, 3, dim, arrayed, Kind::I)?;
         let mut coordinate = coordinate;
@@ -1049,9 +1105,9 @@ impl Lift<'_> {
         let (level, sample) = if storage {
             (None, None)
         } else if multi {
-            (None, Some(self.uint(args[2])?.expr))
+            (None, Some(self.uint(self.arg(args, 2)?)?.expr))
         } else {
-            let mip = self.uint(args[2])?;
+            let mip = self.uint(self.arg(args, 2)?)?;
             let mip = self.b.bitcast(mip, Kind::I);
             (Some(mip.expr), None)
         };
@@ -1095,23 +1151,22 @@ impl Lift<'_> {
             let (zero, one) = (self.b.lit_f(0.0), self.b.lit_f(1.0));
             r = self.b.compose(&[r, zero, zero, one]);
         }
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
-        let _ = ty;
+        self.result_type(inst.result)?;
         let lv = self.resret(r);
         self.define_result(inst.result, lv)
     }
 
     /// `TextureStore(uav, x, y, z, v0..v3, mask)`.
     pub(super) fn texture_store(&mut self, args: &[ValueId]) -> Result<()> {
-        let (resource, image) = self.handle_expr(args[1], 1)?;
+        let (resource, image) = self.handle_expr(self.arg(args, 1)?, 1)?;
         let (dim, arrayed, _, kind, _) = self.texture_shape(resource)?;
-        if const_int(self.m, self.f, args[9]) != Some(15) {
+        if const_int(self.m, self.f, self.arg(args, 9)?) != Some(15) {
             return self.refuse("a store through a view with a partial write mask");
         }
         let (coordinate, array_index) = self.coordinates(args, 2, dim, arrayed, Kind::U)?;
         let mut lanes = Vec::new();
         for k in 0..4 {
-            let v = self.scalar(args[5 + k])?;
+            let v = self.scalar(self.arg(args, 5usize.saturating_add(k))?)?;
             lanes.push(self.b.bitcast_to(v, kind));
         }
         let value = self.b.compose(&lanes);
@@ -1164,22 +1219,22 @@ impl Lift<'_> {
 
     /// `GetDimensions(handle, mip)`: width, height, depth or layers, and the number of levels.
     pub(super) fn get_dimensions(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let class = match self.get(args[1])? {
+        let class = match self.get(self.arg(args, 1)?)? {
             Lv::Handle { class, .. } => class,
             _ => return self.refuse("dimensions of something that is not a handle"),
         };
-        let resource = self.handle_resource(args[1], class)?;
+        let resource = self.handle_resource(self.arg(args, 1)?, class)?;
         if let ResourceKind::Buffer(kind)
         | ResourceKind::Storage {
             target: StorageTarget::Buffer(kind),
             ..
         } = self.setup.kind(resource).clone()
         {
-            return self.buffer_dimensions(inst, args[1], class, kind);
+            return self.buffer_dimensions(inst, self.arg(args, 1)?, class, kind);
         }
-        let (resource, g) = self.handle_expr(args[1], class)?;
+        let (resource, g) = self.handle_expr(self.arg(args, 1)?, class)?;
         let (dim, arrayed, multi, _, _) = self.texture_shape(resource)?;
-        let mip = self.uint(args[2])?;
+        let mip = self.uint(self.arg(args, 2)?)?;
         let dims = match dim {
             TextureDim::D1 => 1,
             TextureDim::D2 | TextureDim::Cube => 2,
@@ -1230,7 +1285,7 @@ impl Lift<'_> {
     /// `Texture2DMSGetSamplePosition(handle, sample)`: the sample's offset from the pixel's centre in pixels, as D3D's
     /// standard pattern for the texture's sample count gives it.
     pub(super) fn sample_position(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let (resource, image) = self.handle_expr(args[1], 0)?;
+        let (resource, image) = self.handle_expr(self.arg(args, 1)?, 0)?;
         let (_, _, multi, _, _) = self.texture_shape(resource)?;
         if !multi {
             return self.refuse("a sample position of a texture that is not multisampled");
@@ -1245,7 +1300,7 @@ impl Lift<'_> {
                 let v2 = self.b.ty_of(Kind::F, 2);
                 let ty = self.b.ty(TypeInner::Array {
                     base: v2,
-                    size: ArraySize::Constant(NonZeroU32::new(31).expect("31 is not 0")),
+                    size: ArraySize::Constant(NonZeroU32::MIN.saturating_add(30)),
                     stride: 8,
                 });
                 let mut rows = Vec::new();
@@ -1282,7 +1337,7 @@ impl Lift<'_> {
         };
         let one = self.b.lit_u(1);
         let below = self.b.binary(Bo::Subtract, count, one);
-        let sample = self.uint(args[2])?;
+        let sample = self.uint(self.arg(args, 2)?)?;
         let within = self.b.binary(Bo::And, sample, below);
         let row = self.b.binary(Bo::Add, below, within);
         let last = self.b.lit_u(30);
@@ -1299,11 +1354,11 @@ impl Lift<'_> {
 
     /// `BufferLoad(handle, index, offset)`: four lanes of a typed, raw or structured buffer.
     pub(super) fn buffer_load(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let class = match self.get(args[1])? {
+        let class = match self.get(self.arg(args, 1)?)? {
             Lv::Handle { class, .. } => class,
             _ => return self.refuse("a buffer load through something that is not a handle"),
         };
-        let (resource, words_ptr) = self.buffer_words(args[1], class)?;
+        let (resource, words_ptr) = self.buffer_words(self.arg(args, 1)?, class)?;
         let kind = match self.setup.kind(resource).clone() {
             ResourceKind::Buffer(k)
             | ResourceKind::Storage {
@@ -1314,12 +1369,17 @@ impl Lift<'_> {
         };
         // the words of an atomic buffer are read by atomic loads, as the buffer's integer type
         let atomic = self.resources.atomic.get(&resource).copied();
-        let index = self.uint(args[2])?;
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
-        let dxil_reader::module::Type::Struct { elements, .. } = self.m.types[ty].clone() else {
+        let index = self.uint(self.arg(args, 2)?)?;
+        let Some((_, ty)) = inst.result else {
+            return self.refuse("a buffer load with no result");
+        };
+        let dxil_reader::module::Type::Struct { elements, .. } = self.type_at(ty)?.clone() else {
             return self.refuse("a buffer load whose result is not a struct");
         };
-        let lane_kind = self.kind_of_type(elements[0])?;
+        let Some(&first) = elements.first() else {
+            return self.refuse("a buffer load whose result struct has no lanes");
+        };
+        let lane_kind = self.kind_of_type(first)?;
         let row = match kind {
             BufferKind::Typed(_) => {
                 let length = Val {
@@ -1362,7 +1422,7 @@ impl Lift<'_> {
                 let two = self.b.lit_u(2);
                 let word = match kind {
                     BufferKind::Structured { stride } => {
-                        let offset = self.uint(args[3])?;
+                        let offset = self.uint(self.arg(args, 3)?)?;
                         let st = self.b.lit_u(stride);
                         let base = self.b.binary(Bo::Multiply, index, st);
                         let byte = self.b.binary(Bo::Add, base, offset);

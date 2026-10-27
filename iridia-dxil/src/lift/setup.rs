@@ -15,10 +15,9 @@ use dxil_reader::reflection::{self as records, Element, Range};
 
 /// The constant integer a value is, if it is one.
 pub(super) fn const_int(m: &Module, f: &Function, v: ValueId) -> Option<i64> {
-    let value = if v < f.first {
-        m.values.get(v)?
-    } else {
-        f.locals.get(v - f.first)?
+    let value = match v.checked_sub(f.first) {
+        None => m.values.get(v)?,
+        Some(local) => f.locals.get(local)?,
     };
     match value {
         Value::Constant(Constant::Integer(i)) => Some(*i),
@@ -30,10 +29,9 @@ pub(super) fn const_int(m: &Module, f: &Function, v: ValueId) -> Option<i64> {
 /// The range a `CreateHandleFromBinding` names: its class, lower bound and register space (the binding constant
 /// `{ lower, upper, space, class }`), and the offset into the range (the call's index is the register itself).
 pub(super) fn binding_of(m: &Module, f: &Function, bind: ValueId) -> Option<(u8, u32, u32)> {
-    let value = if bind < f.first {
-        m.values.get(bind)?
-    } else {
-        f.locals.get(bind - f.first)?
+    let value = match bind.checked_sub(f.first) {
+        None => m.values.get(bind)?,
+        Some(local) => f.locals.get(local)?,
     };
     // a zero binding (register 0 of space 0, a shader resource) is stored as the null constant
     let field = |k: usize| match value {
@@ -82,10 +80,9 @@ pub(super) fn variable_loaded(m: &Module, f: &Function, v: ValueId) -> Option<Va
     };
     let mut at = *pointer;
     loop {
-        let value = if at < f.first {
-            m.values.get(at)?
-        } else {
-            f.locals.get(at - f.first)?
+        let value = match at.checked_sub(f.first) {
+            None => m.values.get(at)?,
+            Some(local) => f.locals.get(local)?,
         };
         match value {
             Value::Global { .. } if at < f.first => return Some(at),
@@ -145,6 +142,9 @@ impl Setup {
         }
         let (input_elements, output_elements) = records::elements(m).map_err(read)?;
         let patch_elements = records::patch_elements(m).map_err(read)?;
+        for elements in [&input_elements, &output_elements, &patch_elements] {
+            crate::reflection::check_elements(elements)?;
+        }
         let program_ranges: Vec<Range> = records::ranges(m)
             .map_err(read)?
             .into_iter()
@@ -205,14 +205,26 @@ impl Setup {
                             ));
                         }
                         let (rows, columns) = match (konst(2), konst(3)) {
-                            (Some(r), Some(c)) => (r..r + 1, c..c + 1),
-                            (Some(r), None) => (r..r + 1, 0..i64::from(e.columns)),
-                            (None, Some(c)) => (0..i64::from(e.rows), c..c + 1),
+                            (Some(r), Some(c)) => (r..r.saturating_add(1), c..c.saturating_add(1)),
+                            (Some(r), None) => (r..r.saturating_add(1), 0..i64::from(e.columns)),
+                            (None, Some(c)) => (0..i64::from(e.rows), c..c.saturating_add(1)),
                             (None, None) => (0..i64::from(e.rows), 0..i64::from(e.columns)),
                         };
                         for r in rows {
                             for c in columns.clone() {
-                                let cell = (e.row + r as u32, e.column + c as u8);
+                                let cell = u32::try_from(r)
+                                    .ok()
+                                    .and_then(|r| e.row.checked_add(r))
+                                    .zip(u8::try_from(c).ok().and_then(|c| e.column.checked_add(c)))
+                                    .ok_or_else(|| {
+                                        error(
+                                            inst.at,
+                                            format!(
+                                                "row {r}, column {c} of element {}, which starts at row {}, column {}",
+                                                e.name, e.row, e.column
+                                            ),
+                                        )
+                                    })?;
                                 match code {
                                     4 => cells_in.insert(cell),
                                     5 | 103 | 171 => cells_out.insert(cell),
@@ -223,7 +235,12 @@ impl Setup {
                     }
                     57 => {
                         if let (Some(class), Some(id)) = (konst(1), konst(2)) {
-                            used_ranges.insert((class as u8, id as u32));
+                            used_ranges.insert((
+                                u8::try_from(class)
+                                    .map_err(|_| error(inst.at, format!("resource class {class}")))?,
+                                u32::try_from(id)
+                                    .map_err(|_| error(inst.at, format!("resource range {id}")))?,
+                            ));
                         } else {
                             return Err(error(inst.at, "a handle of a computed range"));
                         }
@@ -261,7 +278,7 @@ impl Setup {
                         } else {
                             SystemValue::WorldToObject
                         };
-                        matrix_rows.insert((system, row as u32));
+                        matrix_rows.insert((system, super::low32(row as u64)));
                     }
                     // the ray tracing system values: the ids and the traced ray's state
                     141..=150 | 153 | 154 | 161 | 213 => {
@@ -270,12 +287,14 @@ impl Setup {
                         }
                     }
                     217 => {
-                        let Some((class, lower, space)) = binding_of(m, entry, args[1]) else {
+                        let Some((class, lower, space)) =
+                            binding_of(m, entry, super::argument(args, 1, inst.at)?)
+                        else {
                             return Err(error(inst.at, "a handle of a binding that is not constant"));
                         };
                         used_bindings.insert((class, lower, space));
                     }
-                    160 => match variable_loaded(m, entry, args[1]) {
+                    160 => match variable_loaded(m, entry, super::argument(args, 1, inst.at)?) {
                         Some(global) => {
                             used_variables.insert(global);
                         }
@@ -446,7 +465,9 @@ impl Setup {
                 ));
             }
             resources.push(Resource {
-                id: ResourceId(resources.len() as u32),
+                id: ResourceId(
+                    u32::try_from(resources.len()).map_err(|_| error(0, "more than 4294967295 resources"))?,
+                ),
                 ..original
             });
             ranges.push(range);
@@ -500,7 +521,10 @@ impl Setup {
         self.ranges.iter().position(|r| r.variable == Some(global))
     }
     pub(super) fn kind(&self, resource: usize) -> &ResourceKind {
-        &self.interface.resources[resource].kind
+        self.interface
+            .resources
+            .get(resource)
+            .map_or(&ResourceKind::AccelerationStructure, |r| &r.kind)
     }
 }
 
@@ -528,20 +552,20 @@ fn heap_resources(
             if dx_opcode(m, f, *function, args) != Some(218) {
                 continue;
             }
-            let sampler = const_int(m, f, args[2]) == Some(1);
+            let sampler = const_int(m, f, super::argument(args, 2, inst.at)?) == Some(1);
             // the annotation that says what the descriptor is: its properties, two constant words
             let properties = functions.iter().copied().find_map(|g| {
                 g.instructions.iter().find_map(|i| {
                     let Op::Call { function, args } = &i.op else {
                         return None;
                     };
-                    if dx_opcode(m, g, *function, args) != Some(216) || args[1] != handle {
+                    if dx_opcode(m, g, *function, args) != Some(216) || args.get(1) != Some(&handle) {
                         return None;
                     }
-                    let value = if args[2] < g.first {
-                        m.values.get(args[2])?
-                    } else {
-                        g.locals.get(args[2] - g.first)?
+                    let annotation = *args.get(2)?;
+                    let value = match annotation.checked_sub(g.first) {
+                        None => m.values.get(annotation)?,
+                        Some(local) => g.locals.get(local)?,
                     };
                     match value {
                         Value::Constant(Constant::Aggregate(items)) => Some((
@@ -572,10 +596,11 @@ fn heap_resources(
             let index = match made.get(&(class, first, second)) {
                 Some(&i) => i,
                 None => {
-                    let n = made.len() as u32;
+                    let n = u32::try_from(made.len())
+                        .map_err(|_| error(inst.at, "more than 4294967295 heap descriptors"))?;
                     let range = Range {
                         class,
-                        id: u32::MAX - n,
+                        id: u32::MAX.saturating_sub(n),
                         lower: n,
                         count: Resource::UNBOUNDED,
                         extra: match class {
@@ -583,15 +608,19 @@ fn heap_resources(
                             2 => {
                                 u32::try_from(second).map_err(|_| error(inst.at, "a constant buffer size"))?
                             }
-                            _ => kind as u32,
+                            _ => super::low32(kind as u64),
                         },
                         space: HEAP_SPACE,
-                        element: (class < 2 && kind != 11 && kind != 12).then_some((second & 0xff) as u32),
-                        stride: (kind == 12).then_some(second as u32),
+                        element: (class < 2 && kind != 11 && kind != 12)
+                            .then_some(super::low32(second as u64 & 0xff)),
+                        stride: (kind == 12).then_some(super::low32(second as u64)),
                         counter: false,
                         variable: None,
                     };
-                    let id = ResourceId(resources.len() as u32);
+                    let id = ResourceId(
+                        u32::try_from(resources.len())
+                            .map_err(|_| error(inst.at, "more than 4294967295 resources"))?,
+                    );
                     let name = if class == 3 {
                         "SamplerDescriptorHeap"
                     } else {
@@ -603,8 +632,9 @@ fn heap_resources(
                     resource.provenance.d3d = None;
                     resources.push(resource);
                     ranges.push(range);
-                    made.insert((class, first, second), resources.len() - 1);
-                    resources.len() - 1
+                    let index = resources.len().saturating_sub(1);
+                    made.insert((class, first, second), index);
+                    index
                 }
             };
             handles.insert(handle, index);
@@ -616,7 +646,9 @@ fn heap_resources(
 fn cell(list: &[iridia::Varying], register: u32, lane: u8) -> Option<(usize, u8)> {
     list.iter().enumerate().find_map(|(i, v)| {
         let d3d = v.provenance.d3d?;
-        (lane < 8 && d3d.register == register && d3d.mask >> lane & 1 != 0)
-            .then(|| (i, (d3d.mask & ((1u8 << lane) - 1)).count_ones() as u8))
+        (d3d.register == register)
+            .then(|| super::stages::lanes_below(d3d.mask, lane))
+            .flatten()
+            .map(|position| (i, position))
     })
 }

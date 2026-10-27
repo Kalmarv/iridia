@@ -330,7 +330,7 @@ impl Setup {
                         let register = operand.indices.last().map_or(0, |i| i.base);
                         *declared_inputs.entry(register).or_default() |= mask;
                         if let Some(mode) = interpolation {
-                            let interp = iridia::d3d::interpolation(*mode).map_err(at)?;
+                            let interp = iridia::d3d::interpolation(*mode).map_err(|e| at(e.to_string()))?;
                             interpolations.push((register, mask, interp));
                         }
                         let _ = name;

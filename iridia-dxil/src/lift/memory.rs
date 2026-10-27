@@ -55,6 +55,10 @@ pub(crate) struct Memory {
     leaf_locals: BTreeMap<Handle<LocalVariable>, Kind>,
 }
 
+/// The most bytes of memory (a local or thread group array, a constant table) the lifter makes a type for: more than
+/// D3D's 64 KiB of thread group and scratch memory, and bounding what the walk over its lanes holds.
+const MAX_MEMORY_BYTES: u32 = 1 << 20;
+
 impl Lift<'_> {
     /// The kind of scalar every element of a type is, if there is only one.
     fn uniform_kind(&self, ty: TypeId) -> Option<Kind> {
@@ -105,10 +109,9 @@ impl Lift<'_> {
         let mut v = v;
         loop {
             // a module value, or a constant of the function's own constants block
-            let value = if v < self.f.first {
-                self.m.values.get(v)
-            } else {
-                self.f.locals.get(v - self.f.first)
+            let value = match v.checked_sub(self.f.first) {
+                None => self.m.values.get(v),
+                Some(local) => self.f.locals.get(local),
             };
             match value {
                 Some(Value::Global { .. }) if v < self.f.first => return Some(v),
@@ -187,9 +190,8 @@ impl Lift<'_> {
         ty: TypeId,
         atomic: Option<naga::Scalar>,
     ) -> Result<(Handle<naga::Type>, u32, u32)> {
-        match self.m.types[ty].clone() {
-            Type::Integer(32) if atomic.is_some() => {
-                let scalar = atomic.expect("checked");
+        match self.type_at(ty)?.clone() {
+            Type::Integer(32) if let Some(scalar) = atomic => {
                 Ok((self.b.ty(TypeInner::Atomic(scalar)), 4, 4))
             }
             Type::Float | Type::Integer(1) | Type::Integer(32) => {
@@ -210,7 +212,9 @@ impl Lift<'_> {
             }
             Type::Array(n, e) => {
                 let (base, size, align) = self.naga_layout(e, atomic)?;
-                let stride = size.next_multiple_of(align.max(if size > 8 { 16 } else { size.max(4) }));
+                let stride = size
+                    .checked_next_multiple_of(align.max(if size > 8 { 16 } else { size.max(4) }))
+                    .map_or_else(|| self.refuse("an array element over 4294967295 bytes"), Ok)?;
                 let n32 = u32::try_from(n).map_err(|_| crate::error(self.at, "array length"))?;
                 let len = std::num::NonZeroU32::new(n32).map_or_else(|| self.refuse("an empty array"), Ok)?;
                 let t = self.b.ty(TypeInner::Array {
@@ -218,7 +222,18 @@ impl Lift<'_> {
                     size: ArraySize::Constant(len),
                     stride,
                 });
-                Ok((t, stride * n32, align))
+                let bytes = stride
+                    .checked_mul(n32)
+                    .filter(|bytes| *bytes <= MAX_MEMORY_BYTES)
+                    .map_or_else(
+                        || {
+                            self.refuse(format!(
+                                "an array of {n32} elements of {stride} bytes, where memory is at most {MAX_MEMORY_BYTES} bytes"
+                            ))
+                        },
+                        Ok,
+                    )?;
+                Ok((t, bytes, align))
             }
             Type::Struct { elements, .. } => {
                 let mut members = Vec::new();
@@ -226,20 +241,30 @@ impl Lift<'_> {
                 let mut struct_align = 4;
                 for (k, e) in elements.iter().enumerate() {
                     let (t, size, align) = self.naga_layout(*e, atomic)?;
-                    offset = offset.next_multiple_of(align);
+                    offset = offset
+                        .checked_next_multiple_of(align)
+                        .map_or_else(|| self.refuse("a structure over 4294967295 bytes"), Ok)?;
                     members.push(naga::StructMember {
                         name: Some(format!("m{k}")),
                         ty: t,
                         binding: None,
                         offset,
                     });
-                    offset += size;
+                    offset = offset
+                        .checked_add(size)
+                        .filter(|offset| *offset <= MAX_MEMORY_BYTES)
+                        .map_or_else(
+                            || self.refuse(format!("a structure over {MAX_MEMORY_BYTES} bytes")),
+                            Ok,
+                        )?;
                     struct_align = struct_align.max(align);
                 }
                 if members.is_empty() {
                     return self.refuse("an empty structure");
                 }
-                let span = offset.next_multiple_of(struct_align);
+                let span = offset
+                    .checked_next_multiple_of(struct_align)
+                    .map_or_else(|| self.refuse("a structure over 4294967295 bytes"), Ok)?;
                 let t = self.b.ty(TypeInner::Struct { members, span });
                 Ok((t, span, struct_align))
             }
@@ -250,22 +275,25 @@ impl Lift<'_> {
     /// A constant as an initialiser expression of the module.
     fn init_expr(&mut self, c: &Constant, ty: TypeId) -> Result<Handle<E>> {
         let (naga_ty, _) = self.naga_type(ty)?;
-        Ok(match (c, self.m.types[ty].clone()) {
+        Ok(match (c, self.type_at(ty)?.clone()) {
             (Constant::Integer(i), Type::Integer(1)) => {
                 self.b.global_expr(E::Literal(naga::Literal::Bool(i & 1 != 0)))
             }
-            (Constant::Integer(i), Type::Integer(32)) => {
-                self.b.global_expr(E::Literal(naga::Literal::U32(*i as u32)))
-            }
-            (Constant::Float(bits), Type::Float) => self
+            (Constant::Integer(i), Type::Integer(32)) => self
                 .b
-                .global_expr(E::Literal(naga::Literal::F32(f32::from_bits(*bits as u32)))),
+                .global_expr(E::Literal(naga::Literal::U32(super::low32(*i as u64)))),
+            (Constant::Float(bits), Type::Float) => {
+                self.b
+                    .global_expr(E::Literal(naga::Literal::F32(f32::from_bits(super::low32(
+                        *bits,
+                    )))))
+            }
             (Constant::Null | Constant::Undef, _) => self.b.global_expr(E::ZeroValue(naga_ty)),
             (Constant::Aggregate(items), Type::Array(_, element)) => {
                 let components = items
                     .iter()
-                    .map(|&id| match &self.m.values[id] {
-                        Value::Constant(c) => {
+                    .map(|&id| match self.m.values.get(id) {
+                        Some(Value::Constant(c)) => {
                             let c = c.clone();
                             self.init_expr(&c, element)
                         }
@@ -281,7 +309,7 @@ impl Lift<'_> {
                 let components = words
                     .iter()
                     .map(|&w| {
-                        let c = match self.m.types[element] {
+                        let c = match self.type_at(element)? {
                             Type::Float => Constant::Float(w),
                             _ => Constant::Integer(w as i64),
                         };
@@ -318,9 +346,11 @@ impl Lift<'_> {
         let name = self.m.name(v).unwrap_or("").to_owned();
         let root = if name.starts_with("dx.nothing") {
             Root::Nothing
-        } else if constant && address_space != 3 && init.is_some() {
-            let init_value = init.expect("checked");
-            let Value::Constant(c) = self.m.values[init_value].clone() else {
+        } else if constant
+            && address_space != 3
+            && let Some(init_value) = init
+        {
+            let Some(Value::Constant(c)) = self.m.values.get(init_value).cloned() else {
                 return self.refuse("a global whose initial value is not a constant");
             };
             let (ty, _) = self.naga_type(value_ty)?;
@@ -498,7 +528,7 @@ impl Lift<'_> {
                 let Lv::Pointer(p) = self.get(*pointer)? else {
                     return self.refuse("a load of something that is not a pointer");
                 };
-                let ty = result.map(|(_, t)| t).expect("a load has a result");
+                let ty = self.result_type(result)?;
                 let (kind, width) = self.value_shape(ty)?;
                 if matches!(p.root, Root::Nothing) {
                     let zero = self.b.lit_bits(kind, 0);
@@ -526,12 +556,11 @@ impl Lift<'_> {
                 let v = match self.memory_kind(&p.root) {
                     Some(memory) => self.b.bitcast_to(v, memory),
                     None => {
-                        let pointee = if *pointer < self.f.first {
-                            self.m.value_types.get(*pointer).copied()
-                        } else {
-                            self.f.local_types.get(*pointer - self.f.first).copied()
+                        let pointee = match pointer.checked_sub(self.f.first) {
+                            None => self.m.value_types.get(*pointer).copied(),
+                            Some(local) => self.f.local_types.get(local).copied(),
                         };
-                        match pointee.map(|t| self.m.types[t].clone()) {
+                        match pointee.and_then(|t| self.m.types.get(t).cloned()) {
                             Some(Type::Pointer(t)) => {
                                 let (kind, _) = self.value_shape(t)?;
                                 self.b.bitcast_to(v, kind)
@@ -543,7 +572,7 @@ impl Lift<'_> {
                 self.b.store(e, v);
                 Ok(())
             }
-            _ => unreachable!("a memory instruction"),
+            other => self.refuse(format!("{other:?} is no memory instruction")),
         }
     }
 }

@@ -13,20 +13,17 @@ use dxil_reader::module::{BinaryOp, CastOp, Constant, Instruction, Op, Type, Typ
 impl Lift<'_> {
     /// The lanes a shuffle's constant mask picks (`None` for an undefined lane).
     fn vector_mask(&self, mask: ValueId) -> Result<Vec<Option<usize>>> {
-        let value = if mask < self.f.first {
-            self.m.values.get(mask)
-        } else {
-            self.f.locals.get(mask - self.f.first)
-        };
-        let ty = if mask < self.f.first {
-            self.m.value_types.get(mask).copied()
-        } else {
-            self.f.local_types.get(mask - self.f.first).copied()
-        };
+        let value = self.value_ref(mask);
+        let ty = self.value_type_id(mask);
         let lanes = match ty.and_then(|t| self.m.types.get(t)) {
-            Some(Type::Vector(n, _)) => *n as usize,
+            Some(Type::Vector(n, _)) => usize::try_from(*n).unwrap_or(usize::MAX),
             _ => return self.refuse("a shuffle mask that is not a vector"),
         };
+        if lanes > 4 {
+            return self.refuse(format!(
+                "a shuffle mask of {lanes} lanes, where a vector has at most 4"
+            ));
+        }
         let lane = |item: Option<&Value>| match item {
             Some(Value::Constant(Constant::Integer(k))) => usize::try_from(*k).ok().map(Some),
             Some(Value::Constant(Constant::Null)) => Some(Some(0)),
@@ -36,18 +33,11 @@ impl Lift<'_> {
         let picks = match value {
             Some(Value::Constant(Constant::Null)) => vec![Some(Some(0)); lanes],
             Some(Value::Constant(Constant::Undef)) => vec![Some(None); lanes],
-            Some(Value::Constant(Constant::Aggregate(items))) => items
-                .iter()
-                .map(|&i| {
-                    lane(if i < self.f.first {
-                        self.m.values.get(i)
-                    } else {
-                        self.f.locals.get(i - self.f.first)
-                    })
-                })
-                .collect(),
+            Some(Value::Constant(Constant::Aggregate(items))) => {
+                items.iter().map(|&i| lane(self.value_ref(i))).collect()
+            }
             Some(Value::Constant(Constant::Data(words))) => {
-                words.iter().map(|&w| Some(Some(w as usize))).collect()
+                words.iter().map(|&w| usize::try_from(w).ok().map(Some)).collect()
             }
             _ => return self.refuse("a shuffle mask that is not constant"),
         };
@@ -76,7 +66,10 @@ impl Lift<'_> {
                 }
                 Constant::Data(words) => {
                     let k = self.kind_of_type(element)?;
-                    words.iter().map(|&w| self.b.lit_bits(k, w as u32)).collect()
+                    words
+                        .iter()
+                        .map(|&w| self.b.lit_bits(k, super::low32(w)))
+                        .collect()
                 }
                 other => return self.refuse(format!("a vector constant of this form ({other:?})")),
             };
@@ -89,14 +82,28 @@ impl Lift<'_> {
             Constant::Null | Constant::Undef if self.is_wide_type(ty) => self.wide_constant(0),
             Constant::Integer(i) => match self.m.types.get(ty) {
                 Some(Type::Integer(1)) => Lv::Scalar(self.b.lit_b(i & 1 != 0)),
-                Some(Type::Integer(32)) => Lv::Scalar(self.b.lit_u(*i as u32)),
-                Some(Type::Integer(w @ 2..=31)) => Lv::Scalar(self.b.lit_u(*i as u32 & ((1u32 << w) - 1))),
-                _ => return kind(self).map(|_| unreachable!("an integer constant of another type")),
+                Some(Type::Integer(32)) => Lv::Scalar(self.b.lit_u(super::low32(*i as u64))),
+                Some(Type::Integer(w @ 2..=31)) => {
+                    let mask = 1u32.checked_shl(*w).unwrap_or(0).wrapping_sub(1);
+                    Lv::Scalar(self.b.lit_u(super::low32(*i as u64) & mask))
+                }
+                other => {
+                    return self.refuse(format!(
+                        "an integer constant of a type that holds none ({other:?}): expected an integer of 1 to 32 bits"
+                    ));
+                }
             },
             Constant::Float(bits) => match self.m.types.get(ty) {
-                Some(Type::Float) => Lv::Scalar(self.b.lit_f(f32::from_bits(*bits as u32))),
-                Some(Type::Half) => Lv::Scalar(self.b.lit_f(f16::from_bits(*bits as u16).to_f32())),
-                _ => return kind(self).map(|_| unreachable!("a float constant of another type")),
+                Some(Type::Float) => Lv::Scalar(self.b.lit_f(f32::from_bits(super::low32(*bits)))),
+                Some(Type::Half) => Lv::Scalar(
+                    self.b
+                        .lit_f(f16::from_bits(u16::try_from(bits & 0xffff).unwrap_or(0)).to_f32()),
+                ),
+                other => {
+                    return self.refuse(format!(
+                        "a float constant of a type that holds none ({other:?}): expected a float or a half"
+                    ));
+                }
             },
             Constant::Null | Constant::Undef => match self.m.types.get(ty) {
                 Some(Type::Float | Type::Half | Type::Integer(_)) => {
@@ -155,9 +162,15 @@ impl Lift<'_> {
 
     /// A module value or a function value, translated where it is read.
     pub(crate) fn get(&mut self, v: ValueId) -> Result<Lv> {
+        let (Some(value), Some(ty)) = (self.value_ref(v), self.value_type_id(v)) else {
+            return self.refuse(format!(
+                "value {v}, where the module has {} and the function {} of its own",
+                self.m.values.len(),
+                self.f.locals.len()
+            ));
+        };
         if v < self.f.first {
-            let ty = self.m.value_types[v];
-            return match &self.m.values[v] {
+            return match value {
                 Value::Constant(c) => {
                     let c = c.clone();
                     self.constant(&c, ty)
@@ -166,12 +179,11 @@ impl Lift<'_> {
                 other => self.refuse(format!("a module value that is {other:?}")),
             };
         }
-        let i = v - self.f.first;
-        let ty = self.f.local_types[i];
-        match self.slots[i].clone() {
+        let i = self.local_index(v)?;
+        match self.slots.get(i).cloned().flatten() {
             Some(Slot::Value(lv)) => Ok(lv),
-            Some(Slot::Stored(stored)) => Ok(self.load_stored(&stored)),
-            None => match &self.f.locals[i] {
+            Some(Slot::Stored(stored)) => self.load_stored(&stored),
+            None => match value {
                 dxil_reader::module::Value::Constant(c) => {
                     let c = c.clone();
                     self.constant(&c, ty)
@@ -197,22 +209,21 @@ impl Lift<'_> {
         Ok(self.b.bitcast_to(s, Kind::U))
     }
 
-    fn load_stored(&mut self, s: &Stored) -> Lv {
-        match s {
+    fn load_stored(&mut self, s: &Stored) -> Result<Lv> {
+        Ok(match s {
             Stored::Scalar { local, kind, width } => {
                 let p = self.b.local_ptr(*local);
                 Lv::Scalar(self.b.load(p, *kind, *width))
             }
-            Stored::Agg(items) => Lv::Agg(items.iter().map(|s| self.load_stored(s)).collect()),
+            Stored::Agg(items) => Lv::Agg(items.iter().map(|s| self.load_stored(s)).collect::<Result<_>>()?),
             Stored::Plain(lv) => lv.clone(),
             Stored::Handle {
                 class,
                 resource,
                 element,
             } => {
-                let element = self.load_stored(element);
-                let Lv::Scalar(element) = element else {
-                    unreachable!("a handle's element is stored as a scalar")
+                let Lv::Scalar(element) = self.load_stored(element)? else {
+                    return self.refuse("a handle whose element is not a scalar");
                 };
                 Lv::Handle {
                     class: *class,
@@ -220,7 +231,7 @@ impl Lift<'_> {
                     element: Some(element),
                 }
             }
-        }
+        })
     }
 
     fn store_new(&mut self, lv: &Lv, hint: &str) -> Result<Stored> {
@@ -263,14 +274,16 @@ impl Lift<'_> {
 
     /// Define a function value: kept as the expressions of its block, or in locals when another block reads it.
     pub(crate) fn define(&mut self, v: ValueId, lv: Lv) -> Result<()> {
-        let i = v - self.f.first;
-        let slot = if self.cross[i] {
+        let i = self.local_index(v)?;
+        let slot = if self.cross.get(i) == Some(&true) {
             let stored = self.store_new(&lv, &format!("v{i}"))?;
             Slot::Stored(stored)
         } else {
             Slot::Value(lv)
         };
-        self.slots[i] = Some(slot);
+        if let Some(entry) = self.slots.get_mut(i) {
+            *entry = Some(slot);
+        }
         Ok(())
     }
 
@@ -281,7 +294,8 @@ impl Lift<'_> {
                 continue;
             };
             self.at = inst.at;
-            let name = format!("phi{}", v - self.f.first);
+            let local = self.local_index(v)?;
+            let name = format!("phi{local}");
             let t = self.b.ty_of(Kind::U, 1);
             let stored = if self.is_wide_type(ty) {
                 let (lo, hi) = (
@@ -304,7 +318,9 @@ impl Lift<'_> {
                     width: 1,
                 }
             };
-            self.slots[v - self.f.first] = Some(Slot::Stored(stored));
+            if let Some(entry) = self.slots.get_mut(local) {
+                *entry = Some(Slot::Stored(stored));
+            }
         }
         Ok(())
     }
@@ -312,11 +328,13 @@ impl Lift<'_> {
     /// Store the incoming values of the phis of block `to` for the edge from block `from`.
     pub(crate) fn phi_copies(&mut self, from: usize, to: usize) -> Result<()> {
         let mut pending = Vec::new();
-        for &i in &self.blocks[to].clone() {
-            let inst = &self.f.instructions[i];
+        for i in self.block(to)?.to_vec() {
+            let inst = self.instruction_at(i)?;
             let Op::Phi { incoming } = &inst.op else { break };
             self.at = inst.at;
-            let (v, _) = inst.result.expect("a phi has a result");
+            let Some((v, _)) = inst.result else {
+                return self.refuse("a phi without a result");
+            };
             let Some((value, _)) = incoming.iter().find(|(_, b)| *b == from) else {
                 return self.refuse("a phi without a value for one of its predecessors");
             };
@@ -329,7 +347,7 @@ impl Lift<'_> {
             pending.push((v, value));
         }
         for (v, values) in pending {
-            let locals = match self.slots[v - self.f.first].clone() {
+            let locals = match self.slots.get(self.local_index(v)?).cloned().flatten() {
                 Some(Slot::Stored(Stored::Scalar { local, kind, .. })) => vec![(local, kind)],
                 Some(Slot::Stored(Stored::Agg(words))) => {
                     let mut locals = Vec::new();
@@ -370,11 +388,7 @@ impl Lift<'_> {
             Op::Binary { op, lhs, rhs } => {
                 let (mut a, mut b) = (self.scalar(*lhs)?, self.scalar(*rhs)?);
                 // an integer operation on a value carried as a float (memory of one kind read as another) is on its bits
-                let lhs_type = if *lhs < self.f.first {
-                    self.m.value_types.get(*lhs).copied()
-                } else {
-                    self.f.local_types.get(*lhs - self.f.first).copied()
-                };
+                let lhs_type = self.value_type_id(*lhs);
                 let integer = matches!(lhs_type.and_then(|t| self.m.types.get(t)), Some(Type::Integer(_)));
                 if integer && a.kind == Kind::F {
                     a = self.b.bitcast_to(a, Kind::U);
@@ -389,7 +403,7 @@ impl Lift<'_> {
             Op::Cast { op, value }
                 if self.is_wide(*value) || result.is_some_and(|(_, t)| self.is_wide_type(t)) =>
             {
-                let to = result.map(|(_, t)| t).expect("a cast has a result");
+                let to = self.result_type(result)?;
                 let r = self.cast_wide(*op, *value, to)?;
                 self.define_result(result, r)
             }
@@ -401,7 +415,7 @@ impl Lift<'_> {
                     return self.define_result(result, Lv::Pointer(p));
                 }
                 let v = self.scalar(*value)?;
-                let to = result.map(|(_, t)| t).expect("a cast has a result");
+                let to = self.result_type(result)?;
                 let from = self.narrow_width(*value);
                 let r = if from.is_some() || self.narrow_width_of_type(to).is_some() {
                     self.cast_narrow(*op, v, from, to)?
@@ -452,7 +466,7 @@ impl Lift<'_> {
             Op::ExtractElement { vector, index } => {
                 let v = self.scalar(*vector)?;
                 let r = match const_int(self.m, self.f, *index) {
-                    Some(k) if (0..i64::from(v.width)).contains(&k) => self.b.lane(v, k as u8),
+                    Some(k) if (0..i64::from(v.width)).contains(&k) => self.b.lane(v, super::lane_u8(k)),
                     Some(_) => return self.refuse("a vector lane outside the vector"),
                     None => {
                         let at = self.uint(*index)?;
@@ -476,7 +490,9 @@ impl Lift<'_> {
                 let lanes = match const_int(self.m, self.f, *index) {
                     Some(k) if (0..i64::from(v.width)).contains(&k) => {
                         let mut lanes = lanes;
-                        lanes[k as usize] = new;
+                        if let Some(lane) = usize::try_from(k).ok().and_then(|k| lanes.get_mut(k)) {
+                            *lane = new;
+                        }
                         lanes
                     }
                     Some(_) => return self.refuse("a vector lane outside the vector"),
@@ -484,7 +500,7 @@ impl Lift<'_> {
                         let at = self.uint(*index)?;
                         let mut replaced = Vec::new();
                         for (k, lane) in lanes.into_iter().enumerate() {
-                            let here = self.b.lit_u(k as u32);
+                            let here = self.b.lit_u(super::low32(k as u64));
                             let is_here = self.b.binary(Bo::Equal, at, here);
                             replaced.push(self.b.select(is_here, new, lane));
                         }
@@ -503,9 +519,9 @@ impl Lift<'_> {
                 let mut lanes = Vec::new();
                 for pick in picks {
                     match pick {
-                        Some(k) if k < source.len() => lanes.push(source[k]),
+                        Some(k) if k < source.len() => lanes.extend(source.get(k)),
                         // an undefined lane may be anything
-                        None => lanes.push(source[0]),
+                        None => lanes.extend(source.first()),
                         Some(_) => return self.refuse("a shuffle that picks a lane beyond both vectors"),
                     }
                 }
@@ -516,7 +532,9 @@ impl Lift<'_> {
                 let mut lv = self.get(*aggregate)?;
                 for &k in indices {
                     lv = match lv {
-                        Lv::Agg(mut items) if (k as usize) < items.len() => items.swap_remove(k as usize),
+                        Lv::Agg(mut items) if usize::try_from(k).is_ok_and(|k| k < items.len()) => {
+                            items.swap_remove(usize::try_from(k).unwrap_or(0))
+                        }
                         _ => return self.refuse("extractvalue of something that is not an aggregate"),
                     };
                 }
@@ -535,10 +553,12 @@ impl Lift<'_> {
                             *slot = new;
                             true
                         }
-                        (Lv::Agg(items), [k, rest @ ..]) => match items.get_mut(*k as usize) {
-                            Some(item) => put(item, rest, new),
-                            None => false,
-                        },
+                        (Lv::Agg(items), [k, rest @ ..]) => {
+                            match usize::try_from(*k).ok().and_then(|k| items.get_mut(k)) {
+                                Some(item) => put(item, rest, new),
+                                None => false,
+                            }
+                        }
                         _ => false,
                     }
                 }
@@ -685,12 +705,7 @@ impl Lift<'_> {
     /// sibling, 4 for a bit-field cut by the compiler), which is carried as the 32-bit unsigned integer of its bits,
     /// zero-extended.
     pub(super) fn narrow_width(&self, v: ValueId) -> Option<u32> {
-        let ty = if v < self.f.first {
-            self.m.value_types.get(v).copied()
-        } else {
-            self.f.local_types.get(v - self.f.first).copied()
-        };
-        self.narrow_width_of_type(ty?)
+        self.narrow_width_of_type(self.value_type_id(v)?)
     }
 
     pub(super) fn narrow_width_of_type(&self, ty: TypeId) -> Option<u32> {
@@ -703,14 +718,14 @@ impl Lift<'_> {
     /// The low `width` bits of a 32-bit value, zero-extended: a narrow integer's carried form.
     pub(super) fn mask_narrow(&mut self, v: Val, width: u32) -> Val {
         let v = self.b.bitcast_to(v, Kind::U);
-        let mask = self.b.lit_u((1u32 << width) - 1);
+        let mask = self.b.lit_u(1u32.checked_shl(width).unwrap_or(0).wrapping_sub(1));
         self.b.binary(Bo::And, v, mask)
     }
 
     /// The sign extension of a carried narrow integer to 32 bits, as the same bits.
     pub(super) fn sign_extend_narrow(&mut self, v: Val, width: u32) -> Val {
         let v = self.b.bitcast_to(v, Kind::U);
-        let shift = self.b.lit_u(32 - width);
+        let shift = self.b.lit_u(32u32.saturating_sub(width));
         let high = self.b.binary(Bo::ShiftLeft, v, shift);
         let signed = self.b.bitcast(high, Kind::I);
         let back = self.b.binary(Bo::ShiftRight, signed, shift);

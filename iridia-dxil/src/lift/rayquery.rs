@@ -39,7 +39,8 @@ impl Lift<'_> {
 
     /// `AllocateRayQuery(flags)`: a ray query object; the flags it is declared with join the ones it is traced with.
     pub(super) fn allocate_ray_query(&mut self, inst: &Instruction, args: &[ValueId]) -> Result<()> {
-        let Some(flags) = const_int(self.m, self.f, args[1]).and_then(|f| u32::try_from(f).ok()) else {
+        let Some(flags) = const_int(self.m, self.f, self.arg(args, 1)?).and_then(|f| u32::try_from(f).ok())
+        else {
             return self.refuse("a ray query declared with flags that are not constant");
         };
         self.notes
@@ -54,32 +55,32 @@ impl Lift<'_> {
     /// The ray query operations: `TraceRayInline` (179), `Proceed` (180), `Abort` (181), the confirmed hits (182, 183)
     /// and the state of the candidate or committed intersection (184 to 215).
     pub(super) fn ray_query_op(&mut self, inst: &Instruction, code: u64, args: &[ValueId]) -> Result<()> {
-        let (local, declared, ray) = self.ray_query(args[1])?;
+        let (local, declared, ray) = self.ray_query(self.arg(args, 1)?)?;
         let query = self.b.local_ptr(local);
         match code {
             179 => {
-                let (_, structure) = self.handle_expr(args[2], 0)?;
-                let flags = self.scalar(args[3])?;
+                let (_, structure) = self.handle_expr(self.arg(args, 2)?, 0)?;
+                let flags = self.scalar(self.arg(args, 3)?)?;
                 let mut flags = self.b.bitcast_to(flags, Kind::U);
                 // the flags the query is declared with join the ones it is traced with
                 if declared != 0 {
                     let declared = self.b.lit_u(declared);
                     flags = self.b.binary(naga::BinaryOperator::InclusiveOr, flags, declared);
                 }
-                let mask = self.scalar(args[4])?;
+                let mask = self.scalar(self.arg(args, 4)?)?;
                 let mask = self.b.bitcast_to(mask, Kind::U);
                 let vec3 = |lift: &mut Self, first: usize| -> Result<Val> {
                     let parts = [
-                        lift.float(args[first])?,
-                        lift.float(args[first + 1])?,
-                        lift.float(args[first + 2])?,
+                        lift.float(lift.arg(args, first)?)?,
+                        lift.float(lift.arg(args, first.saturating_add(1))?)?,
+                        lift.float(lift.arg(args, first.saturating_add(2))?)?,
                     ];
                     Ok(lift.b.compose(&parts))
                 };
                 let origin = vec3(self, 5)?;
-                let tmin = self.float(args[8])?;
+                let tmin = self.float(self.arg(args, 8)?)?;
                 let direction = vec3(self, 9)?;
-                let tmax = self.float(args[12])?;
+                let tmax = self.float(self.arg(args, 12)?)?;
                 let ty = self.b.module.generate_ray_desc_type();
                 let descriptor = self.b.app(E::Compose {
                     ty,
@@ -135,7 +136,7 @@ impl Lift<'_> {
                 Ok(())
             }
             183 => {
-                let hit = self.float(args[2])?;
+                let hit = self.float(self.arg(args, 2)?)?;
                 self.b.push(Statement::RayQuery {
                     query,
                     fun: RayQueryFunction::GenerateIntersection { hit_t: hit.expr },
@@ -168,7 +169,8 @@ impl Lift<'_> {
             width,
         };
         let component = |lift: &Self, n: usize| -> Result<u32> {
-            const_int(lift.m, lift.f, args[n])
+            args.get(n)
+                .and_then(|&a| const_int(lift.m, lift.f, a))
                 .and_then(|c| u32::try_from(c).ok())
                 .map_or_else(
                     || lift.refuse("a ray query component read at a computed index"),
@@ -192,7 +194,7 @@ impl Lift<'_> {
                     Kind::F,
                     3,
                 );
-                self.b.lane(vector, n as u8)
+                self.b.lane(vector, super::lane_u8(n))
             }
             // the status of the committed hit: nothing (0), a triangle (1) or a procedural primitive (2), as naga's kind
             184 => field(self, KIND, Kind::U, 1),
@@ -208,7 +210,7 @@ impl Lift<'_> {
             193 | 194 => {
                 let n = component(self, 2)?;
                 let pair = field(self, BARYCENTRICS, Kind::F, 2);
-                self.b.lane(pair, n as u8)
+                self.b.lane(pair, super::lane_u8(n))
             }
             199 | 200 => field(self, T, Kind::F, 1),
             201 | 207 => field(self, INSTANCE_INDEX, Kind::U, 1),
@@ -244,7 +246,7 @@ impl Lift<'_> {
                 ));
             }
         };
-        let ty = inst.result.map(|(_, t)| t).expect("a call has a result");
+        let ty = self.result_type(inst.result)?;
         let kind = self.kind_of_type(ty)?;
         let r = self.b.bitcast_to(value, kind);
         self.define_result(inst.result, Lv::Scalar(r))

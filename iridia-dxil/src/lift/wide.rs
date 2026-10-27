@@ -23,11 +23,7 @@ impl Lift<'_> {
 
     /// Whether a value is a 64-bit integer.
     pub(super) fn is_wide(&self, v: ValueId) -> bool {
-        let ty = if v < self.f.first {
-            self.m.value_types.get(v).copied()
-        } else {
-            self.f.local_types.get(v - self.f.first).copied()
-        };
+        let ty = self.value_type_id(v);
         ty.is_some_and(|t| self.is_wide_type(t))
     }
 
@@ -50,7 +46,10 @@ impl Lift<'_> {
 
     /// The constant of 64 bits.
     pub(super) fn wide_constant(&mut self, bits: u64) -> Lv {
-        let (lo, hi) = (self.b.lit_u(bits as u32), self.b.lit_u((bits >> 32) as u32));
+        let (lo, hi) = (
+            self.b.lit_u(super::low32(bits)),
+            self.b.lit_u(super::low32(bits >> 32)),
+        );
         self.pair((lo, hi))
     }
 
@@ -91,15 +90,15 @@ impl Lift<'_> {
                 (lo, self.b.binary(Bo::Add, carried, cross))
             }
             BinaryOp::Shl | BinaryOp::LShr | BinaryOp::AShr => self.shift_wide(op, a, b.0),
-            BinaryOp::UDiv => self.divide_wide(a, b).0,
-            BinaryOp::URem => self.divide_wide(a, b).1,
-            BinaryOp::SDiv | BinaryOp::SRem => self.signed_divide_wide(op == BinaryOp::SRem, a, b),
+            BinaryOp::UDiv => self.divide_wide(a, b)?.0,
+            BinaryOp::URem => self.divide_wide(a, b)?.1,
+            BinaryOp::SDiv | BinaryOp::SRem => self.signed_divide_wide(op == BinaryOp::SRem, a, b)?,
         })
     }
 
     /// Unsigned division of 64-bit integers by restoring long division, a loop of 64 passes: the quotient and the
     /// remainder; a zero divisor gives all ones for both, as D3D's 32-bit division does.
-    fn divide_wide(&mut self, n: Wide, d: Wide) -> (Wide, Wide) {
+    fn divide_wide(&mut self, n: Wide, d: Wide) -> Result<(Wide, Wide)> {
         let u = self.b.ty_of(Kind::U, 1);
         let q = [self.b.local("q_lo", u), self.b.local("q_hi", u)];
         let r = [self.b.local("r_lo", u), self.b.local("r_hi", u)];
@@ -123,13 +122,9 @@ impl Lift<'_> {
         let doubled = self.shift_wide(BinaryOp::Shl, rest, one);
         let doubled = (self.b.binary(Bo::InclusiveOr, doubled.0, bit), doubled.1);
         // the divisor goes in when it is not above the running remainder
-        let below = self
-            .compare_wide(36, doubled, d)
-            .expect("a predicate of the table");
+        let below = self.compare_wide(36, doubled, d)?;
         let fits = self.b.unary(naga::UnaryOperator::LogicalNot, below);
-        let reduced = self
-            .binary_wide(BinaryOp::Sub, doubled, d)
-            .expect("a subtraction");
+        let reduced = self.binary_wide(BinaryOp::Sub, doubled, d)?;
         let rest = self.select_wide(fits, reduced, doubled);
         let quotient = (load(self, q[0]), load(self, q[1]));
         let place = self.shift_wide(BinaryOp::Shl, (one, zero), k);
@@ -158,37 +153,34 @@ impl Lift<'_> {
             let high = self.b.binary(Bo::Equal, d.1, zero);
             self.b.binary(Bo::LogicalAnd, low, high)
         };
-        (
+        Ok((
             self.select_wide(no_divisor, (ones, ones), quotient),
             self.select_wide(no_divisor, (ones, ones), rest),
-        )
+        ))
     }
 
     /// Signed division of 64-bit integers by their magnitudes (the quotient is negative where the signs differ, the
     /// remainder takes the dividend's sign).
-    fn signed_divide_wide(&mut self, remainder: bool, a: Wide, b: Wide) -> Wide {
+    fn signed_divide_wide(&mut self, remainder: bool, a: Wide, b: Wide) -> Result<Wide> {
         let zero = self.b.lit_u(0);
         let negative = |lift: &mut Self, v: Wide| {
             let signed = lift.b.bitcast(v.1, Kind::I);
             let zero = lift.b.lit_i(0);
             lift.b.binary(Bo::Less, signed, zero)
         };
-        let negate = |lift: &mut Self, v: Wide| {
-            lift.binary_wide(BinaryOp::Sub, (zero, zero), v)
-                .expect("a subtraction")
-        };
+        let negate = |lift: &mut Self, v: Wide| lift.binary_wide(BinaryOp::Sub, (zero, zero), v);
         let (a_negative, b_negative) = (negative(self, a), negative(self, b));
-        let (a_negated, b_negated) = (negate(self, a), negate(self, b));
+        let (a_negated, b_negated) = (negate(self, a)?, negate(self, b)?);
         let magnitude_a = self.select_wide(a_negative, a_negated, a);
         let magnitude_b = self.select_wide(b_negative, b_negated, b);
-        let (quotient, rest) = self.divide_wide(magnitude_a, magnitude_b);
+        let (quotient, rest) = self.divide_wide(magnitude_a, magnitude_b)?;
         let (result, flip) = if remainder {
             (rest, a_negative)
         } else {
             (quotient, self.b.binary(Bo::NotEqual, a_negative, b_negative))
         };
-        let negated = negate(self, result);
-        self.select_wide(flip, negated, result)
+        let negated = negate(self, result)?;
+        Ok(self.select_wide(flip, negated, result))
     }
 
     /// 1 where `condition` holds, else 0.
