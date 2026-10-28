@@ -190,21 +190,22 @@ fn an_instruction_with_another_operand_count_is_refused() {
         let at = instruction(w, "mov");
         w[at] = (w[at] & !0x7ff) | 50;
     });
-    assert!(refusal(&bytes).contains("mad: 2 operands, where the instruction takes 4"));
+    assert!(refusal(&bytes).contains("mad has 2 operands, its format is 1 destinations and 3 sources"));
     let bytes = edited("tessellation.vs.dxbc", |w| {
         let at = instruction(w, "mul");
         w[at] = (w[at] & !0x7ff) | 54;
     });
-    assert!(refusal(&bytes).contains("mov: 3 operands, where the instruction takes 2"));
+    assert!(refusal(&bytes).contains("mov has 3 operands, its format is 1 destinations and 1 sources"));
 }
 
 #[test]
 fn an_opcode_the_lifter_does_not_carry_is_refused_with_its_number() {
     let bytes = edited("tessellation.vs.dxbc", |w| {
         let at = instruction(w, "mov");
-        w[at] = (w[at] & !0x7ff) | 228;
+        w[at] = (w[at] & !0x7ff) | 199;
     });
-    assert!(refusal(&bytes).contains("opcode 228 is not lifted"));
+    // `dmov` takes two operands, as the `mov` it replaces: the reader accepts the instruction and the lifter does not carry it
+    assert!(refusal(&bytes).contains("opcode 199 is not lifted"));
 }
 
 #[test]

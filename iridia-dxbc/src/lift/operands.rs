@@ -18,8 +18,8 @@ pub(super) fn of_four<T: Copy + Default>(four: [T; 4], lane: u8) -> T {
     four.get(usize::from(lane)).copied().unwrap_or_default()
 }
 
-/// An instruction's operand by position. `Lift::instruction` checks the operand count against the opcode's (`arity`) before
-/// any is read, so the error is the guard of a lookup that cannot miss, not a case of the input.
+/// An instruction's operand by position. `dxbc_reader::decode` checks the operand count against the opcode's format
+/// before any is read, so the error is the guard of a lookup that cannot miss, not a case of the input.
 pub(super) trait OperandAt {
     fn operand(&self, n: usize) -> Result<&Operand>;
 }

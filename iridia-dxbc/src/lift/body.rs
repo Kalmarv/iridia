@@ -89,15 +89,7 @@ impl Lift<'_> {
 
     fn instruction(&mut self, ins: &Instruction, name: &str) -> Result<()> {
         use Bo::*;
-        let ops = &ins.operands;
-        // the operands are read by position below: the count is the opcode's, checked once here
-        match crate::arity::operands(name) {
-            None => return self.refuse(format!("opcode {} is not lifted", ins.opcode)),
-            Some(n) if ops.len() != n => {
-                return self.refuse(format!("{} operands, where the instruction takes {n}", ops.len()));
-            }
-            Some(_) => {}
-        }
+        // the operands are read by position below: `dxbc_reader::decode` has checked their count against the opcode's format
         match name {
             "nop" => {}
             "mov" => {
@@ -660,7 +652,7 @@ impl Lift<'_> {
                 return self.refuse("append and consume buffer counters are not lifted");
             }
             n if n.starts_with("atomic_") || n.starts_with("imm_atomic_") => self.atomic_instruction(ins)?,
-            _ => return self.refuse("the instruction is not lifted"),
+            _ => return self.refuse(format!("opcode {} is not lifted", ins.opcode)),
         }
         Ok(())
     }

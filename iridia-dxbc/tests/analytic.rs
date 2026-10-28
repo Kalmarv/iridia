@@ -102,9 +102,10 @@ fn container_with(
     undeclared_inputs: &[(&str, u32, u32, u32, u8)],
     undeclared_outputs: &[(&str, u32, u32, u32, u8)],
 ) -> Vec<u8> {
-    let decoded = decode(words).unwrap();
+    // a program the decoder refuses has no declarations to state in a signature
+    let declarations = decode(words).map(|d| d.declarations).unwrap_or_default();
     let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
-    for d in &decoded.declarations {
+    for d in &declarations {
         match &d.kind {
             Declared::Input { operand, .. } if operand.register == dxbc_reader::Register::Input => {
                 let register = operand.indices[0].base;
@@ -705,13 +706,17 @@ fn a_program_cut_short_is_refused() {
     }
 }
 
-/// An instruction with fewer operands than its opcode takes is refused naming the opcode (these opcodes are all in the
-/// lift: it is the operand count that is wrong), never lifted from what the words happen to hold.
+/// An instruction with fewer operands than its opcode takes is refused naming the opcode and its format (these opcodes are
+/// all in the lift: it is the operand count that is wrong), never lifted from what the words happen to hold. The decoder
+/// refuses it, before the lifter reads an operand.
 #[test]
 fn an_instruction_with_the_wrong_operand_count_is_refused_by_name() {
-    for (op, name) in [(76, "switch"), (81, "umul"), (109, "gather4"), (134, "countbits")] {
+    for (op, name) in [(45, "ld"), (81, "umul"), (109, "gather4"), (134, "countbits")] {
         let error = lift(&container(&program(op, &[]))).unwrap_err().to_string();
-        assert!(error.contains(&format!("{name}: ")), "{error}");
+        assert!(
+            error.contains(&format!("{name} has ")) && error.contains("its format is"),
+            "{error}"
+        );
     }
 }
 

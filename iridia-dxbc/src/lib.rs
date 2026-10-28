@@ -54,7 +54,6 @@
 #[doc = include_str!("../README.md")]
 struct ReadmeExamples;
 
-mod arity;
 mod lift;
 mod reflection;
 pub use lift::{LIFTER_VERSION, lift, lift_with};
