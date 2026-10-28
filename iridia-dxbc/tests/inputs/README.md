@@ -11,6 +11,8 @@ What this crate's real-data tests read, as tests/inputs/mod.rs declares them: th
 | key | gate | about | source |
 | --- | --- | --- | --- |
 | `tools.fxc` | - | Microsoft's `fxc` shader compiler executable | third-party: Microsoft's fxc |
+| `tools.vkd3d_compiler` | - | vkd3d's `vkd3d-compiler` program (its Shader Model 4 and 5 reader and disassembler), with vkd3d's command line | third-party: vkd3d (LGPL-2.1-or-later), built from source and run as a program, never linked |
+| `tools.vkd3d_dxbc` | - | vkd3d's `vkd3d-dxbc` program (its container reader, digest check and writer), with vkd3d's command line | third-party: vkd3d (LGPL-2.1-or-later), built from source and run as a program, never linked |
 | `tools.warp` | yes | the WARP oracle program that runs a shader on Microsoft's WARP rasterizer | third-party: Microsoft's WARP rasterizer, through a thin host program that is not part of this repository |
 | `scratch.root` | - | where real-data tests write their outputs (the OS temporary folder when unset) | - |
 
@@ -37,6 +39,7 @@ What this crate's real-data tests read, as tests/inputs/mod.rs declares them: th
 
 | key | about |
 | --- | --- |
+| `vkd3d.limit` | how many containers of a corpus the vkd3d comparison reads (200 spread evenly by default; `all` reads every one) |
 | `shader.diff_limit` | how many programs of a corpus the WARP comparison runs |
 | `shader.warp_all` | `1` compares every program the WARP oracle can bind |
 

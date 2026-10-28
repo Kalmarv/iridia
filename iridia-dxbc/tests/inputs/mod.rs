@@ -21,6 +21,16 @@ primase_testdata::inputs! {
             source: "third-party: Microsoft's fxc",
             gate: false,
         },
+        Vkd3dCompiler = "vkd3d_compiler" {
+            about: "vkd3d's `vkd3d-compiler` program (its Shader Model 4 and 5 reader and disassembler), with vkd3d's command line",
+            source: "third-party: vkd3d (LGPL-2.1-or-later), built from source and run as a program, never linked",
+            gate: false,
+        },
+        Vkd3dDxbc = "vkd3d_dxbc" {
+            about: "vkd3d's `vkd3d-dxbc` program (its container reader, digest check and writer), with vkd3d's command line",
+            source: "third-party: vkd3d (LGPL-2.1-or-later), built from source and run as a program, never linked",
+            gate: false,
+        },
         Warp = "warp" {
             about: "the WARP oracle program that runs a shader on Microsoft's WARP rasterizer",
             source: "third-party: Microsoft's WARP rasterizer, through a thin host program that is not part of this repository",
@@ -82,6 +92,7 @@ primase_testdata::inputs! {
         },
     }
     debug {
+        "vkd3d.limit" => "how many containers of a corpus the vkd3d comparison reads (200 spread evenly by default; `all` reads every one)",
         "shader.diff_limit" => "how many programs of a corpus the WARP comparison runs",
         "shader.warp_all" => "`1` compares every program the WARP oracle can bind",
     }

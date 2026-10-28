@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- `iridia-dxbc`: the per-opcode operand counts the lifter checked itself (`arity.rs`) are `dxbc-reader`'s operand formats now,
+  which `dxbc_reader::decode` checks for every instruction; a program whose instruction has another count is refused by
+  the decoder, naming the word, instead of by the lifter. Depends on the `dx` revision with the formats and the container
+  writer.
+- `iridia-d3d9`: vertex programs lift `slt`, `sge`, `mova` (the address register `a0`, rounded to the nearest integer, a
+  half away from zero as Microsoft's reference rasterizer rounds it) and float constants addressed relative to it
+  (`c[a0.x + N]`, zero outside the 256 constant registers, a `def` constant returned for the register it names); `sincos`
+  lifts in both stages. **Breaking:** `Source` has a new field `relative` and `Register` a new variant `Address`. The
+  1,099 vertex and 6,207 pixel programs of Shaun White Skateboarding's three SDB2 bundles carry `vs_3_0` and `ps_3_0`
+  only, no Shader Model 1 or 2 program (no corpus we hold carries one), and every one lifts and equals Microsoft's disassembly
+  line for line (`iridia-d3d9/tests/corpus.rs`).
+- Tests: `iridia-dxbc/tests/vkd3d_oracle.rs` compares the containers, signatures and instruction mnemonics of the games'
+  Shader Model 4 and 5 programs with vkd3d's `vkd3d-dxbc` and `vkd3d-compiler` run as programs; `operand_format.rs` checks the
+  operand formats against the programs; `container_digest.rs` (both crates) now also writes every container back byte for byte.
+
 ## 0.3.0 (2026-10-28)
 
 - `iridia::emit::wgsl_for` drops the types its pipeline changes leave unused before writing: a sampler heap written as

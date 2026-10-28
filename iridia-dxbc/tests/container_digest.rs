@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! The container digest over the games' own Shader Model 4 and 5 containers: for every container of a corpus,
-//! `dxcontainer::checksum` equals the digest the compiler stored, the stored digest is not all zero, and the part
-//! directory is read to the exact end. Needs the corpus oracle set's `sekiro/shaders`, `riders/shaders` or
+//! `dxcontainer::checksum` equals the digest the compiler stored, the stored digest is not all zero, the part
+//! directory is read to the exact end and `dxcontainer::serialize` writes the container again byte for byte. Needs the corpus oracle set's `sekiro/shaders`, `riders/shaders` or
 //! `sledding/shaders` (each a folder, searched recursively, of containers as the game ships them).
 mod inputs;
 
@@ -23,10 +23,22 @@ fn digests(game: Game) {
             "{}: the digest differs from the stored one",
             path.display()
         );
-        dxcontainer::chunks(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let parts = dxcontainer::chunks(&bytes).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        // the writer gives the container back byte for byte: the parts in their order, unpadded as stored, the digest
+        // it computes equal to the stored one; and a zeroed digest is repaired to the stored one
+        assert_eq!(
+            dxcontainer::serialize(&parts).unwrap(),
+            bytes,
+            "{}: re-serialized differently",
+            path.display()
+        );
+        let mut unsigned = bytes.clone();
+        unsigned[4..20].fill(0);
+        dxcontainer::repair_digest(&mut unsigned).unwrap();
+        assert_eq!(unsigned, bytes, "{}: repaired differently", path.display());
     }
     println!(
-        "{name}: {} containers, every digest equal to the stored one",
+        "{name}: {} containers, every digest equal to the stored one, every container re-serialized byte for byte",
         paths.len()
     );
 }
