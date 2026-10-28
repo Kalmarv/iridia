@@ -307,6 +307,49 @@ fn a_sampler_heap_is_one_sampler() {
     );
 }
 
+#[test]
+fn a_sampler_heap_written_as_one_sampler_leaves_no_binding_array_behind() {
+    // dxc's pixel program samples a bound texture with a sampler from the sampler heap: the heap is its only array
+    let program =
+        iridia_dxil::lift(include_bytes!("fixtures/sampler_heap.dxil")).expect("dxc's program lifts");
+    let as_is = emit::wgsl(&program).expect("written");
+    assert!(as_is.contains("enable wgpu_binding_array;"), "{as_is}");
+    let written = wgsl_for(
+        &program,
+        &Pipeline {
+            single_samplers: true,
+            ..Pipeline::default()
+        },
+    )
+    .expect("written");
+    // no variable is an array any more, so no extension is declared for one (a WGSL front end that does not know
+    // the extension refuses the whole text)
+    assert!(!written.text.contains("binding_array"), "{}", written.text);
+    let module = parsed(&written.text);
+    assert!(
+        module
+            .types
+            .iter()
+            .all(|(_, ty)| !matches!(ty.inner, TypeInner::BindingArray { .. }))
+    );
+    // the texture, the constant buffer and the sampler are where the program binds them
+    assert_eq!(
+        written.bindings.len(),
+        program.bindings.len(),
+        "{:?}",
+        written.bindings
+    );
+    for (id, place) in &written.bindings {
+        let global = &module.global_variables[module
+            .global_variables
+            .iter()
+            .find(|(_, g)| g.binding.as_ref().map(|b| (b.group, b.binding)) == Some(*place))
+            .unwrap_or_else(|| panic!("{id:?} at {place:?} in {}", written.text))
+            .0];
+        assert!(global.name.is_some(), "{id:?}");
+    }
+}
+
 /// The type of the result member `name` (as the writer spells it).
 fn member_type(module: &naga::Module, name: &str) -> TypeInner {
     let result = module.entry_points[0].function.result.as_ref().expect("a result");

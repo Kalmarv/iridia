@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `iridia::emit::wgsl_for` drops the types its pipeline changes leave unused before writing: a sampler heap written as
+  one sampler (`Pipeline::single_samplers`) no longer leaves its binding-array type behind, for which the writer declared
+  `enable wgpu_binding_array;` though no variable is a binding array, and a WGSL front end that does not know the
+  extension refused the whole program. Every global, function and named type keeps its place.
+- Depends on `dx` 0.3.0, whose readers these crates' public functions take, so this release is breaking.
+
 ## 0.2.0 (2026-10-27)
 
 - `iridia-dxbc` lifts a hull or domain program whose patch-constant signature is a `PSG1` part (fxc writes it when the

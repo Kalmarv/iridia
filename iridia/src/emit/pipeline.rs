@@ -80,6 +80,11 @@ pub fn wgsl_for(program: &Program, pipeline: &Pipeline) -> Result<Written, Error
     if pipeline.single_samplers {
         let heaps = single_samplers(&mut module);
         if heaps > 0 {
+            // A heap written as one sampler leaves its binding-array type in the module, and the writer declares
+            // `enable wgpu_binding_array;` for every binding-array type there, used or not: a WGSL front end that does
+            // not know the extension then refuses a program that has no binding array. Drop the unused types. Every
+            // global, function and named type stays in its place, so the program's handles hold.
+            naga::compact::compact(&mut module, naga::compact::KeepUnused::Yes);
             notes.push(format!(
                 "{heaps} sampler heap{} written as one sampler: every index reads the same sampler",
                 if heaps == 1 { "" } else { "s" }
