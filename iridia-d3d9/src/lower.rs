@@ -33,6 +33,9 @@ const SEMANTICS: [&str; 14] = [
     "SAMPLE",
 ];
 
+/// The float constant registers of a `vs_3_0` program, the rows a relative read can reach.
+const VERTEX_CONSTANTS: u32 = 256;
+
 struct Lower<'a> {
     source: &'a Shader,
     b: Builder,
@@ -43,6 +46,8 @@ struct Lower<'a> {
     locals: BTreeMap<Register, (Handle<LocalVariable>, u8)>,
     inputs: BTreeMap<u32, (Val, u8, usize)>,
     definitions: BTreeMap<u32, Val>,
+    /// The rows of the float constant bank `cb0`.
+    rows: u32,
     notes: Vec<String>,
     at: usize,
 }
@@ -134,10 +139,36 @@ fn field(c: &crate::Constant) -> Result<Field> {
     } else {
         1
     };
+    // a single matrix the compiler allocated fewer lines than it has (its last rows or columns are never read) is
+    // described by the lines allocated, as a partial array is
+    let element = match element {
+        ConstantType::Matrix {
+            scalar,
+            rows,
+            columns,
+            major,
+            stride,
+        } if t.elements == 1 && (1..registers).contains(&c.count) => {
+            let kept = lanes(c.count)?;
+            let (rows, columns) = match major {
+                Majorness::Row => (kept, columns),
+                Majorness::Column => (rows, kept),
+            };
+            ConstantType::Matrix {
+                scalar,
+                rows,
+                columns,
+                major,
+                stride,
+            }
+        }
+        element => element,
+    };
+    let partial_matrix = t.elements == 1 && (1..registers).contains(&c.count);
     let Some(count) = c
         .count
         .checked_div(registers)
-        .filter(|&n| c.count.is_multiple_of(registers) && n <= t.elements)
+        .filter(|&n| partial_matrix || (c.count.is_multiple_of(registers) && n <= t.elements))
     else {
         return Err(error(
             0,
@@ -247,6 +278,7 @@ fn lower(
         locals: BTreeMap::new(),
         inputs: BTreeMap::new(),
         definitions: BTreeMap::new(),
+        rows: 0,
         notes: Vec::new(),
         at: 0,
     };
@@ -438,7 +470,10 @@ impl Lower<'_> {
         let mut rows = 0;
         for i in &self.source.instructions {
             for s in &i.sources {
-                if let Register::Constant(n) = s.register
+                if s.relative.is_some() {
+                    // a relative read can reach any row of the vertex constant file
+                    rows = rows.max(VERTEX_CONSTANTS);
+                } else if let Register::Constant(n) = s.register
                     && !self.source.definitions.contains_key(&n)
                 {
                     rows = rows.max(n.saturating_add(1));
@@ -498,6 +533,7 @@ impl Lower<'_> {
             });
             let g = self.global("cb0".into(), ty, 0, 0, AddressSpace::Uniform);
             self.constants = Some(g);
+            self.rows = rows.get();
             self.resource(
                 ResourceKind::ConstantBuffer {
                     layout: BufferLayout {
@@ -618,7 +654,10 @@ impl Lower<'_> {
     }
     fn source(&mut self, s: Source, needed: u8) -> Result<Val> {
         let required = s.read_mask(needed);
-        let mut v = self.register(s.register, required)?;
+        let mut v = match (s.relative, s.register) {
+            (Some(lane), Register::Constant(base)) => self.relative_constant(base, lane)?,
+            _ => self.register(s.register, required)?,
+        };
         v = self.b.swizzle(v, &s.swizzle);
         if s.absolute {
             v = self.b.math(Mf::Abs, &[v]);
@@ -627,6 +666,74 @@ impl Lower<'_> {
             v = self.b.unary(UnaryOperator::Negate, v);
         }
         Ok(v)
+    }
+    /// The float constant `c[a0.lane + base]`: the row of the bank (or the `def` that sits at that register) at the
+    /// address register's lane plus `base`, and zero where that is outside the 256 rows of the vertex constant file.
+    fn relative_constant(&mut self, base: u32, lane: u8) -> Result<Val> {
+        let &(local, written) = self
+            .locals
+            .get(&Register::Address)
+            .ok_or_else(|| error(self.at, "a relative constant before any mova wrote a0"))?;
+        if written & (1 << lane) == 0 {
+            return Err(error(
+                self.at,
+                format!("a0 lane {lane} is read before mova writes it"),
+            ));
+        }
+        let g = self
+            .constants
+            .ok_or_else(|| error(self.at, "constant bank not allocated"))?;
+        let rows = i32::try_from(self.rows).map_err(|_| error(self.at, "constant bank rows"))?;
+        let p = self.b.local_ptr(local);
+        let a0 = self.b.load(p, Kind::I, Width::Four);
+        let a = self.b.lane(a0, lane);
+        let offset = self
+            .b
+            .lit_i(i32::try_from(base).map_err(|_| error(self.at, "constant register"))?);
+        let index = self.b.binary(Bo::Add, a, offset);
+        let (first, last) = (self.b.lit_i(0), self.b.lit_i(rows.saturating_sub(1)));
+        let above = self.b.binary(Bo::GreaterEqual, index, first);
+        let below = self.b.binary(Bo::LessEqual, index, last);
+        let inside = self.b.binary(Bo::LogicalAnd, above, below);
+        let raised = self.b.math(Mf::Max, &[index, first]);
+        let clamped = self.b.math(Mf::Min, &[raised, last]);
+        let bank = self.b.global_ptr(g);
+        let row = self.b.app(E::Access {
+            base: bank,
+            index: clamped.expr,
+        });
+        let raw = self.b.load(row, Kind::U, Width::Four);
+        let mut v = self.b.bitcast(raw, Kind::F);
+        // a `def` constant is not in the bank: the register it names reads as its value
+        let definitions: Vec<_> = self.definitions.iter().map(|(&n, &value)| (n, value)).collect();
+        for (n, value) in definitions {
+            let n = self
+                .b
+                .lit_i(i32::try_from(n).map_err(|_| error(self.at, "constant register"))?);
+            let hit = self.b.binary(Bo::Equal, index, n);
+            v = self.b.select(hit, value, v);
+        }
+        let zero = self.b.lit_f(0.0);
+        Ok(self.b.select(inside, v, zero))
+    }
+    /// `mova`: the address register's written lanes take the operand rounded to the nearest integer (halves away from zero).
+    fn write_address(&mut self, mask: u8, rounded: Val) {
+        let (local, written) = *self.locals.entry(Register::Address).or_insert_with(|| {
+            let ty = self.b.ty_of(Kind::I, Width::Four);
+            (self.b.local("a0", ty), 0)
+        });
+        let p = self.b.local_ptr(local);
+        for n in 0u8..4 {
+            if mask & (1 << n) != 0 {
+                let ptr = self.b.app(E::AccessIndex {
+                    base: p,
+                    index: u32::from(n),
+                });
+                let lane = self.b.lane(rounded, n);
+                self.b.store(ptr, lane);
+            }
+        }
+        self.locals.insert(Register::Address, (local, written | mask));
     }
     fn write(&mut self, d: Destination, mut v: Val) {
         if d.partial_precision {
@@ -716,7 +823,7 @@ impl Lower<'_> {
         let d = i
             .destination
             .ok_or_else(|| error(self.at, "missing destination"))?;
-        if matches!(i.opcode, Rcp | Rsq | Exp | Log | Pow)
+        if matches!(i.opcode, Rcp | Rsq | Exp | Log | Pow | SinCos)
             && i.sources
                 .iter()
                 .any(|s| !s.swizzle.iter().all(|&n| n == s.swizzle[0]))
@@ -725,6 +832,22 @@ impl Lower<'_> {
                 self.at,
                 format!("{:?} requires replicate scalar swizzles", i.opcode),
             ));
+        }
+        if i.opcode == Mova {
+            // to the nearest integer, a half going away from zero (Microsoft's reference rasterizer: -2.5 -> -3, 2.5 -> 3)
+            let a = self.source(i.source(0)?, i.source_mask(0))?;
+            let magnitude = self.b.math(Mf::Abs, &[a]);
+            let half = self.b.lit_f(0.5);
+            let shifted = self.b.binary(Bo::Add, magnitude, half);
+            let floor = self.b.math(Mf::Floor, &[shifted]);
+            let sign = self.b.math(Mf::Sign, &[a]);
+            let away = self.b.binary(Bo::Multiply, sign, floor);
+            let rounded = self.b.d3d_float_to_int(away);
+            self.write_address(d.mask, rounded);
+            return Ok(());
+        }
+        if i.opcode == SinCos && d.mask & !3 != 0 {
+            return Err(error(self.at, "SINCOS writes only x, y or xy"));
         }
         if i.opcode == Nrm
             && (!matches!(d.register, Register::Temporary(_)) || i.source(0)?.register == d.register)
@@ -788,6 +911,27 @@ impl Lower<'_> {
                 .b
                 .d3d_min_max(if i.opcode == Min { Mf::Min } else { Mf::Max }, a, arg(1)?),
             Frc => self.b.math(Mf::Fract, &[a]),
+            Slt | Sge => {
+                let b = arg(1)?;
+                let holds = self.b.binary(
+                    if i.opcode == Slt {
+                        Bo::Less
+                    } else {
+                        Bo::GreaterEqual
+                    },
+                    a,
+                    b,
+                );
+                let (one, zero) = (self.b.lit_f(1.0), self.b.lit_f(0.0));
+                self.b.select(holds, one, zero)
+            }
+            SinCos => {
+                let x = self.b.lane(a, 0);
+                let cosine = self.b.math(Mf::Cos, &[x]);
+                let sine = self.b.math(Mf::Sin, &[x]);
+                let zero = self.b.lit_f(0.0);
+                self.b.compose(&[cosine, sine, zero, zero])
+            }
             Cmp => {
                 let zero = self.b.lit_f(0.0);
                 let cond = self.b.binary(Bo::GreaterEqual, a, zero);

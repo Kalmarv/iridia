@@ -19,6 +19,8 @@ pub enum Register {
     Target(u32),
     /// A declared vertex output register, distinct from pixel render targets.
     Output(u32),
+    /// The vertex address register `a0`, written by `mova` and read as the index of a relative constant.
+    Address,
 }
 
 /// A source token after decoding its swizzle and modifier.
@@ -33,6 +35,9 @@ pub struct Source {
     pub absolute: bool,
     /// True for the negate modifier (source modifier 1, or 12 with the absolute value taken first).
     pub negate: bool,
+    /// For a float constant `c[a0.l + N]` of a vertex program, the lane `l` (0 x to 3 w) of the address register `a0`
+    /// that is added to the register number; `None` for a plain register.
+    pub relative: Option<u8>,
 }
 
 impl Source {
@@ -86,6 +91,10 @@ pub enum Opcode {
     Min,
     /// `max` (11).
     Max,
+    /// `slt` (12): 1 where the first operand is less than the second, else 0.
+    Slt,
+    /// `sge` (13): 1 where the first operand is at least the second, else 0.
+    Sge,
     /// `exp` (14): 2 raised to the x lane.
     Exp,
     /// `log` (15): base 2 logarithm of the x lane.
@@ -100,6 +109,10 @@ pub enum Opcode {
     Abs,
     /// `nrm` (36): normalise the three-lane vector.
     Nrm,
+    /// `sincos` (37): the cosine of the x lane in x and its sine in y (the Shader Model 3 form, one source).
+    SinCos,
+    /// `mova` (46): round the operand to the nearest integer into the vertex address register.
+    Mova,
     /// `texkill` (65): discard the pixel when any lane of the register is negative.
     TexKill,
     /// `texld` (66): sample a texture; `Instruction::control` says plain, projected or biased.
@@ -126,6 +139,8 @@ impl Opcode {
             9 => (Dp4, 2),
             10 => (Min, 2),
             11 => (Max, 2),
+            12 => (Slt, 2),
+            13 => (Sge, 2),
             14 => (Exp, 1),
             15 => (Log, 1),
             18 => (Lrp, 3),
@@ -133,6 +148,8 @@ impl Opcode {
             32 => (Pow, 2),
             35 => (Abs, 1),
             36 => (Nrm, 1),
+            37 => (SinCos, 1),
+            46 => (Mova, 1),
             65 => (TexKill, 0),
             66 => (Tex, 2),
             88 => (Cmp, 3),
@@ -147,7 +164,6 @@ impl Opcode {
                     30 => "LABEL",
                     33 => "CRS",
                     34 => "SGN",
-                    37 => "SINCOS",
                     38 => "REP",
                     39 => "ENDREP",
                     40 => "IF",
@@ -156,7 +172,6 @@ impl Opcode {
                     43 => "ENDIF",
                     44 => "BREAK",
                     45 => "BREAKC",
-                    46 => "MOVA",
                     47 => "DEFB",
                     48 => "DEFI",
                     91 => "DSX",
@@ -212,7 +227,7 @@ impl Instruction {
     pub(crate) fn source_mask(&self, operand: usize) -> u8 {
         let mask = self.destination.map_or(0, |d| d.mask);
         match self.opcode {
-            Opcode::Rcp | Opcode::Rsq | Opcode::Exp | Opcode::Log | Opcode::Pow => 1,
+            Opcode::Rcp | Opcode::Rsq | Opcode::Exp | Opcode::Log | Opcode::Pow | Opcode::SinCos => 1,
             Opcode::Dp3 => 7,
             Opcode::Dp4 => 15,
             Opcode::Nrm => 7 | mask,
@@ -290,11 +305,9 @@ fn bits(word: u32, shift: u32, mask: u32) -> u8 {
 }
 
 fn register(t: u32, at: usize, stage: Stage) -> Result<Register> {
-    if t & 0x8000_0000 == 0 || t & 0xe000 != 0 {
-        return Err(error(
-            at,
-            "parameter marker/reserved bits or relative addressing (not supported)",
-        ));
+    // bit 13 is the relative-addressing flag of a source token (`source` reads it); bits 14 and 15 are reserved
+    if t & 0x8000_0000 == 0 || t & 0xc000 != 0 {
+        return Err(error(at, "parameter marker/reserved bits"));
     }
     let kind = ((t >> 28) & 7) | ((t >> 8) & 24);
     let n = t & 2047;
@@ -302,6 +315,7 @@ fn register(t: u32, at: usize, stage: Stage) -> Result<Register> {
         (0, 0..32) => Register::Temporary(n),
         (1, _) if n < if stage == Stage::Vertex { 16 } else { 10 } => Register::Input(n),
         (2, _) if n < if stage == Stage::Vertex { 256 } else { 224 } => Register::Constant(n),
+        (3, 0) if stage == Stage::Vertex => Register::Address,
         (6, 0..12) if stage == Stage::Vertex => Register::Output(n),
         (8, 0..4) if stage == Stage::Pixel => Register::Target(n),
         (10, _) if n < if stage == Stage::Vertex { 4 } else { 16 } => Register::Sampler(n),
@@ -315,6 +329,9 @@ fn register(t: u32, at: usize, stage: Stage) -> Result<Register> {
 }
 
 fn destination(t: u32, at: usize, declaration: bool, stage: Stage) -> Result<Destination> {
+    if t & 0x2000 != 0 {
+        return Err(error(at, "relative addressing of a destination (not supported)"));
+    }
     let register = register(t, at, stage)?;
     let mask = bits(t, 16, 15);
     let modifiers = (t >> 20) & 15;
@@ -334,8 +351,41 @@ fn destination(t: u32, at: usize, declaration: bool, stage: Stage) -> Result<Des
     })
 }
 
-fn source(t: u32, at: usize, stage: Stage) -> Result<Source> {
-    let register = register(t, at, stage)?;
+/// The lane of `a0` that a relative-address token (`a0.x`, `a0.y`, ...) names. The token is a source token whose
+/// register is the address register with one lane replicated.
+fn relative_lane(t: u32, at: usize) -> Result<u8> {
+    let [x, y, z, w] = [16, 18, 20, 22].map(|shift| bits(t, shift, 3));
+    // register type 3 (the address register), number 0, no further relative flag
+    if t & 0x8000_0000 == 0 || (t >> 28) & 7 != 3 || (t >> 11) & 3 != 0 || t & 2047 != 0 || t & 0x2000 != 0 {
+        return Err(error(
+            at,
+            "relative address token other than the vertex address register a0 (a loop counter aL is not supported)",
+        ));
+    }
+    if (t >> 24) & 15 != 0 || !(x == y && y == z && z == w) {
+        return Err(error(
+            at,
+            "relative address token with a modifier or a swizzle that does not replicate one lane",
+        ));
+    }
+    Ok(x)
+}
+
+fn source(t: u32, relative: Option<u32>, at: usize, stage: Stage) -> Result<Source> {
+    // the relative flag is for a float constant of a vertex program only
+    let flagged = t & 0x2000 != 0;
+    let register = register(t & !0x2000, at, stage)?;
+    if flagged && !(stage == Stage::Vertex && matches!(register, Register::Constant(_))) {
+        return Err(error(
+            at,
+            "parameter marker/reserved bits or relative addressing (not supported)",
+        ));
+    }
+    let relative = match (flagged, relative) {
+        (true, Some(r)) => Some(relative_lane(r, at.saturating_add(1))?),
+        (true, None) => return Err(error(at, "relative addressing without its address token")),
+        (false, _) => None,
+    };
     let modifier = (t >> 24) & 15;
     if !matches!(modifier, 0 | 1 | 11 | 12) {
         return Err(error(
@@ -348,6 +398,7 @@ fn source(t: u32, at: usize, stage: Stage) -> Result<Source> {
         swizzle: [16, 18, 20, 22].map(|shift| bits(t, shift, 3)),
         absolute: matches!(modifier, 11 | 12),
         negate: matches!(modifier, 1 | 12),
+        relative,
     })
 }
 
@@ -577,6 +628,9 @@ pub fn read(bytes: &[u8]) -> Result<Shader> {
         if stage == Stage::Vertex && matches!(opcode, Opcode::Cmp | Opcode::Dp2Add) {
             return Err(error(word, format!("{opcode:?} is a pixel-only SM3 opcode")));
         }
+        if stage == Stage::Pixel && matches!(opcode, Opcode::Slt | Opcode::Sge | Opcode::Mova) {
+            return Err(error(word, format!("{opcode:?} is a vertex-only SM3 opcode")));
+        }
         if stage == Stage::Vertex && matches!(opcode, Opcode::Tex | Opcode::TexKill) {
             return Err(error(
                 word,
@@ -588,7 +642,13 @@ pub fn read(bytes: &[u8]) -> Result<Shader> {
         } else {
             sources.saturating_add(1)
         };
-        if count != expected {
+        // a relatively addressed source is followed by its address token, so the count is the operands' plus those
+        let relative_tokens = args
+            .iter()
+            .skip(1)
+            .filter(|&&t| t & 0x8000_0000 != 0 && t & 0x2000 != 0)
+            .count();
+        if count != expected && !(count > expected && relative_tokens > 0) {
             return Err(error(
                 word,
                 format!("{opcode:?} has {count} operands, expected {expected}"),
@@ -599,10 +659,14 @@ pub fn read(bytes: &[u8]) -> Result<Shader> {
             None => (None, args),
         };
         if let Some(d) = destination {
-            let allowed = matches!(
-                d.register,
-                Register::Temporary(_) | Register::Target(_) | Register::Output(_)
-            ) || (opcode == Opcode::TexKill && matches!(d.register, Register::Input(_)));
+            let allowed = if opcode == Opcode::Mova {
+                d.register == Register::Address
+            } else {
+                matches!(
+                    d.register,
+                    Register::Temporary(_) | Register::Target(_) | Register::Output(_)
+                ) || (opcode == Opcode::TexKill && matches!(d.register, Register::Input(_)))
+            };
             if !allowed {
                 return Err(error(
                     operand(1),
@@ -635,11 +699,23 @@ pub fn read(bytes: &[u8]) -> Result<Shader> {
                 return Err(error(operand(1), "modified TEXKILL destination"));
             }
         }
-        let sources = source_tokens
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| source(t, operand(i.saturating_add(2)), stage))
-            .collect::<Result<_>>()?;
+        let mut sources = Vec::new();
+        let mut tokens = source_tokens.iter().enumerate();
+        while let Some((i, &t)) = tokens.next() {
+            let at = operand(i.saturating_add(2));
+            let relative = if t & 0x2000 != 0 {
+                tokens.next().map(|(_, &r)| r)
+            } else {
+                None
+            };
+            sources.push(source(t, relative, at, stage)?);
+        }
+        if sources.len() != expected.saturating_sub(1) {
+            return Err(error(
+                word,
+                format!("{opcode:?} has {count} operands, expected {expected} and one per relative address"),
+            ));
+        }
         shader.instructions.push(Instruction {
             word,
             opcode,

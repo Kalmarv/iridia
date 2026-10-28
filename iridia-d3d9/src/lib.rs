@@ -7,12 +7,13 @@
 //! then be validated and written as WGSL ([`iridia::emit::wgsl`]). No translated text and no native compiler is needed.
 //!
 //! The reader is bounded: straight-line float arithmetic (`mov`, `add`, `sub`, `mad`, `mul`, `rcp`, `rsq`, `dp3`, `dp4`,
-//! `min`, `max`, `exp`, `log`, `lrp`, `frc`, `pow`, `abs`, `nrm`), `nop`, `dcl` and `def`; pixel programs also have
-//! `cmp`, `dp2add`, `texld` (plain, projected or biased) and `texkill`, with 2D, cube or volume textures; vertex programs
-//! keep their declared inputs and outputs and the clip position. Source swizzles, negation, absolute value and
-//! destination masks and saturation are kept. Vertex texture fetch, point size, other models, control flow,
-//! relative addressing, predication and modifiers outside this subset are refused by name and word offset
-//! ([`Error`]).
+//! `min`, `max`, `exp`, `log`, `lrp`, `frc`, `pow`, `abs`, `nrm`, `sincos`), `nop`, `dcl` and `def`; pixel programs also
+//! have `cmp`, `dp2add`, `texld` (plain, projected or biased) and `texkill`, with 2D, cube or volume textures; vertex
+//! programs keep their declared inputs and outputs and the clip position, and have `slt`, `sge`, the address register
+//! `a0` (`mova`, which rounds a half away from zero) and float constants addressed relative to it (`c[a0.x + N]`, zero outside the 256
+//! constant registers). Source swizzles, negation, absolute value and destination masks and saturation are kept. Vertex
+//! texture fetch, point size, other models, control flow, loop counters, predication and modifiers outside this subset
+//! are refused by name and word offset ([`Error`]).
 //!
 //! The float constant bank is `cb0`, an array of raw `vec4<u32>` rows: register `cN` is byte offset `16 * N`, and a
 //! `def` overrides it locally. Sampler `sN` becomes a texture at `tN` and a sampler at `sN`. Vertex register banks are

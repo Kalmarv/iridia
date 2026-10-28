@@ -37,6 +37,10 @@ pub(crate) fn project(bytes: &[u8], register: u32, mask: u8) -> Result<Program> 
         selected.destination = Some(destination);
         for (operand, &s) in selected.sources.iter().enumerate() {
             *live.entry(s.register).or_default() |= s.read_mask(selected.source_mask(operand));
+            // a relative constant also reads the lane of a0 it is addressed by
+            if let Some(lane) = s.relative {
+                *live.entry(Register::Address).or_default() |= 1 << lane;
+            }
         }
         if destination.register == root {
             selected

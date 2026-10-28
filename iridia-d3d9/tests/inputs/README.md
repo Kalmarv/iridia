@@ -23,5 +23,6 @@ What this crate's real-data tests read, as tests/inputs/mod.rs declares them: th
 | key | status | gate | about | source |
 | --- | --- | --- | --- | --- |
 | `oracles.d3d-disassembler.general/sm3` | live | yes | privately extracted raw ps_3_0 (`pixel.bin`) and two vs_3_0 programs (`vertex.bin`, `vertex-layered.bin`), each with Microsoft's `.asm` disassembly; iridia-d3d9/tests/disassembly.rs checks all executable operands, declarations, definitions and CTAB allocations | independent: Microsoft d3dcompiler_47.dll D3DDisassemble via iridia-d3d9/tests/oracles/disassemble.py, on a shipped Shaun White Skateboarding SDB2 v39 pixel shader (record 5) and vertex shaders (records 5 and 150, ekshadersPChigh.bin); raw bytes and disassembly stay outside the repository |
+| `oracles.d3d-disassembler.shaun-white/sdb2` | live | - | a folder of every distinct vertex (`.vs`) and pixel (`.ps`) program of the three SDB2 bundles (ekshadersPChigh, ekshadersPCmed, ekshadersPClow), each raw token stream with Microsoft's `.asm` disassembly beside it; iridia-d3d9/tests/corpus.rs | independent: Microsoft d3dcompiler_47.dll D3DDisassemble over the programs of the user's own Shaun White Skateboarding install (extracted by a read-only script); raw bytes and disassembly stay outside the repository |
 
 <!-- end of real-data inputs -->

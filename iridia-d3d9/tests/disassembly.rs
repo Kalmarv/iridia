@@ -16,6 +16,7 @@ fn register(r: Register) -> String {
         Register::Sampler(n) => format!("s{n}"),
         Register::Target(n) => format!("oC{n}"),
         Register::Output(n) => format!("o{n}"),
+        Register::Address => "a0".to_owned(),
     }
 }
 fn mask(mask: u8) -> String {
@@ -35,6 +36,12 @@ fn destination(d: Destination) -> String {
 }
 fn source(s: Source) -> String {
     let mut text = register(s.register);
+    if s.absolute {
+        text.push_str("_abs");
+    }
+    if let Some(lane) = s.relative {
+        text.push_str(&format!("[a0.{}]", ['x', 'y', 'z', 'w'][usize::from(lane)]));
+    }
     if s.swizzle != [0, 1, 2, 3] {
         text.push('.');
         let lanes = if s.swizzle.iter().all(|&l| l == s.swizzle[0]) {
@@ -43,9 +50,6 @@ fn source(s: Source) -> String {
             &s.swizzle[..]
         };
         text.extend(lanes.iter().map(|n| ['x', 'y', 'z', 'w'][*n as usize]));
-    }
-    if s.absolute {
-        text = format!("abs({text})");
     }
     if s.negate {
         text.insert(0, '-');

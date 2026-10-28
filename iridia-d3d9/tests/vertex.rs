@@ -149,8 +149,9 @@ fn vertex_refuses_undeclared_unwritten_and_unsupported_features() {
             "pixel sampling/discard",
         ),
         (
+            // `mova` is lifted: the program is refused for the declared position it never writes
             [position(), instruction(46, &[0xb00f_0000, 0x90e4_000f])].concat(),
-            "MOVA",
+            "uninitialized output",
         ),
         (
             [position(), instruction(1, &[0xe00f_0007, 0xa0e4_2000])].concat(),
