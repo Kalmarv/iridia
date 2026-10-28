@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "iridia"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "iridia-dxbc",
  "iridia-dxil",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-d3d9"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "iridia",
  "iridia-exec",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxbc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dxbc-reader",
  "dxcontainer",
@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxil"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dxcontainer",
  "dxil-reader",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-exec"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "half",
  "iridia",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-interface"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-mojo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "iridia",
  "primase-naga",

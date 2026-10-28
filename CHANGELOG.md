@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-27)
 
 - `iridia::emit::wgsl_for` drops the types its pipeline changes leave unused before writing: a sampler heap written as
   one sampler (`Pipeline::single_samplers`) no longer leaves its binding-array type behind, for which the writer declared
