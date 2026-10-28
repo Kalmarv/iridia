@@ -102,7 +102,7 @@ dependencies = [
 [[package]]
 name = "dxbc-reader"
 version = "0.2.0"
-source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
+source = "git+https://github.com/Kalmarv/dx?rev=f5b2af5b55ae06537cfce386102ee63c99b5a641#f5b2af5b55ae06537cfce386102ee63c99b5a641"
 dependencies = [
  "dxcontainer",
  "thiserror",
@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "dxcontainer"
 version = "0.2.0"
-source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
+source = "git+https://github.com/Kalmarv/dx?rev=f5b2af5b55ae06537cfce386102ee63c99b5a641#f5b2af5b55ae06537cfce386102ee63c99b5a641"
 dependencies = [
  "primase-foundations",
  "thiserror",
@@ -120,7 +120,7 @@ dependencies = [
 [[package]]
 name = "dxil-reader"
 version = "0.2.0"
-source = "git+https://github.com/Kalmarv/dx?rev=91c6b5e1ddcb71472414c92759911949428bba93#91c6b5e1ddcb71472414c92759911949428bba93"
+source = "git+https://github.com/Kalmarv/dx?rev=f5b2af5b55ae06537cfce386102ee63c99b5a641#f5b2af5b55ae06537cfce386102ee63c99b5a641"
 dependencies = [
  "dxcontainer",
  "primase-foundations",
@@ -321,8 +321,8 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "primase-foundations"
-version = "0.2.0"
-source = "git+https://github.com/Kalmarv/primase-foundations?rev=b3a3d4b3a892b8342fda081ab4449bb57052a2f8#b3a3d4b3a892b8342fda081ab4449bb57052a2f8"
+version = "0.2.1"
+source = "git+https://github.com/Kalmarv/primase-foundations?rev=e895f966130651bd78c47505b53322cc3f58083a#e895f966130651bd78c47505b53322cc3f58083a"
 dependencies = [
  "half",
  "thiserror",
