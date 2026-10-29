@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 (2026-10-29)
+
+- `iridia::specialise`: specialises a program for one material's stated uniform words. `feature_words` finds the
+  words a program's branches read among those known, and `specialise` folds them as constants into a copy of the
+  program (`Specialised`: the program, the words used, the resources no longer read, and how many values were folded).
+  Only the words given become constants; the original program is unchanged, and control flow the pass does not handle
+  is refused, naming it, rather than guessed. `iridia/tests/specialise.rs` runs each original and specialised program
+  through `iridia-exec` on the same inputs and requires equal outputs.
+- `iridia-exec` compiles a named constant (a vector constant expression) as an initial value.
+- Depends on `primase-testdata` 0.1.3.
+
 ## 0.4.0 (2026-10-29)
 
 - `iridia-dxbc`: the per-opcode operand counts the lifter checked itself (`arity.rs`) are `dxbc-reader`'s operand formats now,

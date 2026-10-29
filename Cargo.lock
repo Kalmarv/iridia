@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "iridia"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "iridia-dxbc",
  "iridia-dxil",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-d3d9"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "iridia",
  "iridia-exec",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxbc"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dxbc-reader",
  "dxcontainer",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-dxil"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "dxcontainer",
  "dxil-reader",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-exec"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "half",
  "iridia",
@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-interface"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "iridia-mojo"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "iridia",
  "primase-naga",
@@ -392,8 +392,8 @@ dependencies = [
 
 [[package]]
 name = "primase-testdata"
-version = "0.1.2"
-source = "git+https://github.com/Kalmarv/primase-testdata?rev=4fce41eecd06019bc44310de919313119cda4c34#4fce41eecd06019bc44310de919313119cda4c34"
+version = "0.1.3"
+source = "git+https://github.com/Kalmarv/primase-testdata?rev=fcb06c6dd160a2fc4ee6720c5eb95880bbad6410#fcb06c6dd160a2fc4ee6720c5eb95880bbad6410"
 dependencies = [
  "blake3",
  "serde_json",
