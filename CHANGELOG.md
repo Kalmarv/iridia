@@ -25,7 +25,8 @@
   `SamplerUse` carries the level range too, and the level of detail is clamped to it after the bias (named as not
   applied under base-level filtering where the range excludes the base level). Breaking: `SamplerUse` and
   `ViewSampler` have new fields, and `ViewSampler` is no longer `Eq`.
-- Depends on `primase-foundations` at a revision whose filters read a border colour.
+- Depends on `primase-foundations` at a revision whose filters read a border colour, and on `dx` at the revision
+  with `texture_reads`, so that a crate reading programs with that `dx` passes them to these crates.
 
 ## 0.3.0 (2026-10-28)
 

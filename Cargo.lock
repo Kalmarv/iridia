@@ -102,7 +102,7 @@ dependencies = [
 [[package]]
 name = "dxbc-reader"
 version = "0.3.0"
-source = "git+https://github.com/Kalmarv/dx?rev=e42b5ff7559e364c1c8a8977ece6460cd8797205#e42b5ff7559e364c1c8a8977ece6460cd8797205"
+source = "git+https://github.com/Kalmarv/dx?rev=6b3595b70afc1cf906f047e74102ce5967c822c3#6b3595b70afc1cf906f047e74102ce5967c822c3"
 dependencies = [
  "dxcontainer",
  "thiserror",
@@ -111,7 +111,7 @@ dependencies = [
 [[package]]
 name = "dxcontainer"
 version = "0.3.0"
-source = "git+https://github.com/Kalmarv/dx?rev=e42b5ff7559e364c1c8a8977ece6460cd8797205#e42b5ff7559e364c1c8a8977ece6460cd8797205"
+source = "git+https://github.com/Kalmarv/dx?rev=6b3595b70afc1cf906f047e74102ce5967c822c3#6b3595b70afc1cf906f047e74102ce5967c822c3"
 dependencies = [
  "primase-foundations",
  "thiserror",
@@ -120,7 +120,7 @@ dependencies = [
 [[package]]
 name = "dxil-reader"
 version = "0.3.0"
-source = "git+https://github.com/Kalmarv/dx?rev=e42b5ff7559e364c1c8a8977ece6460cd8797205#e42b5ff7559e364c1c8a8977ece6460cd8797205"
+source = "git+https://github.com/Kalmarv/dx?rev=6b3595b70afc1cf906f047e74102ce5967c822c3#6b3595b70afc1cf906f047e74102ce5967c822c3"
 dependencies = [
  "dxcontainer",
  "primase-foundations",
