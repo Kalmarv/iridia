@@ -261,12 +261,12 @@ fn constant_type(ty: &RdefType, packing: d3d::Packing) -> Result<ConstantType> {
 }
 
 /// A container's reflection ([`reflection`]) where it has one this reader reads: `None` where it has no RDEF chunk, or
-/// its RDEF's target isn't an SM5.0 pixel or vertex program (a compute program or an earlier model: the lift then
+/// its RDEF's target isn't an SM5.0 pixel, vertex or compute program (another stage or an earlier model: the lift then
 /// names its resources from their declarations, as without reflection). An RDEF of a target it reads that doesn't
 /// parse is an error, never taken as absent.
 pub fn resource_reflection(bytes: &[u8]) -> Result<Option<Interface>> {
     match dxbc_reader::rdef_target(bytes).map_err(read)? {
-        Some(0xffff_0500 | 0xfffe_0500) => reflection(bytes).map(Some),
+        Some(0xffff_0500 | 0xfffe_0500 | 0x4353_0500) => reflection(bytes).map(Some),
         _ => Ok(None),
     }
 }
@@ -277,12 +277,13 @@ pub fn reflection(bytes: &[u8]) -> Result<Interface> {
     let rdef = dxbc_reader::rdef(bytes)
         .map_err(read)?
         .ok_or_else(|| error(0, "missing reflection chunk RDEF"))?;
-    // SM5.0 pixel or vertex shader (the stage is the RDEF's own target, so reflection reads a container without
-    // its code)
+    // SM5.0 pixel, vertex or compute shader (the stage is the RDEF's own target, so reflection reads a container
+    // without its code)
     let program_stage = match rdef.target {
         0xffff_0500 => Stage::Pixel,
         0xfffe_0500 => Stage::Vertex,
-        _ => return Err(error(4, "expected SM5.0 pixel or vertex RDEF")),
+        0x4353_0500 => Stage::Compute,
+        _ => return Err(error(4, "expected SM5.0 pixel, vertex or compute RDEF")),
     };
     for binding in &rdef.bindings {
         if binding.count == 0 || binding.flags & !0x1f != 0 {
@@ -441,10 +442,20 @@ pub fn reflection(bytes: &[u8]) -> Result<Interface> {
             format!("constant buffer {name} has no resource binding"),
         ));
     }
+    // a compute program has no varyings: its invocation ids are system values its declarations state, and its
+    // signature parts (where it has them) are empty
+    let (inputs, outputs) = if program_stage == Stage::Compute {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            signature_of(&directory, &[b"ISGN", b"ISG1"], program_stage, false)?,
+            signature_of(&directory, &[b"OSGN", b"OSG1", b"OSG5"], program_stage, true)?,
+        )
+    };
     Ok(Interface {
         stage: program_stage,
-        inputs: signature_of(&directory, &[b"ISGN", b"ISG1"], program_stage, false)?,
-        outputs: signature_of(&directory, &[b"OSGN", b"OSG1", b"OSG5"], program_stage, true)?,
+        inputs,
+        outputs,
         resources,
         facts: Default::default(),
     })

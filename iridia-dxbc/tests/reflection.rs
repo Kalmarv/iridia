@@ -276,19 +276,29 @@ fn reflected_bindings_match_independent_disassembly() -> Result<(), Box<dyn std:
 }
 
 /// Reflection where the container has one this reader reads: none without an RDEF chunk or with a target it doesn't
-/// read (a compute program's), the reflection of an SM5.0 pixel program's, and an error, never none, for one of
-/// those that doesn't parse.
+/// read (a geometry program's, an SM4.0 pixel program's), the reflection of an SM5.0 pixel or compute program's, and an
+/// error, never none, for one of those that doesn't parse.
 #[test]
 fn a_reflection_is_read_where_it_is_one_this_reader_reads() {
     let good = fixture(&rdef());
     assert!(iridia_dxbc::resource_reflection(&good).unwrap().is_some());
     let mut compute = rdef();
     set(&mut compute, 16, 0x4353_0500);
-    assert!(
-        iridia_dxbc::resource_reflection(&fixture(&compute))
-            .unwrap()
-            .is_none()
-    );
+    let reflected = iridia_dxbc::resource_reflection(&fixture(&compute))
+        .unwrap()
+        .unwrap();
+    assert_eq!(reflected.stage, iridia::Stage::Compute);
+    assert!(reflected.inputs.is_empty() && reflected.outputs.is_empty());
+    for target in [0x4753_0500, 0xffff_0400] {
+        let mut other = rdef();
+        set(&mut other, 16, target);
+        assert!(
+            iridia_dxbc::resource_reflection(&fixture(&other))
+                .unwrap()
+                .is_none(),
+            "{target:#x}"
+        );
+    }
     // the resource records past the chunk's end
     let mut broken = rdef();
     set(&mut broken, 12, 4096);

@@ -2,7 +2,7 @@
 //! Lifting the D3D behaviour fixture (tests/fixtures/modes.hlsl, our own HLSL, compiled with fxc /T ps_5_0 /E main):
 //! the interface and resources as worked out from the HLSL, and the D3D behaviours present in the lifted body as
 //! plain operations.
-use iridia::{BufferKind, ResourceKind, ScalarType, Stage, SystemValue};
+use iridia::{BufferKind, D3dClass, ResourceKind, ScalarType, Stage, SystemValue};
 use iridia_dxbc::lift;
 
 const MODES: &[u8] = include_bytes!("fixtures/modes.dxbc");
@@ -296,6 +296,42 @@ fn the_compute_fixture_lifts_validates_and_writes_wgsl() {
                 .iter()
                 .any(|(r, k)| *r == 2 && matches!(k, BufferKind::Typed(_))),
             "{name}: {storage:?}"
+        );
+        // the resources are named and laid out by the program's reflection, as the source declares them
+        let named: Vec<(&str, D3dClass, u32)> = program
+            .interface
+            .resources
+            .iter()
+            .filter_map(|r| {
+                let d = r.provenance.d3d?;
+                Some((r.provenance.name.as_str(), d.class, d.register))
+            })
+            .collect();
+        for expected in [
+            ("raw", D3dClass::UnorderedAccess, 0),
+            ("words", D3dClass::UnorderedAccess, 1),
+            ("typed", D3dClass::UnorderedAccess, 2),
+            ("Values", D3dClass::ConstantBuffer, 0),
+        ] {
+            assert!(named.contains(&expected), "{name}: {expected:?} not in {named:?}");
+        }
+        let values = program
+            .interface
+            .resources
+            .iter()
+            .find_map(|r| match &r.kind {
+                ResourceKind::ConstantBuffer { layout } if r.provenance.name == "Values" => Some(layout),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            values
+                .constants
+                .iter()
+                .map(|c| (c.name.as_str(), c.offset))
+                .collect::<Vec<_>>(),
+            [("scale", 0)],
+            "{name}"
         );
         let wgsl = iridia::emit::wgsl(&program).unwrap();
         for needle in [
