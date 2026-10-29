@@ -10,7 +10,7 @@ mod inputs;
 
 use std::collections::BTreeMap;
 
-use dxbc_reader::{GlobalFlags, InfoReturn, SyncFlags, decode};
+use dxbc_reader::{GlobalFlags, SyncFlags, decode};
 use inputs::Game;
 
 mod common;
