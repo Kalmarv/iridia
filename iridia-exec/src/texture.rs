@@ -1,12 +1,13 @@
 //! A 2D texture as the executor samples it ([`SampledTexture`], an [`Image`]): its stored levels, the colour transfer
-//! applied before filtering, the addressing and level-of-detail bias its binding's sampler states ([`SamplerUse`]),
-//! and the filtering a caller states ([`Filtering`]).
+//! applied before filtering, the addressing (with a border's colour), level-of-detail bias and level range its binding's
+//! sampler states ([`SamplerUse`]), and the filtering a caller states ([`Filtering`]).
 //!
 //! The filtering is the caller's policy: what a source states of its sampler's filter may be absent or not modelled, so
 //! a caller says how it filters (the base level bilinear, point or bilinear at the nearest level, or trilinear) and
-//! reports it. The addressing and the bias are the binding's data: an axis whose addressing the sampler state leaves
-//! unstated is the caller's stated assumption ([`Unstated`]), never a silent wrap, and a stated bias is applied where
-//! the level of detail is computed, or named as not applied ([`SampledTexture::unhonoured`]).
+//! reports it. The addressing, the bias and the level range are the binding's data: an axis whose addressing the sampler
+//! state leaves unstated is the caller's stated assumption ([`Unstated`]), never a silent wrap; a border reads the colour
+//! the state gives it, and a border with none is refused; a stated bias and level range are applied where the level of
+//! detail is computed, or named as not applied ([`SampledTexture::unhonoured`]).
 //!
 //! The level of detail is the quad footprint's, or the level the program states. A sample at an implicit level outside
 //! a quad (an evaluation one pixel at a time) has no footprint: it is refused, unless the caller states the level such
@@ -14,8 +15,8 @@
 
 use iridia_interface::{AddressMode, SamplerState};
 use primase_foundations::{
-    sampling::Address, sampling::Decoded, sampling::Levels, sampling::Subtexel, sampling::Transfer,
-    sampling::footprint_lod,
+    sampling::Address, sampling::Addressing, sampling::Decoded, sampling::Levels, sampling::Subtexel,
+    sampling::Transfer, sampling::footprint_lod,
 };
 
 use crate::{Image, Lod};
@@ -78,29 +79,39 @@ pub enum Unstated {
     Assume(Address),
 }
 
-/// What a binding's sampler gives a texture's sampling: the addressing along u and v and the level-of-detail bias it
-/// states.
+/// What a binding's sampler gives a texture's sampling: the addressing along u and v, the colour a border reads, and
+/// the level-of-detail bias and level range it states.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SamplerUse {
     /// The addressing along u and v.
     pub address: [Address; 2],
+    /// The colour a coordinate outside the texture reads along an [`Address::Border`] axis; finite, and stated where an
+    /// axis is a border.
+    pub border: Option<[f32; 4]>,
     /// Added to a computed level of detail ([`Filtering::Trilinear`]); finite.
     pub mip_lod_bias: Option<f32>,
+    /// The least and greatest level of detail the sampler reads: the level, its bias added, is clamped to them; finite
+    /// and ordered.
+    pub lod: Option<[f32; 2]>,
 }
 
 impl SamplerUse {
-    /// The addressing `address` and no bias.
+    /// The addressing `address`, no border colour, no bias and no level range.
     pub fn addressed(address: [Address; 2]) -> SamplerUse {
         SamplerUse {
             address,
+            border: None,
             mip_lod_bias: None,
+            lod: None,
         }
     }
 
-    /// From a binding's sampler state: its u and v addressing (an unstated axis as `unstated` says) and its bias.
-    /// Border addressing is refused (no source stores the border colour), as is a bias that isn't finite. Whether an
-    /// axis was assumed is [`SamplerUse::assumed`].
+    /// From a binding's sampler state: its u and v addressing (an unstated axis as `unstated` says), its border colour,
+    /// its bias and its level range. Border addressing with no border colour is refused, as is a state that does not
+    /// verify ([`SamplerState::verify`]: a colour, bias or range that isn't finite, a reversed range). Whether an axis
+    /// was assumed is [`SamplerUse::assumed`].
     pub fn of(state: &SamplerState, unstated: Unstated) -> Result<SamplerUse, String> {
+        state.verify()?;
         let axis = |k: usize| -> Result<Address, String> {
             let name = ["u", "v"].get(k).copied().unwrap_or("w");
             Ok(match state.wrap.get(k).copied().flatten() {
@@ -108,9 +119,10 @@ impl SamplerUse {
                 Some(AddressMode::Mirror) => Address::Mirror,
                 Some(AddressMode::Clamp) => Address::Clamp,
                 Some(AddressMode::MirrorOnce) => Address::MirrorOnce,
+                Some(AddressMode::Border) if state.border.is_some() => Address::Border,
                 Some(AddressMode::Border) => {
                     return Err(format!(
-                        "border addressing along {name}: the source stores no border colour"
+                        "border addressing along {name}: the sampler states no border colour"
                     ));
                 }
                 None => match unstated {
@@ -121,15 +133,28 @@ impl SamplerUse {
                 },
             })
         };
-        if let Some(b) = state.mip_lod_bias
-            && !b.is_finite()
-        {
-            return Err(format!("sampler bias {b} is not finite"));
-        }
         Ok(SamplerUse {
             address: [axis(0)?, axis(1)?],
+            border: state.border,
             mip_lod_bias: state.mip_lod_bias,
+            lod: state.lod,
         })
+    }
+
+    /// The addressing a filter takes: the axes and the border colour.
+    fn addressing(&self) -> Addressing<2> {
+        Addressing {
+            axes: self.address,
+            border: self.border,
+        }
+    }
+
+    /// `level` clamped to the stated level range, if any.
+    fn clamped(&self, level: f64) -> f64 {
+        match self.lod {
+            Some([low, high]) => level.clamp(f64::from(low), f64::from(high)),
+            None => level,
+        }
     }
 
     /// Whether `state` leaves the u or v addressing unstated: what [`SamplerUse::of`] took from [`Unstated`].
@@ -152,8 +177,8 @@ pub struct SampledTexture {
 }
 
 impl SampledTexture {
-    /// `levels` (at least one), read through `transfer`, sampled as `sampler` and `filtering` say; a sampler bias
-    /// that isn't finite is refused.
+    /// `levels` (at least one), read through `transfer`, sampled as `sampler` and `filtering` say; a sampler bias,
+    /// border colour or level range that isn't finite, a reversed range, and a border axis with no colour are refused.
     pub fn new(
         levels: Levels,
         transfer: Transfer,
@@ -167,6 +192,22 @@ impl SampledTexture {
             && !b.is_finite()
         {
             return Err(format!("sampler bias {b} is not finite"));
+        }
+        if let Some([low, high]) = sampler.lod
+            && (!low.is_finite() || !high.is_finite() || low > high)
+        {
+            return Err(format!(
+                "sampler level range {low}..{high} is not a finite, ordered range"
+            ));
+        }
+        match sampler.border {
+            Some(c) if c.iter().any(|v| !v.is_finite()) => {
+                return Err(format!("border colour {c:?} is not finite"));
+            }
+            None if sampler.address.contains(&Address::Border) => {
+                return Err("border addressing with no border colour".into());
+            }
+            _ => {}
         }
         let base = match filtering {
             Filtering::BaseBilinear { .. } => {
@@ -240,21 +281,27 @@ impl SampledTexture {
             .saturating_add(self.base.as_ref().map_or(0, Decoded::decoded_bytes))
     }
 
-    /// What of its sampler this sampling does not apply, for the caller to report: a stated bias under
-    /// [`Filtering::BaseBilinear`], which reads the base level whatever the level of detail.
+    /// What of its sampler this sampling does not apply, for the caller to report: under [`Filtering::BaseBilinear`],
+    /// which reads the base level whatever the level of detail, a stated bias, and a stated level range that excludes
+    /// the base level.
     pub fn unhonoured(&self) -> Option<&'static str> {
-        match (self.filtering, self.sampler.mip_lod_bias) {
-            (Filtering::BaseBilinear { .. }, Some(b)) if b != 0.0 => {
-                Some("stated sampler bias not applied (base level)")
-            }
-            _ => None,
+        if !matches!(self.filtering, Filtering::BaseBilinear { .. }) {
+            return None;
+        }
+        let bias = self.sampler.mip_lod_bias.is_some_and(|b| b != 0.0);
+        let range = self.sampler.lod.is_some_and(|[low, _]| low > 0.0);
+        match (bias, range) {
+            (true, true) => Some("stated sampler bias and level range not applied (base level)"),
+            (true, false) => Some("stated sampler bias not applied (base level)"),
+            (false, true) => Some("stated sampler level range not applied (base level)"),
+            (false, false) => None,
         }
     }
 }
 
 impl Image for SampledTexture {
     fn sample(&self, uv: [f32; 2], lod: Lod) -> Result<[f32; 4], String> {
-        let address = self.sampler.address;
+        let address = self.sampler.addressing();
         let level = || {
             Filtering::level_of_detail(
                 lod,
@@ -262,6 +309,7 @@ impl Image for SampledTexture {
                 self.sampler.mip_lod_bias.map_or(0.0, f64::from),
                 self.footprintless,
             )
+            .map(|l| self.sampler.clamped(l))
         };
         let (at, levels, transfer) = ([f64::from(uv[0]), f64::from(uv[1])], &self.levels, self.transfer);
         let v = match (self.filtering, &self.base) {
@@ -333,6 +381,7 @@ mod tests {
         .unwrap();
         assert_eq!(assumed.address, [Address::Wrap, Address::Clamp]);
         assert!(SamplerUse::assumed(&state(None, Some(AddressMode::Clamp), None)));
+        // a border with no stated colour is refused
         assert!(
             SamplerUse::of(
                 &state(Some(AddressMode::Border), Some(AddressMode::Clamp), None),
@@ -347,6 +396,95 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A stated border colour is what samples past a border axis read: black then white, sampled past the left edge
+    /// with borders 0 and 1; bilinear at the edge mixes half the border with half the black texel. A colour that isn't
+    /// finite is refused, and so is a border axis with no colour.
+    #[test]
+    fn a_stated_border_colour_is_read_past_the_edge() {
+        let bordered = |colour: [f32; 4]| {
+            let s = SamplerState {
+                border: Some(colour),
+                ..state(Some(AddressMode::Border), Some(AddressMode::Clamp), None)
+            };
+            let sampler = SamplerUse::of(&s, Unstated::Refuse).unwrap();
+            assert_eq!(sampler.address, [Address::Border, Address::Clamp]);
+            sampler
+        };
+        for filtering in [
+            Filtering::BaseBilinear {
+                subtexel: Subtexel::D3d11,
+            },
+            Filtering::Bilinear,
+        ] {
+            let zero =
+                SampledTexture::new(two_texels(), Transfer::Stored, bordered([0.0; 4]), filtering).unwrap();
+            let one =
+                SampledTexture::new(two_texels(), Transfer::Stored, bordered([1.0; 4]), filtering).unwrap();
+            // a quarter texel past the left edge: wholly the border
+            let past = |t: &SampledTexture| t.sample([-0.25, 0.5], Lod::Level(0.0)).unwrap();
+            assert_eq!(past(&zero), [0.0; 4]);
+            assert_eq!(past(&one), [1.0; 4]);
+            // the left edge: half the border, half the black texel (alpha 1)
+            let edge = |t: &SampledTexture| t.sample([0.0, 0.5], Lod::Level(0.0)).unwrap();
+            assert_eq!(edge(&zero), [0.0, 0.0, 0.0, 0.5]);
+            assert_eq!(edge(&one), [0.5, 0.5, 0.5, 1.0]);
+        }
+        let nan = SamplerState {
+            border: Some([f32::NAN; 4]),
+            ..state(Some(AddressMode::Border), Some(AddressMode::Clamp), None)
+        };
+        assert!(SamplerUse::of(&nan, Unstated::Refuse).is_err());
+        let mut colourless = SamplerUse::addressed([Address::Border; 2]);
+        assert!(
+            SampledTexture::new(two_texels(), Transfer::Stored, colourless, Filtering::Bilinear).is_err()
+        );
+        colourless.border = Some([0.0; 4]);
+        assert!(SampledTexture::new(two_texels(), Transfer::Stored, colourless, Filtering::Bilinear).is_ok());
+    }
+
+    /// A stated level range clamps the level of detail after the bias: levels 0 (black) and 1 (white), a range of
+    /// 0..0 reads level 0 wherever the level of detail is, a range of 1..1 reads level 1; the base level names a range
+    /// that excludes it as not applied. A reversed range is refused.
+    #[test]
+    fn a_stated_level_range_clamps_the_level() {
+        let levels = Levels {
+            width: 2,
+            height: 2,
+            levels: vec![[0, 0, 0, 255].repeat(4), vec![255; 4]],
+        };
+        let make = |lod: Option<[f32; 2]>, filtering| {
+            SampledTexture::new(
+                levels.clone(),
+                Transfer::Stored,
+                SamplerUse {
+                    lod,
+                    ..SamplerUse::addressed([Address::Wrap; 2])
+                },
+                filtering,
+            )
+            .unwrap()
+        };
+        let base_only = make(Some([0.0, 0.0]), Filtering::Trilinear);
+        assert_eq!(base_only.sample([0.5, 0.5], Lod::Level(1.0)).unwrap()[0], 0.0);
+        let first = make(Some([1.0, 1.0]), Filtering::Point);
+        assert_eq!(first.sample([0.5, 0.5], Lod::Level(0.0)).unwrap()[0], 1.0);
+        let unclamped = make(None, Filtering::Point);
+        assert_eq!(unclamped.sample([0.5, 0.5], Lod::Level(0.0)).unwrap()[0], 0.0);
+        let base = Filtering::BaseBilinear {
+            subtexel: Subtexel::D3d11,
+        };
+        assert_eq!(
+            make(Some([1.0, 1.0]), base).unhonoured(),
+            Some("stated sampler level range not applied (base level)")
+        );
+        assert_eq!(make(Some([0.0, 0.0]), base).unhonoured(), None);
+        let reversed = SamplerUse {
+            lod: Some([2.0, 1.0]),
+            ..SamplerUse::addressed([Address::Wrap; 2])
+        };
+        assert!(SampledTexture::new(levels.clone(), Transfer::Stored, reversed, Filtering::Point).is_err());
     }
 
     /// A stated bias moves the footprint's level and a stated level under trilinear filtering; the base level names
@@ -364,8 +502,8 @@ mod tests {
                 levels.clone(),
                 Transfer::Stored,
                 SamplerUse {
-                    address: [Address::Wrap; 2],
                     mip_lod_bias: bias,
+                    ..SamplerUse::addressed([Address::Wrap; 2])
                 },
                 filtering,
             )

@@ -12,7 +12,8 @@
 //!   structured read whose byte offset is past its element is undefined there (22.4.12) and refused here.
 //! - **Sampling.** A view holds one level, so every level of detail reads it; a sample is filtered as its sampler slot
 //!   states ([`ViewSampler`]): the texel it falls in, or linear between the texels about it (four in 2D, eight in a
-//!   volume), each axis addressed. A sampler slot nothing states is refused, never assumed. An image the caller samples
+//!   volume), each axis addressed (a border reads the slot's border colour; a border with none is refused). A sampler
+//!   slot nothing states is refused, never assumed. An image the caller samples
 //!   itself ([`View::Image`]) is sampled by its own policy at the level of detail the program states.
 //!
 //! What a view is not asked for is refused by name: a gather, a comparison, a texel offset, a cube or 1D texture, a
@@ -22,7 +23,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use primase_foundations::{sampling::Address, sampling::Decoded, sampling::Subtexel};
+use primase_foundations::{sampling::Address, sampling::Addressing, sampling::Decoded, sampling::Subtexel};
 
 use crate::{Dim, ImageLoad, ImageQuery, ImageSample, Load, Lod, QueryKind, Sample, Sampler};
 
@@ -70,13 +71,16 @@ pub enum ViewFilter {
     },
 }
 
-/// A sampler slot's state: its filter and the addressing along u, v and w.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A sampler slot's state: its filter, the addressing along u, v and w, and the colour a border reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewSampler {
     /// How the sampler filters.
     pub filter: ViewFilter,
     /// The addressing along u, v and w.
     pub address: [Address; 3],
+    /// The colour a coordinate outside the texture reads along an [`Address::Border`] axis, where the slot states one;
+    /// a sample across a border axis with none is refused.
+    pub border: Option<[f32; 4]>,
 }
 
 /// What a request reads where the views hold nothing for it: a slot nothing is bound to, or an address or level outside
@@ -145,7 +149,13 @@ impl Views {
             (Some(View::Image(image)), Dim::D2) => image.sample([coord[0], coord[1]], lod),
             (Some(View::Texture2d(image)), Dim::D2) => {
                 let state = state()?;
-                let (uv, address) = ([coord[0], coord[1]], [state.address[0], state.address[1]]);
+                let (uv, address) = (
+                    [coord[0], coord[1]],
+                    Addressing {
+                        axes: [state.address[0], state.address[1]],
+                        border: state.border,
+                    },
+                );
                 match state.filter {
                     ViewFilter::Point => image.point(uv, address),
                     ViewFilter::Linear { subtexel } => image.bilinear_at(uv, address, subtexel),
@@ -154,9 +164,13 @@ impl Views {
             }
             (Some(View::Texture3d(image)), Dim::D3) => {
                 let state = state()?;
+                let address = Addressing {
+                    axes: state.address,
+                    border: state.border,
+                };
                 match state.filter {
-                    ViewFilter::Point => image.point_3d(coord, state.address),
-                    ViewFilter::Linear { subtexel } => image.linear_3d(coord, state.address, subtexel),
+                    ViewFilter::Point => image.point_3d(coord, address),
+                    ViewFilter::Linear { subtexel } => image.linear_3d(coord, address, subtexel),
                 }
                 .map_err(error)
             }
@@ -362,6 +376,7 @@ mod tests {
                 ViewSampler {
                     filter,
                     address: [address; 3],
+                    border: None,
                 },
             )]),
             absent: Absent::Zero,
@@ -395,6 +410,34 @@ mod tests {
 
     fn load(mut v: &Views, texture: u32, texel: [i32; 3], mip: i32) -> Result<[u32; 4], String> {
         v.load(Load { texture, texel, mip })
+    }
+
+    /// A border axis reads the slot's border colour past the edge: point past the left edge of t3 is the colour, inside
+    /// the texel; linear at the edge mixes half the colour with half texel (0, 0) = (0, 0, 0, 1); a volume past its
+    /// last slice is the colour. A border slot with no colour is refused.
+    #[test]
+    fn a_border_reads_the_slot_colour() {
+        let mut v = views(ViewFilter::Point, Address::Border);
+        assert!(sample(&v, 3, [-0.25, 0.25]).is_err());
+        let colour = |v: &mut Views, c: [f32; 4]| {
+            if let Some(s) = v.samplers.get_mut(&0) {
+                s.border = Some(c);
+            }
+        };
+        colour(&mut v, [1.0; 4]);
+        assert_eq!(sample(&v, 3, [-0.25, 0.25]), Ok([1.0; 4]));
+        assert_eq!(sample(&v, 3, [0.75, 0.25]), Ok([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(sample_3d(&v, 4, [0.25, 0.25, 1.25]), Ok([1.0; 4]));
+        let mut l = views(
+            ViewFilter::Linear {
+                subtexel: Subtexel::Exact,
+            },
+            Address::Border,
+        );
+        colour(&mut l, [0.0; 4]);
+        assert_eq!(sample(&l, 3, [0.0, 0.25]), Ok([0.0, 0.0, 0.0, 0.5]));
+        colour(&mut l, [1.0; 4]);
+        assert_eq!(sample(&l, 3, [0.0, 0.25]), Ok([0.5, 0.5, 0.5, 1.0]));
     }
 
     #[test]

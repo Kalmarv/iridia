@@ -322,7 +322,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "primase-foundations"
 version = "0.2.1"
-source = "git+https://github.com/Kalmarv/primase-foundations?rev=e895f966130651bd78c47505b53322cc3f58083a#e895f966130651bd78c47505b53322cc3f58083a"
+source = "git+https://github.com/Kalmarv/primase-foundations?rev=6201129940a970d87392ab2ee59cd0c9c04ed7e4#6201129940a970d87392ab2ee59cd0c9c04ed7e4"
 dependencies = [
  "half",
  "thiserror",

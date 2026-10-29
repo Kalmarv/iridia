@@ -16,6 +16,16 @@
 - Tests: `iridia-dxbc/tests/vkd3d_oracle.rs` compares the containers, signatures and instruction mnemonics of the games'
   Shader Model 4 and 5 programs with vkd3d's `vkd3d-dxbc` and `vkd3d-compiler` run as programs; `operand_format.rs` checks the
   operand formats against the programs; `container_digest.rs` (both crates) now also writes every container back byte for byte.
+- `iridia-interface`: `SamplerState` states a border colour (`border`, for border addressing) and a level range
+  (`lod`, the least and greatest mip level read), each `None` where the source states none, and `SamplerState::verify`
+  checks a state agrees with itself (finite colour, bias and range, an ordered range, an anisotropy of at least 1).
+  Breaking: a struct literal of `SamplerState` needs the two fields (or `..SamplerState::default()`).
+- `iridia-exec` samples border addressing: `SamplerUse` and `ViewSampler` carry the border colour, and a sample past a
+  border axis reads it (through `primase-foundations`' `Addressing`); a border with no stated colour is still refused.
+  `SamplerUse` carries the level range too, and the level of detail is clamped to it after the bias (named as not
+  applied under base-level filtering where the range excludes the base level). Breaking: `SamplerUse` and
+  `ViewSampler` have new fields, and `ViewSampler` is no longer `Eq`.
+- Depends on `primase-foundations` at a revision whose filters read a border colour.
 
 ## 0.3.0 (2026-10-28)
 

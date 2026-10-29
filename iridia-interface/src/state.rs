@@ -47,7 +47,8 @@ pub enum AddressMode {
     /// Mirrored once about the origin, then the edge texel.
     MirrorOnce,
 }
-/// A sampler's state as the source stores it, for a texture slot: each part `None` where the source states none.
+/// A sampler's state as the source stores it, for a texture slot or a program's sampler: each part `None` where the
+/// source states none.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct SamplerState {
     /// Addressing along u, v and w.
@@ -61,6 +62,40 @@ pub struct SamplerState {
     pub compare: Option<Compare>,
     /// Added to the mip level the hardware computes, where the source states a non-zero bias.
     pub mip_lod_bias: Option<f32>,
+    /// The colour (red, green, blue, alpha) a coordinate outside the texture reads along an axis addressed
+    /// [`AddressMode::Border`], where the source states it.
+    pub border: Option<[f32; 4]>,
+    /// The least and the greatest mip level the sampler reads (the level of detail is clamped to them), where the
+    /// source states a range; `None` is every level the texture has.
+    pub lod: Option<[f32; 2]>,
+}
+
+impl SamplerState {
+    /// The state agrees with itself: a stated border colour and level range are finite (the range's top may be
+    /// `f32::MAX`, every level), the range is not reversed, and a maximum anisotropy is at least 1.
+    pub fn verify(&self) -> Result<(), String> {
+        if let Some(b) = self.border
+            && b.iter().any(|c| !c.is_finite())
+        {
+            return Err(format!("border colour {b:?} is not finite"));
+        }
+        if let Some([low, high]) = self.lod
+            && (!low.is_finite() || !high.is_finite() || low > high)
+        {
+            return Err(format!(
+                "level range {low}..{high} is not a finite, ordered range"
+            ));
+        }
+        if let Some(b) = self.mip_lod_bias
+            && !b.is_finite()
+        {
+            return Err(format!("mip level bias {b} is not finite"));
+        }
+        if self.max_anisotropy == Some(0) {
+            return Err("a maximum anisotropy of 0".into());
+        }
+        Ok(())
+    }
 }
 /// A blend factor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
@@ -359,5 +394,35 @@ mod tests {
             clamp: 0.0,
         });
         assert!(state.verify().unwrap_err().contains("depth bias"));
+    }
+
+    #[test]
+    fn a_sampler_state_is_consistent() {
+        let mut state = SamplerState {
+            wrap: [Some(AddressMode::Border); 3],
+            border: Some([0.0, 0.0, 0.0, 0.0]),
+            lod: Some([0.0, 0.0]),
+            ..SamplerState::default()
+        };
+        assert_eq!(state.verify(), Ok(()));
+        assert_eq!(SamplerState::default().verify(), Ok(()));
+        // Direct3D's greatest level, f32::MAX, is every level and finite
+        state.lod = Some([0.0, f32::MAX]);
+        assert_eq!(state.verify(), Ok(()));
+        state.lod = Some([2.0, 1.0]);
+        assert!(state.verify().unwrap_err().contains("level range"));
+        state.lod = Some([0.0, f32::INFINITY]);
+        assert!(state.verify().unwrap_err().contains("level range"));
+        state.lod = None;
+        state.border = Some([0.0, f32::NAN, 0.0, 1.0]);
+        assert!(state.verify().unwrap_err().contains("border colour"));
+        state.border = Some([1.0; 4]);
+        state.mip_lod_bias = Some(f32::NAN);
+        assert!(state.verify().unwrap_err().contains("bias"));
+        state.mip_lod_bias = Some(-0.75);
+        state.max_anisotropy = Some(0);
+        assert!(state.verify().unwrap_err().contains("anisotropy"));
+        state.max_anisotropy = Some(16);
+        assert_eq!(state.verify(), Ok(()));
     }
 }
