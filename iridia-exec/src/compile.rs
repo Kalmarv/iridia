@@ -416,6 +416,20 @@ pub(super) fn compile(
             E::Literal(l) => {
                 inits.push((number(i)?, [lit(l)?; 4]));
             }
+            E::Constant(constant) => {
+                let Shape::V(_, width) = sh else {
+                    return Err("aggregate named constant".into());
+                };
+                let values = const_words(m, m.constants[*constant].init)?;
+                if values.len() != usize::from(width) {
+                    return Err("named constant width differs from its type".into());
+                }
+                let mut value = [0; 4];
+                for (lane, word) in value.iter_mut().zip(values) {
+                    *lane = word;
+                }
+                inits.push((number(i)?, value));
+            }
             E::ZeroValue(_) => {
                 if let Shape::V(..) = sh {
                     inits.push((number(i)?, [0; 4]));
