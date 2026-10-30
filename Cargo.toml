@@ -22,7 +22,7 @@ iridia-exec = { path = "iridia-exec" }
 iridia-interface = { version = "0.4.1", path = "iridia-interface" }
 naga = { version = "30.0.1", package = "primase-naga", git = "https://github.com/Kalmarv/primase-naga", rev = "8e6519c3eac6f08519c61c40cb6516ea95f6dde9", default-features = false, features = ["wgsl-out"] }
 primase-foundations = { version = "0.3.0", git = "https://github.com/Kalmarv/primase-foundations", rev = "f9cf4ece1de77fce9d703c63347dd70b728b7c0e" }
-primase-testdata = { version = "0.1.4", git = "https://github.com/Kalmarv/primase-testdata", rev = "fff4ebe2f39bbdc8236d99c83b51b506f732a499" }
+primase-testdata = { version = "0.1.5", git = "https://github.com/Kalmarv/primase-testdata", rev = "d4bc54b9f71e713aa47302d1df093491994db5a3" }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "=1.0.154", default-features = false, features = ["std", "preserve_order", "float_roundtrip"] }
 sha2 = { version = "=0.11.1", default-features = false }
