@@ -56,6 +56,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `cargo test -p iridia-interface` needs no game files; the layout arithmetic (`ConstantType::size`) is tested against sizes worked out by hand, and the render state's consistency check has its own unit tests.
 
+`SamplerState` also carries an optional border colour (`border`) and mip range (`lod`). `verify` checks finite
+values, an ordered range and an anisotropy of at least one; a struct literal can inherit absent fields through
+`..SamplerState::default()`.
+
+## Check the examples
+
+From the repository root, `cargo test -p iridia-interface --doc` checks the crate documentation, and
+`cargo build -p iridia-interface --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.

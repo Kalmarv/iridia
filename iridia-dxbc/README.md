@@ -64,6 +64,13 @@ Refused by name: double precision (the global flag), Shader Model 5.1 constant b
 - `tests/vkd3d_oracle.rs` runs vkd3d's `vkd3d-dxbc -t` and `vkd3d-compiler` (programs, never linked; `tools.vkd3d_dxbc` and `tools.vkd3d_compiler`) over a spread sample of each corpus (`vkd3d.limit`, all with `all`) and compares part kinds, sizes and offsets, the digest verdict (including a copy with one digest byte changed, refused by both), the signature elements and the instruction mnemonics with `dxcontainer`, the signature readers and `dxbc_reader::decode`.
 - `tests/exec_warp.rs` and `tests/exec_warp_tess.rs` render lifted programs on Microsoft's WARP rasterizer and run them on the executor, comparing every lane written; they need `tools.warp` (a host program this repository does not contain) and `tools.fxc`.
 
+## Check the examples
+
+From the repository root, `cargo test -p iridia-dxbc --doc` checks the crate documentation, and
+`cargo build -p iridia-dxbc --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.
+
+Shader Model 5.0 compute reflection is read through the same reflection path as pixel and vertex programs; a hull/domain patch signature may be `PCSG` or `PSG1`.

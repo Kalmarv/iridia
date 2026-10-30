@@ -48,6 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `cargo test -p iridia-exec` needs no game files: it runs fixtures through both `iridia-dxbc` and `iridia-dxil` (development dependencies, a cycle cargo allows), holding the interface read from either to the values worked out from the HLSL (`tests/interface.rs`), the evaluator to outputs worked out by hand (`tests/evaluate.rs`), lockstep lanes against one pixel after another with diverging control flow (`tests/lanes.rs`), and the stage drivers to hand-worked meshes, strips, patches and scenes. The comparisons against WARP live in `iridia-dxbc` and `iridia-dxil` (`tests/exec_warp*.rs`).
 
+## Check the examples
+
+From the repository root, `cargo test -p iridia-exec --doc` checks the crate documentation, and
+`cargo build -p iridia-exec --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later, apart from the tessellator port noted above.
+
+Texture sampling carries the stated border colour and mip range (`SamplerUse`, `ViewSampler`): outside a border axis reads that colour, and the mip range clamps the biased level. A border with no colour remains a refusal. Vector constant expressions compile as initial values, including constants introduced by material specialisation.

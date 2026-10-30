@@ -52,6 +52,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `cargo test -p iridia` needs no game files. The fixtures it lifts are the small compiled shaders in `tests/fixtures` and the readers' own fixtures (`iridia-dxbc` and `iridia-dxil` are development dependencies, a cycle cargo allows). See the [repository README](../README.md) for the real-data tests.
 
+## Material specialisation
+
+`specialise::feature_words` finds the branch words among the uniform words the caller supplies.
+`specialise::specialise` folds those stated values into a copy of the program and reports the words used,
+resources no longer read and values folded. The original remains unchanged; unhandled control flow is refused.
+Ordinary material data stays uniform unless the caller explicitly supplies it as a known word.
+
+## Check the examples
+
+From the repository root, `cargo test -p iridia --doc` checks the crate documentation, and
+`cargo build -p iridia --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.

@@ -67,6 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `cargo test -p iridia-mojo` needs no game files. `tests/lift.rs` lifts programs written as MojoShader writes them (a gamma pixel program, a vertex program with the `posFixup` tail, one with relative addressing, a `rep` loop, `if`/`else` and `discard`), validates and writes them as WGSL, checks that each damaged program is refused by name, and compares a table of the lifted fixtures against the committed `tests/lifted.hashes` (the version gate). This crate declares no real-data inputs beyond the scratch folder ([`tests/inputs/README.md`](tests/inputs/README.md)).
 
+## Check the examples
+
+From the repository root, `cargo test -p iridia-mojo --doc` checks the crate documentation, and
+`cargo build -p iridia-mojo --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.

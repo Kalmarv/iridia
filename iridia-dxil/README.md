@@ -55,6 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 The inputs the tests read from `GAME_DATA` are listed in [`tests/inputs/README.md`](tests/inputs/README.md).
 
+## Check the examples
+
+From the repository root, `cargo test -p iridia-dxil --doc` checks the crate documentation, and
+`cargo build -p iridia-dxil --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.

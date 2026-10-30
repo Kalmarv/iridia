@@ -51,6 +51,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `cargo test -p iridia-d3d9` needs no game files. `tests/tokens.rs` runs hand-worked token and arithmetic fixtures through the executor (expected numbers come from the instruction definitions, not from a second decoder); `tests/vertex.rs`, `vertex_output.rs`, `projection.rs`, `frame.rs` and `sampler.rs` do the same for their parts, and the `*versions.tsv` tables gate the lifter version. With `GAME_DATA` naming a folder of your own extracted programs (see [`tests/inputs/README.md`](tests/inputs/README.md)), `tests/disassembly.rs` compares every executable opcode and operand, the input, output and sampler declarations, `def` values and CTAB allocations against Microsoft's `D3DDisassemble` (the thin harness `tests/oracles/disassemble.py` loads `d3dcompiler_47.dll` and has no shader-format logic), then validates and writes the lift as WGSL.
 
+## Check the examples
+
+From the repository root, `cargo test -p iridia-d3d9 --doc` checks the crate documentation, and
+`cargo build -p iridia-d3d9 --examples` builds its example programs. Examples that read paths need the caller's files; the repository ships no game assets.
+
 ## Licence
 
 GPL-3.0-or-later.

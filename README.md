@@ -100,6 +100,9 @@ require = 'gate'                  # or 'all': an unset input fails instead of sk
 The real-data tests lift whole folders of shader containers you extract from your own installs (`corpus/<game>/shaders`: Sekiro, Elden Ring, Riders Republic, skate. and a Unity player's), validate and write each, and print the refusals counted by reason; a program that lifts but fails validation fails the test. Others compare the readers with Microsoft's disassembler (`fxc /dumpbin` text, made with `iridia-dxbc/tests/oracles/dxbc_corpus.py`, or `iridia-d3d9/tests/oracles/disassemble.py` for Direct3D 9 tokens). `GAME_DATA_DEBUG='key=value;key=value'` sets the debug switches a crate declares, such as `dxil.fuzz_runs`. Every input, what it is and where it comes from is in the generated tables of
 [`iridia-dxbc/tests/inputs/README.md`](iridia-dxbc/tests/inputs/README.md), [`iridia-dxil/tests/inputs/README.md`](iridia-dxil/tests/inputs/README.md), [`iridia-d3d9/tests/inputs/README.md`](iridia-d3d9/tests/inputs/README.md) and [`iridia-mojo/tests/inputs/README.md`](iridia-mojo/tests/inputs/README.md). Game files stay on your machine; nothing in this repository downloads or extracts them.
 
+Material-specific programs can use `iridia::specialise`: find branch words among the stated uniform values,
+fold those values in a copy, and retain the original program beside the specialised one and its report.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), which also says how to report a shader these crates cannot read.
