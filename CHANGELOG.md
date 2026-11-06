@@ -6,6 +6,8 @@
   resource where the pipeline's `BindingPlan` binds it, and a vertex program's outputs at the locations, interpolation
   and types of the pixel program it feeds (matched by semantic, as Direct3D links stages; padded, narrowed or bitcast
   where the two differ, each noted). An input no output carries is refused by name.
+- `iridia-dxil` refuses a volatile or atomic load or store by name, which it lowered as a plain one before; none
+  of the real corpora's programs has one.
 
 ## 0.5.0 (2026-11-06)
 

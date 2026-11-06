@@ -36,15 +36,27 @@ fn a_value_the_function_does_not_have_is_refused() {
 }
 
 #[test]
-fn an_instruction_after_the_last_terminator_is_refused() {
-    // dx 0.4.0 named this byte's damage as an instruction after the last terminator; 0.5.0 checks a load's operand as
-    // it reads the record, before the blocks, and names that
+fn a_load_from_a_value_that_is_not_a_pointer_is_refused() {
+    // the reader's own check, as it reads the record (dx 0.4.0 named this damage as an instruction after the last
+    // terminator, which the reader now reaches only after it)
     let bytes = changed("buffer_arrays.66.dxil", 4184, 0x00, 0x01);
     assert!(
         refusal(&bytes).contains("a load from a value that is not a pointer"),
         "{}",
         refusal(&bytes)
     );
+}
+
+#[test]
+fn a_volatile_load_or_store_is_refused() {
+    // the record's volatile operand set: lowered as a plain access it would lose what it asks
+    for (at, was, now, expected) in [
+        (2546, 0x61, 0x69, "a volatile load"),
+        (2557, 0x00, 0x04, "a volatile store"),
+    ] {
+        let bytes = changed("ray_tracing.callable.od.dxil", at, was, now);
+        assert!(refusal(&bytes).contains(expected), "{}", refusal(&bytes));
+    }
 }
 
 #[test]

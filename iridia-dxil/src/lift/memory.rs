@@ -506,6 +506,9 @@ impl Lift<'_> {
                 }
                 self.define_result(result, Lv::Pointer(p))
             }
+            // a volatile or atomic load or store would be lowered as a plain one, losing what it asks
+            Op::Load { volatile: true, .. } => self.refuse("a volatile load"),
+            Op::Load { atomic: Some(_), .. } => self.refuse("an atomic load"),
             Op::Load { pointer, .. } => {
                 // a library names its resources by globals; the value a load of one gives is the resource
                 if let Some(resource) = self
@@ -545,6 +548,8 @@ impl Lift<'_> {
                 let v = self.b.bitcast_to(loaded, kind);
                 self.define_result(result, Lv::Scalar(v))
             }
+            Op::Store { volatile: true, .. } => self.refuse("a volatile store"),
+            Op::Store { atomic: Some(_), .. } => self.refuse("an atomic store"),
             Op::Store { pointer, value, .. } => {
                 let Lv::Pointer(p) = self.get(*pointer)? else {
                     return self.refuse("a store through something that is not a pointer");
