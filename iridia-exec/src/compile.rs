@@ -36,7 +36,7 @@ fn lane_u8(lane: usize) -> u8 {
 
 /// The most words of local memory a function may need: far more than D3D's 64 KiB of scratch and thread group memory, and
 /// what bounds the registers a run allocates (`Scratch`).
-const MAX_LOCAL_WORDS: u32 = 1 << 20;
+pub(crate) const MAX_LOCAL_WORDS: u32 = 1 << 20;
 
 /// `a + b` words of layout, an error naming the layout when it does not fit.
 fn add(what: &str, a: u32, b: u32) -> Result<u32, String> {
@@ -168,6 +168,8 @@ pub(super) fn binary_op(op: Bo, k: Kind) -> Result<BinOp, String> {
         (Bo::Multiply, _) => MulU,
         (Bo::Divide, Kind::U) => DivU,
         (Bo::Modulo, Kind::U) => ModU,
+        (Bo::Divide, Kind::I) => DivI,
+        (Bo::Modulo, Kind::I) => ModI,
         (Bo::And, _) => And,
         (Bo::InclusiveOr, _) => Or,
         (Bo::ExclusiveOr, _) => Xor,
@@ -249,6 +251,11 @@ pub(super) fn math_op(fun: Mf, k: Kind) -> Result<MathOp, String> {
         (Mf::ReverseBits, _) => MathOp::RevBits,
         (Mf::CountLeadingZeros, _) => MathOp::Clz,
         (Mf::FirstTrailingBit, _) => MathOp::Ctz,
+        (Mf::FirstLeadingBit, Kind::U) => MathOp::FirstLeadingU,
+        (Mf::FirstLeadingBit, Kind::I) => MathOp::FirstLeadingI,
+        (Mf::ExtractBits, Kind::U) => MathOp::ExtractU,
+        (Mf::ExtractBits, Kind::I) => MathOp::ExtractI,
+        (Mf::InsertBits, Kind::U | Kind::I) => MathOp::Insert,
         (Mf::Pack2x16float, _) => MathOp::PackHalf,
         (Mf::Unpack2x16float, _) => MathOp::UnpackHalf,
         (Mf::Mix, Kind::F) => MathOp::Mix,
@@ -963,26 +970,33 @@ pub(super) fn compile(
                 });
             }
             E::Math {
-                fun, arg, arg1, arg2, ..
+                fun,
+                arg,
+                arg1,
+                arg2,
+                arg3,
             } => {
                 let k = kind(*arg);
                 let n = nlanes(*arg);
-                let a = *slot.at(arg.index())?;
-                let b = arg1.map_or(Ok(0), |x| slot.at(x.index()).copied())?;
-                let c = arg2.map_or(Ok(0), |x| slot.at(x.index()).copied())?;
                 let f = math_op(*fun, k)?;
-                let c1 = arg2.is_some_and(|x| nlanes(x) == 1) && n > 1;
-                *op_of.at_mut(i)? = Some(Op::Math { f, a, b, c, n, c1 });
+                let mut args = [0; 4];
+                let mut scalars = 0;
+                for (k, (at, x)) in args.iter_mut().zip([Some(*arg), *arg1, *arg2, *arg3]).enumerate() {
+                    let Some(x) = x else { continue };
+                    *at = *slot.at(x.index())?;
+                    if nlanes(x) == 1 && n > 1 {
+                        scalars |= 1 << k;
+                    }
+                }
+                *op_of.at_mut(i)? = Some(Op::Math { f, args, n, scalars });
             }
             E::Relational { fun, argument } => {
                 let f = relational_op(*fun);
                 *op_of.at_mut(i)? = Some(Op::Math {
                     f,
-                    a: *slot.at(argument.index())?,
-                    b: 0,
-                    c: 0,
+                    args: [*slot.at(argument.index())?, 0, 0, 0],
                     n: nlanes(*argument),
-                    c1: false,
+                    scalars: 0,
                 });
             }
             E::ArrayLength(p) => {
@@ -1136,7 +1150,7 @@ pub(super) fn compile(
             } => vec![*s],
             Op::Bin { a, b, .. } => vec![*a, *b],
             Op::Select { c, a, b, .. } => vec![*c, *a, *b],
-            Op::Math { a, b, c, .. } => vec![*a, *b, *c],
+            Op::Math { args, .. } => args.to_vec(),
             Op::Sample {
                 tex,
                 smp,
@@ -1917,6 +1931,7 @@ pub(super) fn compile(
                 _ => None,
             })
             .collect(),
+        ir_types: Vec::new(),
     })
 }
 

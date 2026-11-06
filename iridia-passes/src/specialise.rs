@@ -25,6 +25,17 @@ fn known(f: &Function, cond: ValueId) -> Option<bool> {
     }
 }
 
+/// The selector's value, where it is a literal 32-bit integer.
+fn selected(f: &Function, selector: ValueId) -> Option<u32> {
+    match f.value(selector) {
+        Some(d) if d.ty.lanes == 1 && d.ty.scalar.is_integer() && d.ty.scalar.bits() == 32 => match d.op {
+            Op::Literal(bits) => u32::try_from(bits[0]).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Branches on a literal condition taken; the blocks then unreached removed and the rest renumbered in order.
 fn fold_graph(f: &Function, blocks: Vec<Block>) -> Vec<Block> {
     let mut blocks = blocks;
@@ -33,6 +44,16 @@ fn fold_graph(f: &Function, blocks: Vec<Block>) -> Vec<Block> {
             && let Some(way) = known(f, *cond)
         {
             b.term = Terminator::Jump(if way { accept.clone() } else { reject.clone() });
+        }
+        if let Terminator::Switch {
+            selector,
+            cases,
+            default,
+        } = &b.term
+            && let Some(v) = selected(f, *selector)
+        {
+            let to = cases.iter().find(|(c, _)| *c == v).map_or(default, |(_, t)| t);
+            b.term = Terminator::Jump(to.clone());
         }
     }
     let mut reached = vec![false; blocks.len()];
@@ -43,14 +64,7 @@ fn fold_graph(f: &Function, blocks: Vec<Block>) -> Vec<Block> {
             _ => continue,
         }
         if let Some(b) = blocks.get(at) {
-            match &b.term {
-                Terminator::Jump(t) => stack.push(t.block as usize),
-                Terminator::Branch { accept, reject, .. } => {
-                    stack.push(accept.block as usize);
-                    stack.push(reject.block as usize);
-                }
-                Terminator::Return | Terminator::Kill | Terminator::Unreachable => {}
-            }
+            stack.extend(b.term.targets().into_iter().map(|t| t.block as usize));
         }
     }
     let mut number = vec![u32::MAX; blocks.len()];
@@ -67,21 +81,16 @@ fn fold_graph(f: &Function, blocks: Vec<Block>) -> Vec<Block> {
         .zip(reached)
         .filter(|(_, r)| *r)
         .map(|(mut b, _)| {
-            match &mut b.term {
-                Terminator::Jump(t) => renumber(&mut t.block),
-                Terminator::Branch { accept, reject, .. } => {
-                    renumber(&mut accept.block);
-                    renumber(&mut reject.block);
-                }
-                Terminator::Return | Terminator::Kill | Terminator::Unreachable => {}
-            }
+            b.term.targets_mut().into_iter().for_each(|t| renumber(&mut t.block));
             b
         })
         .collect()
 }
 
 /// An `If` on a literal condition replaced by its one arm, in place: the arm's nodes join the region, and its yield
-/// gives the `If`'s results (`subst`); an arm that leaves ends the region, and what followed is not reached.
+/// gives the `If`'s results (`subst`); an arm that leaves ends the region, and what followed is not reached. A `Switch`
+/// on a literal selector becomes a `Block` of the case it takes (the default where no case names the value), under the
+/// switch's label, so a break out of the case still leaves to the same place with the same results.
 fn fold_region(f: &Function, r: Region, subst: &mut Vec<Option<ValueId>>) -> Region {
     let mut out = Region {
         nodes: Vec::new(),
@@ -116,6 +125,38 @@ fn fold_region(f: &Function, r: Region, subst: &mut Vec<Option<ValueId>>) -> Reg
                     cond,
                     accept: fold_region(f, accept, subst),
                     reject: fold_region(f, reject, subst),
+                    results,
+                }),
+            },
+            Node::Switch {
+                label,
+                selector,
+                cases,
+                default,
+                results,
+            } => match selected(f, selector) {
+                Some(v) => {
+                    let taken = cases
+                        .into_iter()
+                        .find(|c| c.values.contains(&v))
+                        .map_or(default, |c| c.body);
+                    out.nodes.push(Node::Block {
+                        label,
+                        body: fold_region(f, taken, subst),
+                        results,
+                    });
+                }
+                None => out.nodes.push(Node::Switch {
+                    label,
+                    selector,
+                    cases: cases
+                        .into_iter()
+                        .map(|c| iridia_ir::Case {
+                            values: c.values,
+                            body: fold_region(f, c.body, subst),
+                        })
+                        .collect(),
+                    default: fold_region(f, default, subst),
                     results,
                 }),
             },
@@ -162,22 +203,8 @@ fn resolve(subst: &[Option<ValueId>], mut v: ValueId) -> ValueId {
 
 fn rename_region(r: &mut Region, s: &impl Fn(ValueId) -> ValueId) {
     for n in &mut r.nodes {
-        match n {
-            Node::Value(_) | Node::Demote => {}
-            Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => *x = s(*x),
-            Node::If {
-                cond, accept, reject, ..
-            } => {
-                *cond = s(*cond);
-                rename_region(accept, s);
-                rename_region(reject, s);
-            }
-            Node::Block { body, .. } => rename_region(body, s),
-            Node::Loop { inits, body, .. } => {
-                inits.iter_mut().for_each(|i| *i = s(*i));
-                rename_region(body, s);
-            }
-        }
+        n.values_mut().into_iter().for_each(|v| *v = s(*v));
+        n.regions_mut().into_iter().for_each(|r| rename_region(r, s));
     }
     if let Some(End::Yield(vs) | End::Br(_, vs) | End::Continue(_, vs)) = &mut r.end {
         vs.iter_mut().for_each(|v| *v = s(*v));
@@ -250,7 +277,7 @@ pub fn specialise(p: &mut Program, known_state: &[(ResourceId, [u64; 4])]) -> Re
     Ok(())
 }
 
-/// The resources the values a function's body places read.
+/// The resources a function's body uses: those its placed values read, and the buffers and images it stores to.
 fn read(f: &Function) -> Vec<ResourceId> {
     fn region(f: &Function, r: &Region, out: &mut Vec<ResourceId>) {
         for n in &r.nodes {
@@ -260,12 +287,9 @@ fn read(f: &Function) -> Vec<ResourceId> {
     fn nodes(f: &Function, n: &Node, out: &mut Vec<ResourceId>) {
         match n {
             Node::Value(v) => out.extend(f.value(*v).map(|d| d.op.resources()).unwrap_or_default()),
-            Node::If { accept, reject, .. } => {
-                region(f, accept, out);
-                region(f, reject, out);
-            }
-            Node::Block { body, .. } | Node::Loop { body, .. } => region(f, body, out),
-            Node::StoreVar(..) | Node::StoreOutput(..) | Node::Demote => {}
+            Node::StoreBuffer { resource, .. } => out.push(resource.id),
+            Node::StoreTexel { image, .. } => out.push(image.id),
+            _ => n.regions().into_iter().for_each(|r| region(f, r, out)),
         }
     }
     let mut out = Vec::new();

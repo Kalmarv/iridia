@@ -233,14 +233,7 @@ impl<'v, L: FnMut(NodeId, &Node, &[u32]) -> Option<u32>> Evaluator<'v, L> {
                             return Err(dot());
                         }
                         let (a, b) = w.split_at_checked(n).ok_or_else(dot)?;
-                        math(
-                            m,
-                            reg(a),
-                            reg(b),
-                            [0; 4],
-                            u8::try_from(n).map_err(|_| dot())?,
-                            ftz,
-                        )[0]
+                        math(m, [reg(a), reg(b), [0; 4], [0; 4]], u8::try_from(n).map_err(|_| dot())?, ftz)[0]
                     }
                     MathOp::Normalize | MathOp::PackHalf | MathOp::UnpackHalf => {
                         return Err(format!("{fun:?} mixes lanes: not evaluated"));
@@ -248,7 +241,7 @@ impl<'v, L: FnMut(NodeId, &Node, &[u32]) -> Option<u32>> Evaluator<'v, L> {
                     _ if lanes_mixed(fun) => return Err(format!("{fun:?} mixes lanes: not evaluated")),
                     _ => {
                         let at = |i: usize| [w.get(i).copied().unwrap_or(0), 0, 0, 0];
-                        math(m, at(0), at(1), at(2), 1, ftz)[0]
+                        math(m, [at(0), at(1), at(2), at(3)], 1, ftz)[0]
                     }
                 }
             }
@@ -258,7 +251,7 @@ impl<'v, L: FnMut(NodeId, &Node, &[u32]) -> Option<u32>> Evaluator<'v, L> {
                     .ok()
                     .filter(|n| (1..=4).contains(n))
                     .ok_or_else(|| format!("{fun:?} of {} lanes", w.len()))?;
-                math(m, reg(w), [0; 4], [0; 4], lanes, ftz)[0]
+                math(m, [reg(w), [0; 4], [0; 4], [0; 4]], lanes, ftz)[0]
             }
             Op::Select => {
                 if lane(0)? != 0 {

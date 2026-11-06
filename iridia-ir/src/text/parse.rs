@@ -10,11 +10,12 @@ use alloc::{
 };
 use core::fmt;
 
-use super::{SCHEMA, binary, unary};
+use super::{SCHEMA, binary, builtin, ternary, unary};
 use crate::{
-    Axis, Binary, Block, Body, Cmp, End, Fineness, FloatToInt, Function, LabelId, Level, MinMaxNan, MulZero,
-    Node, OnZero, Op, OutOfBounds, Precision, Region, Rounding, SaturateNan, Scalar, Target, Terminator,
-    Type, Unary, ValueDef, ValueId, Var, VarId, interface::ResourceId,
+    Address, AtomicOp, Axis, Barrier, Binary, Block, Body, Builtin, Case, Cmp, CounterOp, End, Fineness,
+    FloatToInt, Function, GatherOffset, LabelId, Level, Memory, MinMaxNan, MulZero, Node, OnZero, Op,
+    OutOfBounds, Precision, Query, Region, Res, Rounding, SaturateNan, Scalar, Scope, Space, Target,
+    Terminator, Ternary, Type, Unary, ValueDef, ValueId, Var, VarId, interface::ResourceId,
 };
 
 /// Why a text cannot be read: the line (from 1) and what is wrong there.
@@ -45,7 +46,7 @@ const ROUNDINGS: [Rounding; 5] = [
 ];
 const CMPS: [Cmp; 6] = [Cmp::Eq, Cmp::Ne, Cmp::Lt, Cmp::Le, Cmp::Gt, Cmp::Ge];
 const NANS: [MinMaxNan; 3] = [MinMaxNan::MinNum, MinMaxNan::Propagate, MinMaxNan::Any];
-const ON_ZERO: [OnZero; 3] = [OnZero::AllOnes, OnZero::Dividend, OnZero::Undef];
+const ON_ZERO: [OnZero; 3] = [OnZero::AllOnes, OnZero::ByOne, OnZero::Undef];
 
 /// Every unary operation, for matching a name against the name the printer gives it.
 fn unaries() -> Vec<Unary> {
@@ -66,6 +67,22 @@ fn unaries() -> Vec<Unary> {
         Unary::Any,
         Unary::All,
         Unary::IsNan,
+        Unary::FTan,
+        Unary::FAsin,
+        Unary::FAcos,
+        Unary::FAtan,
+        Unary::FSinh,
+        Unary::FCosh,
+        Unary::FTanh,
+        Unary::FSign,
+        Unary::IsInf,
+        Unary::CountOnes,
+        Unary::BitReverse,
+        Unary::FirstBitHigh,
+        Unary::FirstBitHighSigned,
+        Unary::FirstBitLow,
+        Unary::F32ToF16,
+        Unary::F16ToF32,
     ];
     all.extend(ROUNDINGS.map(Unary::FRound));
     for axis in [Axis::X, Axis::Y] {
@@ -96,6 +113,16 @@ fn binaries() -> Vec<Binary> {
         Binary::And,
         Binary::Or,
         Binary::Xor,
+        Binary::FRem,
+        Binary::UMulHigh,
+        Binary::SMulHigh,
+        Binary::UAddCarry,
+        Binary::USubBorrow,
+        Binary::UMin,
+        Binary::UMax,
+        Binary::Shl,
+        Binary::ShrU,
+        Binary::ShrS,
     ];
     all.extend(NANS.map(Binary::FMin));
     all.extend(NANS.map(Binary::FMax));
@@ -104,7 +131,53 @@ fn binaries() -> Vec<Binary> {
     all.extend(CMPS.map(Binary::UCmp));
     all.extend(ON_ZERO.map(Binary::UDiv));
     all.extend(ON_ZERO.map(Binary::URem));
+    all.extend(ON_ZERO.map(Binary::SDiv));
+    all.extend(ON_ZERO.map(Binary::SRem));
     all
+}
+
+const TERNARIES: [Ternary; 3] = [
+    Ternary::Fma,
+    Ternary::BitExtract { signed: false },
+    Ternary::BitExtract { signed: true },
+];
+const BUILTINS: [Builtin; 5] = [
+    Builtin::OutputControlPoint,
+    Builtin::PrimitiveId,
+    Builtin::GsInstance,
+    Builtin::DomainLocation,
+    Builtin::PhaseInstance,
+];
+const ATOMICS: [AtomicOp; 11] = [
+    AtomicOp::Add,
+    AtomicOp::Sub,
+    AtomicOp::And,
+    AtomicOp::Or,
+    AtomicOp::Xor,
+    AtomicOp::SMin,
+    AtomicOp::SMax,
+    AtomicOp::UMin,
+    AtomicOp::UMax,
+    AtomicOp::Exchange,
+    AtomicOp::CompareExchange,
+];
+
+/// `s` cut at the first of each keyword ` key ` in turn: the head and each keyword's text, in the order given; a
+/// keyword may be missing.
+fn keywords<'s>(s: &'s str, keys: &[&'static str]) -> (&'s str, Vec<(&'static str, &'s str)>) {
+    let mut cuts: Vec<(usize, &'static str)> = keys
+        .iter()
+        .filter_map(|k| s.find(&format!(" {k} ")).map(|at| (at, *k)))
+        .collect();
+    cuts.sort_unstable();
+    let head = cuts.first().map_or(s, |(at, _)| s.get(..*at).unwrap_or(s));
+    let mut out = Vec::new();
+    for (i, (at, k)) in cuts.iter().enumerate() {
+        let start = at.saturating_add(k.len()).saturating_add(2);
+        let end = cuts.get(i.saturating_add(1)).map_or(s.len(), |(n, _)| *n);
+        out.push((*k, s.get(start..end).unwrap_or("")));
+    }
+    (head, out)
 }
 
 fn lane_of(c: char) -> Option<u8> {
@@ -187,6 +260,113 @@ impl<'a> Parser<'a> {
             Some(n) => Ok(ResourceId(n)),
             None => self.fail(format!("not a resource: {s}")),
         }
+    }
+    /// `rN`, `rN@%i`, `rN@%i!`.
+    fn res(&self, s: &str) -> Result<Res> {
+        let s = s.trim();
+        match s.split_once('@') {
+            None => Ok(Res::of(self.resource(s)?)),
+            Some((r, i)) => {
+                let (i, nonuniform) = match i.strip_suffix('!') {
+                    Some(i) => (i, true),
+                    None => (i, false),
+                };
+                Ok(Res {
+                    id: self.resource(r)?,
+                    index: Some(self.value_id(i)?),
+                    nonuniform,
+                })
+            }
+        }
+    }
+    fn oob(&self, s: &str) -> Result<OutOfBounds> {
+        match s.trim() {
+            "oob.zero" => Ok(OutOfBounds::Zero),
+            "oob.undef" => Ok(OutOfBounds::Undef),
+            other => self.fail(format!("no out-of-bounds rule {other}")),
+        }
+    }
+    fn number<T: core::str::FromStr>(&self, s: &str) -> Result<T> {
+        s.trim()
+            .parse::<T>()
+            .map_or_else(|_| self.fail(format!("not a number: {s}")), Ok)
+    }
+    /// `(a,b,c)`.
+    fn offsets(&self, s: &str) -> Result<[i8; 3]> {
+        let parts: Vec<&str> = s
+            .trim()
+            .strip_prefix('(')
+            .and_then(|x| x.strip_suffix(')'))
+            .map(|x| x.split(',').collect())
+            .unwrap_or_default();
+        match parts.as_slice() {
+            [a, b, c] => Ok([self.number(a)?, self.number(b)?, self.number(c)?]),
+            _ => self.fail(format!("not offsets: {s}")),
+        }
+    }
+    /// `slot.lanes`.
+    fn slot(&self, s: &str) -> Result<(u32, u8)> {
+        let Some((slot, lanes)) = s.trim().split_once('.') else {
+            return self.fail("not slot.lanes");
+        };
+        Ok((self.number(slot)?, self.mask(lanes)?))
+    }
+    /// `[%i]`.
+    fn bracketed(&self, s: &str) -> Result<ValueId> {
+        match s.trim().strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            Some(v) => self.value_id(v),
+            None => self.fail(format!("not [%n]: {s}")),
+        }
+    }
+    /// `[%i * stride] + offset` or ` + offset` after a resource.
+    fn address(&self, s: &str) -> Result<Address> {
+        let Some((head, offset)) = s.rsplit_once(" + ").or_else(|| s.strip_prefix("+ ").map(|o| ("", o))) else {
+            return self.fail(format!("not an address: {s}"));
+        };
+        let offset = self.number(offset)?;
+        let head = head.trim();
+        if head.is_empty() {
+            return Ok(Address::fixed(offset));
+        }
+        let Some((i, stride)) = head
+            .strip_prefix('[')
+            .and_then(|x| x.strip_suffix(']'))
+            .and_then(|x| x.split_once(" * "))
+        else {
+            return self.fail("a buffer index without a stride");
+        };
+        Ok(Address {
+            index: Some(self.value_id(i)?),
+            stride: self.number(stride)?,
+            offset,
+        })
+    }
+    /// A resource and the address after it: `rN@%i[%j * s] + o`.
+    fn res_address(&self, s: &str) -> Result<(Res, Address)> {
+        let s = s.trim();
+        let cut = s.find(['[', ' ']).unwrap_or(s.len());
+        let (r, a) = s.split_at(cut);
+        Ok((self.res(r)?, self.address(a)?))
+    }
+    fn memory(&self, s: &str) -> Result<Memory> {
+        let s = s.trim();
+        if let Some(rest) = s.strip_prefix("buffer ") {
+            let (r, a) = self.res_address(rest)?;
+            return Ok(Memory::Buffer(r, a));
+        }
+        if let Some(rest) = s.strip_prefix("image ") {
+            let Some((r, c)) = rest.split_once(", ") else {
+                return self.fail("an image without a coordinate");
+            };
+            return Ok(Memory::Image(self.res(r)?, self.value_id(c)?));
+        }
+        if let Some(rest) = s.strip_prefix("var ") {
+            return Ok(match rest.split_once('[') {
+                Some((v, i)) => Memory::Var(self.var(v)?, Some(self.bracketed(&format!("[{i}"))?)),
+                None => Memory::Var(self.var(rest)?, None),
+            });
+        }
+        self.fail(format!("not memory: {s}"))
     }
     fn label(&self, s: &str) -> Result<LabelId> {
         match s.trim().strip_prefix('\'').and_then(|n| n.parse::<u32>().ok()) {
@@ -347,22 +527,65 @@ impl<'a> Parser<'a> {
             "convert.saturate" => Op::Convert(self.value_id(rest)?, FloatToInt::Saturate),
             "convert.undef" => Op::Convert(self.value_id(rest)?, FloatToInt::Undef),
             "bitcast" => Op::Bitcast(self.value_id(rest)?),
-            "input" => {
-                let Some((slot, lanes)) = rest.split_once('.') else {
-                    return self.fail("input takes slot.lanes");
-                };
-                let slot = slot
-                    .parse::<u32>()
-                    .map_or_else(|_| self.fail(format!("not a slot: {slot}")), Ok)?;
-                Op::LoadInput(slot, self.mask(lanes)?)
+            "input" | "output" => match rest.split_once(' ') {
+                Some((at, index)) => {
+                    let (slot, mask) = self.slot(at)?;
+                    let index = self.bracketed(index)?;
+                    if word == "input" {
+                        Op::LoadInputAt(slot, mask, index)
+                    } else {
+                        Op::LoadOutputAt(slot, mask, index)
+                    }
+                }
+                None if word == "input" => {
+                    let (slot, mask) = self.slot(rest)?;
+                    Op::LoadInput(slot, mask)
+                }
+                None => return self.fail("an output read without its control point"),
+            },
+            "patch" => {
+                let (slot, mask) = self.slot(rest)?;
+                Op::LoadPatch(slot, mask)
             }
-            "load" => Op::LoadVar(self.var(rest)?),
+            "builtin" => match BUILTINS.into_iter().find(|b| builtin(*b) == rest) {
+                Some(b) => Op::Builtin(b),
+                None => return self.fail(format!("no builtin {rest}")),
+            },
+            "load" => match rest.split_once('[') {
+                Some((v, tail)) => {
+                    let Some((i, rule)) = tail.split_once("] ") else {
+                        return self.fail("an element load without its rule");
+                    };
+                    Op::LoadElement(self.var(v)?, self.value_id(i)?, self.oob(rule)?)
+                }
+                None => Op::LoadVar(self.var(rest)?),
+            },
+            "bitinsert" => match self.list(rest)?.as_slice() {
+                [base, insert, offset, count] => Op::BitInsert {
+                    base: *base,
+                    insert: *insert,
+                    offset: *offset,
+                    count: *count,
+                },
+                _ => return self.fail("bitinsert takes four values"),
+            },
+            "texel" => self.texel(rest)?,
+            name if name.starts_with("gather.") => self.gather(name.trim_start_matches("gather."), rest)?,
+            name if name.starts_with("query.") => self.query(name.trim_start_matches("query."), rest)?,
+            name if name.starts_with("atomic.") => self.atomic(name.trim_start_matches("atomic."), rest)?,
+            "counter.increment" => Op::Counter(self.res(rest)?, CounterOp::Increment),
+            "counter.decrement" => Op::Counter(self.res(rest)?, CounterOp::Decrement),
             "state" => Op::LoadState(self.resource(rest)?),
             "buffer" => self.buffer(rest)?,
             "sample" => self.sample(rest)?,
             name if name.starts_with("clamp.") => Op::Unary(self.clamp(name)?, self.value_id(rest)?),
             name => {
-                if let Some(u) = unaries().into_iter().find(|u| unary(u) == name) {
+                if let Some(t) = TERNARIES.into_iter().find(|t| ternary(t) == name) {
+                    match self.list(rest)?.as_slice() {
+                        [a, b, c] => Op::Ternary(t, *a, *b, *c),
+                        _ => return self.fail(format!("{name} takes three values")),
+                    }
+                } else if let Some(u) = unaries().into_iter().find(|u| unary(u) == name) {
                     Op::Unary(u, self.value_id(rest)?)
                 } else if let Some(b) = binaries().into_iter().find(|b| binary(b) == name) {
                     match self.list(rest)?.as_slice() {
@@ -423,47 +646,139 @@ impl<'a> Parser<'a> {
                 let stride = stride
                     .parse::<u32>()
                     .map_or_else(|_| self.fail(format!("not a stride: {stride}")), Ok)?;
-                (self.resource(r)?, Some(self.value_id(i)?), stride)
+                (self.res(r)?, Some(self.value_id(i)?), stride)
             }
             // a fixed address states no stride: the printer writes none, so it is zero
-            None => (self.resource(head)?, None, 0),
+            None => (self.res(head)?, None, 0),
         };
         Ok(Op::LoadBuffer {
             resource,
-            index,
-            stride,
-            offset,
+            address: Address { index, stride, offset },
             oob,
         })
     }
-    /// `rT, rS, %c` and an optional `level 0`, `bias %x`, `level %x` or `grad %x, %y`.
+    /// `rT, rS, %c` and an optional `level 0`, `bias %x`, `level %x` or `grad %x, %y`, then optional `compare %x`,
+    /// `offset (a,b,c)` and `clamp %x`.
     fn sample(&self, s: &str) -> Result<Op> {
-        let (head, level) = match ["level", "bias", "grad"].into_iter().find_map(|word| {
-            s.split_once(&format!(" {word} "))
-                .map(|(h, l)| (h, Some((word, l))))
-        }) {
-            Some(x) => x,
-            None => (s, None),
-        };
+        let (head, keys) = keywords(s, &["level", "bias", "grad", "compare", "offset", "clamp"]);
         let parts: Vec<&str> = head.split(", ").collect();
         let [texture, sampler, coord] = parts.as_slice() else {
             return self.fail("sample takes texture, sampler, coordinate");
         };
-        let level = match level {
-            None => Level::Auto,
-            Some(("level", "0")) => Level::Zero,
-            Some(("level", x)) => Level::Exact(self.value_id(x)?),
-            Some(("grad", x)) => match self.list(x)?.as_slice() {
-                [dx, dy] => Level::Grad(*dx, *dy),
-                _ => return self.fail("a gradient takes two values"),
-            },
-            Some((_, x)) => Level::Bias(self.value_id(x)?),
-        };
+        let (mut level, mut compare, mut offset, mut clamp) = (Level::Auto, None, [0; 3], None);
+        for (k, x) in keys {
+            match k {
+                "level" if x == "0" => level = Level::Zero,
+                "level" => level = Level::Exact(self.value_id(x)?),
+                "bias" => level = Level::Bias(self.value_id(x)?),
+                "grad" => match self.list(x)?.as_slice() {
+                    [dx, dy] => level = Level::Grad(*dx, *dy),
+                    _ => return self.fail("a gradient takes two values"),
+                },
+                "compare" => compare = Some(self.value_id(x)?),
+                "offset" => offset = self.offsets(x)?,
+                _ => clamp = Some(self.value_id(x)?),
+            }
+        }
         Ok(Op::Sample {
-            texture: self.resource(texture)?,
-            sampler: self.resource(sampler)?,
+            texture: self.res(texture)?,
+            sampler: self.res(sampler)?,
             coord: self.value_id(coord)?,
             level,
+            compare,
+            offset,
+            clamp,
+        })
+    }
+    /// `gather.c rT, rS, %c` then optional `compare %x` and `offset (a,b,c)` or `offset %v`.
+    fn gather(&self, component: &str, s: &str) -> Result<Op> {
+        let component = match component.chars().next().and_then(lane_of) {
+            Some(c) if component.len() == 1 => c,
+            _ => return self.fail(format!("not a lane: {component}")),
+        };
+        let (head, keys) = keywords(s, &["compare", "offset"]);
+        let parts: Vec<&str> = head.split(", ").collect();
+        let [texture, sampler, coord] = parts.as_slice() else {
+            return self.fail("gather takes texture, sampler, coordinate");
+        };
+        let (mut compare, mut offset) = (None, GatherOffset::Fixed([0; 3]));
+        for (k, x) in keys {
+            match k {
+                "compare" => compare = Some(self.value_id(x)?),
+                _ if x.starts_with('%') => offset = GatherOffset::Dynamic(self.value_id(x)?),
+                _ => offset = GatherOffset::Fixed(self.offsets(x)?),
+            }
+        }
+        Ok(Op::Gather {
+            texture: self.res(texture)?,
+            sampler: self.res(sampler)?,
+            coord: self.value_id(coord)?,
+            component,
+            compare,
+            offset,
+        })
+    }
+    /// `texel rT, %c` then optional `level %l`, `sample %s`, `offset (a,b,c)`.
+    fn texel(&self, s: &str) -> Result<Op> {
+        let (head, keys) = keywords(s, &["level", "sample", "offset"]);
+        let Some((texture, coord)) = head.split_once(", ") else {
+            return self.fail("texel takes a resource and a coordinate");
+        };
+        let (mut level, mut sample, mut offset) = (None, None, [0; 3]);
+        for (k, x) in keys {
+            match k {
+                "level" => level = Some(self.value_id(x)?),
+                "sample" => sample = Some(self.value_id(x)?),
+                _ => offset = self.offsets(x)?,
+            }
+        }
+        Ok(Op::LoadTexel {
+            texture: self.res(texture)?,
+            coord: self.value_id(coord)?,
+            level,
+            sample,
+            offset,
+        })
+    }
+    fn query(&self, what: &str, s: &str) -> Result<Op> {
+        let (head, keys) = keywords(s, &["level", "index"]);
+        let r = self.res(head)?;
+        let arg = keys.first().map(|(_, x)| self.value_id(x)).transpose()?;
+        let q = match (what, arg) {
+            ("size", l) => Query::Size(l),
+            ("layers", None) => Query::Layers,
+            ("levels", None) => Query::Levels,
+            ("samples", None) => Query::Samples,
+            ("sampleposition", Some(i)) => Query::SamplePosition(i),
+            ("elements", None) => Query::Elements,
+            _ => return self.fail(format!("no query {what}")),
+        };
+        Ok(Op::Query(r, q))
+    }
+    fn atomic(&self, name: &str, s: &str) -> Result<Op> {
+        let Some(op) = ATOMICS
+            .into_iter()
+            .find(|a| format!("{a:?}").to_lowercase() == name)
+        else {
+            return self.fail(format!("no atomic operation {name}"));
+        };
+        let (head, keys) = keywords(s, &["value", "compare"]);
+        let mut value = None;
+        let mut compare = None;
+        for (k, x) in keys {
+            match k {
+                "value" => value = Some(self.value_id(x)?),
+                _ => compare = Some(self.value_id(x)?),
+            }
+        }
+        let Some(value) = value else {
+            return self.fail("an atomic operation without a value");
+        };
+        Ok(Op::Atomic {
+            memory: self.memory(head)?,
+            op,
+            value,
+            compare,
         })
     }
 
@@ -513,7 +828,68 @@ impl<'a> Parser<'a> {
                 self.value_id(v)?,
             )));
         }
+        if let Some(rest) = line.strip_prefix("store buffer ") {
+            let Some((at, v)) = rest.rsplit_once(" = ") else {
+                return self.fail("a buffer store without a value");
+            };
+            let (resource, address) = self.res_address(at)?;
+            return Ok(Some(Node::StoreBuffer {
+                resource,
+                address,
+                value: self.value_id(v)?,
+            }));
+        }
+        if let Some(rest) = line.strip_prefix("store texel ") {
+            let Some((at, v)) = rest.rsplit_once(" = ") else {
+                return self.fail("a texel store without a value");
+            };
+            let Some((r, c)) = at.split_once(", ") else {
+                return self.fail("a texel store without a coordinate");
+            };
+            return Ok(Some(Node::StoreTexel {
+                image: self.res(r)?,
+                coord: self.value_id(c)?,
+                value: self.value_id(v)?,
+            }));
+        }
+        if let Some(rest) = line.strip_prefix("patch ") {
+            let Some((at, v)) = rest.split_once(" = ") else {
+                return self.fail("a patch constant store without a value");
+            };
+            let (slot, mask) = self.slot(at)?;
+            return Ok(Some(Node::StorePatch(slot, mask, self.value_id(v)?)));
+        }
+        if let Some(rest) = line.strip_prefix("barrier") {
+            let mut b = Barrier::default();
+            for w in rest.split_whitespace() {
+                match w {
+                    "execution" => b.execution = true,
+                    "workgroup" => b.workgroup = true,
+                    "storage.workgroup" => b.storage = Some(Scope::Workgroup),
+                    "storage.device" => b.storage = Some(Scope::Device),
+                    _ => return self.fail(format!("not a barrier: {line}")),
+                }
+            }
+            return Ok(Some(Node::Barrier(b)));
+        }
+        if let Some(n) = line.strip_prefix("emit ") {
+            return Ok(Some(Node::Emit(self.number(n)?)));
+        }
+        if let Some(n) = line.strip_prefix("cut ") {
+            return Ok(Some(Node::Cut(self.number(n)?)));
+        }
         if let Some((name, v)) = line.split_once(" = ") {
+            if let Some((var, i)) = name.split_once('[') {
+                let Some((v, rule)) = v.split_once(' ') else {
+                    return self.fail("an element store without its rule");
+                };
+                return Ok(Some(Node::StoreElement(
+                    self.var(var)?,
+                    self.bracketed(&format!("[{i}"))?,
+                    self.value_id(v)?,
+                    self.oob(rule)?,
+                )));
+            }
             return Ok(Some(Node::StoreVar(self.var(name)?, self.value_id(v)?)));
         }
         Ok(None)
@@ -599,6 +975,37 @@ impl<'a> Parser<'a> {
                     body,
                     results,
                 });
+            } else if let Some(rest) = line.strip_prefix("switch ").and_then(|x| x.strip_suffix(" {")) {
+                let Some((l, sel)) = rest.split_once(' ') else {
+                    return self.fail("a switch without a selector");
+                };
+                let (label, selector) = (self.label(l)?, self.value_id(sel)?);
+                let mut cases = Vec::new();
+                let default = loop {
+                    let head = self.next()?;
+                    if head == "default:" {
+                        break self.region()?;
+                    }
+                    let Some(values) = head.strip_prefix("case ").and_then(|x| x.strip_suffix(':')) else {
+                        return self.fail(format!("not a case: {head}"));
+                    };
+                    let values = values
+                        .split(", ")
+                        .map(|v| self.number(v))
+                        .collect::<Result<Vec<u32>>>()?;
+                    cases.push(Case {
+                        values,
+                        body: self.region()?,
+                    });
+                };
+                let results = self.close()?;
+                r.nodes.push(Node::Switch {
+                    label,
+                    selector,
+                    cases,
+                    default,
+                    results,
+                });
             } else if let Some(n) = self.plain(line)? {
                 r.nodes.push(n);
             } else {
@@ -656,6 +1063,32 @@ impl<'a> Parser<'a> {
                         reject: self.target(b)?,
                     };
                 }
+                if let Some(rest) = line.strip_prefix("switch ") {
+                    let Some((sel, rest)) = rest.split_once(", ") else {
+                        return self.fail("a switch without targets");
+                    };
+                    let mut cases = Vec::new();
+                    let mut default = None;
+                    for part in rest.split("), ") {
+                        let part = if part.ends_with(')') { part.to_string() } else { format!("{part})") };
+                        let Some((v, t)) = part.split_once(": ") else {
+                            return self.fail(format!("not a switch target: {part}"));
+                        };
+                        if v == "default" {
+                            default = Some(self.target(t)?);
+                        } else {
+                            cases.push((self.number(v)?, self.target(t)?));
+                        }
+                    }
+                    let Some(default) = default else {
+                        return self.fail("a switch without its default");
+                    };
+                    break Terminator::Switch {
+                        selector: self.value_id(sel)?,
+                        cases,
+                        default,
+                    };
+                }
                 match line {
                     "return" => break Terminator::Return,
                     "kill" => break Terminator::Kill,
@@ -701,7 +1134,34 @@ pub fn parse(text: &str) -> core::result::Result<Function, TextError> {
         let Some((n, t)) = rest.split_once(": ") else {
             return p.fail("a variable without a type");
         };
-        let ty = p.ty(t)?;
+        let (t, init) = match t.split_once(" = {") {
+            Some((t, init)) => (t, init.strip_suffix('}')),
+            None => (t, None),
+        };
+        let (t, space) = match t.strip_suffix(" workgroup") {
+            Some(t) => (t, Space::Workgroup),
+            None => (t, Space::Private),
+        };
+        let (ty, len) = match t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            Some(inner) => {
+                let Some((t, n)) = inner.split_once("; ") else {
+                    return p.fail("an array without a length");
+                };
+                (p.ty(t)?, Some(p.number(n)?))
+            }
+            None => (p.ty(t)?, None),
+        };
+        let mut elements = Vec::new();
+        if let Some(init) = init {
+            // each element is a literal `T(..)`; the literals' own commas are inside their parentheses
+            for e in init.split("), ") {
+                let e = if e.ends_with(')') { e.to_string() } else { format!("{e})") };
+                match p.literal(ty, &e)? {
+                    Op::Literal(bits) => elements.push(bits),
+                    _ => return p.fail("not a literal"),
+                }
+            }
+        }
         let id = VarId(u32::try_from(p.vars.len()).map_or_else(|_| p.fail("more than 2^32 variables"), Ok)?);
         if p.var_names.insert(n.to_string(), id).is_some() {
             return p.fail(format!("variable {n} is declared twice"));
@@ -709,6 +1169,9 @@ pub fn parse(text: &str) -> core::result::Result<Function, TextError> {
         p.vars.push(Var {
             name: n.to_string(),
             ty,
+            len,
+            space,
+            init: elements,
         });
     }
     let graph = p

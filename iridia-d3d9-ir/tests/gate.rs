@@ -9,8 +9,9 @@
 //! - each program lifts, IR-validates, prints, parses back to the same text, lowers and writes WGSL for browsers;
 //! - its interface equals the older lifter's, and so do its WGSL declarations (structures, bindings, globals, the
 //!   entry point's signature);
-//! - it runs three ways on the same seeded inputs, constants and texels, and the output bits agree: A, the older lift
+//! - it runs four ways on the same seeded inputs, constants and texels, and the output bits agree: A, the older lift
 //!   in `iridia-exec`; B, the IR in `iridia-exec-ir`; C, the new WGSL read back by naga's front end in `iridia-exec`;
+//!   D, the IR compiled into `iridia-exec` itself (`ProgramShader::from_ir`);
 //! - the harness sees a change: with each program's first float addition made a subtraction in B, A and B disagree on
 //!   most programs.
 //!
@@ -231,8 +232,8 @@ impl Inputs {
     }
 }
 
-const AGREE: &str = "A = B = C on every run";
-const KILLED: &str = "A = B = C, killed in all three on every run (outputs never compared)";
+const AGREE: &str = "A = B = C = D on every run";
+const KILLED: &str = "A = B = C = D, killed in all four on every run (outputs never compared)";
 
 /// One program through every check; the class it lands in and the example to show for it.
 fn gate(name: &str, bytes: &[u8], runs: &mut (usize, usize)) -> (String, String) {
@@ -272,6 +273,10 @@ fn gate(name: &str, bytes: &[u8], runs: &mut (usize, usize)) -> (String, String)
             ));
         }
     };
+    let sd = match ProgramShader::from_ir(new.clone()) {
+        Ok(d) => d,
+        Err(e) => return fail(format!("D not compiled: {e}")),
+    };
     let interface = &old.interface;
     let mut rng = Rng::of(name);
     let mut compared = 0;
@@ -280,32 +285,35 @@ fn gate(name: &str, bytes: &[u8], runs: &mut (usize, usize)) -> (String, String)
         let ra = run_old(&sa, interface, &i.registers, &i.by_register());
         let rb = run_ir(&new, &i.slots, &i.by_id());
         let rc = run_old(&sc, interface, &i.registers, &i.by_register());
-        let (ra, rb, rc) = match (ra, rb, rc) {
-            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
-            (a, b, c) => {
+        let rd = run_old(&sd, interface, &i.registers, &i.by_register());
+        let (ra, rb, rc, rd) = match (ra, rb, rc, rd) {
+            (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
+            (a, b, c, d) => {
                 return fail(format!(
-                    "not run: A {:?}, B {:?}, C {:?}",
+                    "not run: A {:?}, B {:?}, C {:?}, D {:?}",
                     a.err(),
                     b.err(),
-                    c.err()
+                    c.err(),
+                    d.err()
                 ));
             }
         };
-        if ra.killed && rb.killed && rc.killed {
+        if ra.killed && rb.killed && rc.killed && rd.killed {
             runs.1 += 1;
             continue;
         }
         runs.0 += 1;
         compared += 1;
-        if !(ra.equal(&rb) && rb.equal(&rc)) {
+        if !(ra.equal(&rb) && rb.equal(&rc) && ra.equal(&rd)) {
             return (
                 format!(
-                    "differ: A=B {} B=C {} A=C {}",
+                    "differ: A=B {} B=C {} A=C {} A=D {}",
                     ra.equal(&rb),
                     rb.equal(&rc),
-                    ra.equal(&rc)
+                    ra.equal(&rc),
+                    ra.equal(&rd)
                 ),
-                format!("{name} run {run}\n   A {ra:?}\n   B {rb:?}\n   C {rc:?}"),
+                format!("{name} run {run}\n   A {ra:?}\n   B {rb:?}\n   C {rc:?}\n   D {rd:?}"),
             );
         }
     }
@@ -358,7 +366,7 @@ fn placed(f: &iridia_ir::Function) -> Vec<iridia_ir::ValueId> {
 #[test]
 fn the_three_way_run_sees_an_addition_made_a_subtraction() {
     let Some(programs) = programs() else { return };
-    let (mut with_addition, mut seen) = (0usize, 0usize);
+    let (mut with_addition, mut seen, mut seen_d) = (0usize, 0usize, 0usize);
     for (name, bytes) in &programs {
         let mut b = lifted(bytes).unwrap();
         let first = placed(&b.entry).into_iter().find(|v| {
@@ -373,16 +381,24 @@ fn the_three_way_run_sees_an_addition_made_a_subtraction() {
         with_addition += 1;
         let old = iridia_d3d9::lift(bytes).unwrap();
         let sa = ProgramShader::new(old.clone()).unwrap();
+        let sd = ProgramShader::from_ir(b.clone()).unwrap();
         let mut rng = Rng::of(name);
-        let differs = (0..RUNS).any(|_| {
+        let (mut in_b, mut in_d) = (false, false);
+        for _ in 0..RUNS {
             let i = seeded(&old.interface, &mut rng);
             let ra = run_old(&sa, &old.interface, &i.registers, &i.by_register()).unwrap();
             let rb = run_ir(&b, &i.slots, &i.by_id()).unwrap();
-            !(ra.killed && rb.killed) && !ra.equal(&rb)
-        });
-        seen += usize::from(differs);
+            let rd = run_old(&sd, &old.interface, &i.registers, &i.by_register()).unwrap();
+            in_b |= !(ra.killed && rb.killed) && !ra.equal(&rb);
+            in_d |= !(ra.killed && rd.killed) && !ra.equal(&rd);
+        }
+        seen += usize::from(in_b);
+        seen_d += usize::from(in_d);
     }
-    println!("{seen} of {with_addition} programs with a float addition differ once it is a subtraction");
+    println!(
+        "{seen} (B) and {seen_d} (D) of {with_addition} programs with a float addition differ once it is a subtraction"
+    );
+    assert!(seen_d * 4 >= with_addition * 3, "D: {seen_d} of {with_addition}");
     // the rest kill on every run or take the changed value through flow that does not see it on these inputs (an
     // absolute value, a maximum, a comparison into a select)
     assert!(seen * 4 >= with_addition * 3, "{seen} of {with_addition}");

@@ -38,6 +38,8 @@ pub fn program(
     Program {
         stage: Stage::Pixel,
         entry,
+        patch: None,
+        workgroup: None,
         interface: Interface {
             stage: Stage::Pixel,
             inputs: inputs
@@ -101,4 +103,46 @@ pub fn run(p: &Program, inputs: &[[u32; 4]], state: &[(ResourceId, [u32; 4])]) -
     };
     let r = iridia_exec_ir::run(p, &mut bound)?;
     Ok((r.outputs, r.killed))
+}
+
+/// No textures: a run that samples one is refused.
+struct NoTextures;
+impl iridia_exec::Backend for NoTextures {
+    fn sample(&mut self, _: iridia_exec::ImageSample<iridia_exec::Element>) -> Result<[f32; 4], String> {
+        Err("no textures".into())
+    }
+}
+
+/// The outcome of a run of `p` compiled into `iridia-exec`'s flat form (`Executable::from_ir`; its body must be as
+/// `break_flags` leaves it), as [`run`] gives it: an output slot that is never stored reads as zero there, so each
+/// slot is `Some`.
+pub fn run_flat(p: &Program, inputs: &[[u32; 4]]) -> Result<Outcome, String> {
+    let exe = iridia_exec::Executable::from_ir(p).map_err(|e| e.to_string())?;
+    let bound = exe.bind(|_| None, |_| None)?;
+    let mut backend = NoTextures;
+    let [out] = iridia_exec::Runner::<1>::new(&exe, &bound, &mut backend, None).run([inputs])?;
+    Ok((out.values.into_iter().map(Some).collect(), out.discarded))
+}
+
+/// That a run of `p` in `iridia-exec-ir` and of its flat form agree (an output never stored is zero in both).
+pub fn agrees_flat(p: &Program, inputs: &[[u32; 4]], state: &[(ResourceId, [u32; 4])]) {
+    let (ir, ir_killed) = run(p, inputs, state).unwrap_or_else(|e| panic!("{e}\n{}", iridia_ir::text::print(&p.entry)));
+    let (flat, flat_killed) =
+        run_flat(p, inputs).unwrap_or_else(|e| panic!("flat: {e}\n{}", iridia_ir::text::print(&p.entry)));
+    // a killed invocation's outputs are not compared
+    let ir: Vec<[u32; 4]> = ir.into_iter().map(Option::unwrap_or_default).filter(|_| !ir_killed).collect();
+    let flat: Vec<[u32; 4]> = flat.into_iter().map(Option::unwrap_or_default).filter(|_| !flat_killed).collect();
+    assert_eq!(
+        (ir, ir_killed),
+        (flat, flat_killed),
+        "inputs {inputs:?}\n{}",
+        iridia_ir::text::print(&p.entry)
+    );
+}
+
+/// That `f` prints as text that parses back to what prints the same.
+pub fn round_trip(f: &iridia_ir::Function) {
+    let text = iridia_ir::text::print(f);
+    let back = iridia_ir::text::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+    assert_eq!(iridia_ir::text::print(&back), text, "printed differently after parsing");
 }

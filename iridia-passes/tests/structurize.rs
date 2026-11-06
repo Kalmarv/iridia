@@ -241,6 +241,7 @@ fn a_break_across_a_loop_is_routed_and_keeps_its_value() {
         for q in [&p, &flagged] {
             assert_eq!(run(q, t, &[]).unwrap(), (want, false), "t {t}");
         }
+        support::agrees_flat(&flagged, &[[t, 0, 0, 0]], &[]);
     }
     iridia_naga::wgsl(&flagged, &iridia_naga::Profile::NAGA)
         .unwrap_or_else(|e| panic!("{e}\n{}", iridia_ir::text::print(&flagged.entry)));
@@ -268,7 +269,8 @@ impl Rng {
 
 /// A random graph of `n` nodes carrying values: each node `i` is a guard block `2i` (leave for the exit once the step
 /// count reaches 40) and a body block `2i + 1` that mixes the hash with a value of the entry and its own number, then
-/// branches on the hash's low bit. The exit (block `2n`) outputs the hash.
+/// branches on the hash's low bit, or switches on its low two bits (a stream of choices of its own, so the graphs
+/// without switches are the same as before). The exit (block `2n`) outputs the hash.
 fn random_graph(rng: &mut Rng) -> Program {
     let u = Type::scalar(Scalar::U32);
     let n = 2 + rng.below(7);
@@ -286,6 +288,7 @@ fn random_graph(rng: &mut Rng) -> Program {
         g.placed(&mut first, u, Op::Binary(Binary::IMul, seed, seven))
     };
     let mut first_nodes = Some(first);
+    let mut switches = Rng(rng.0 ^ 0x5bd1_e995_d3a2_646c);
     for i in 0..n {
         let terms: (usize, usize, bool) = (rng.below(n), rng.below(n), rng.below(4) == 0);
         // guard
@@ -316,6 +319,20 @@ fn random_graph(rng: &mut Rng) -> Program {
         let target = |t: usize| u32::try_from(2 * t).unwrap();
         let term = if terms.2 {
             Terminator::Jump(to(target(terms.0), vec![h2, bs]))
+        } else if switches.below(3) == 0 {
+            // two cases and the default, one way to the exit; a case value shares a target with another now and then
+            let three = lit(&mut g, &mut bn, 3);
+            let low = g.placed(&mut bn, u, Op::Binary(Binary::And, h2, three));
+            let other = target(switches.below(n));
+            Terminator::Switch {
+                selector: low,
+                cases: vec![
+                    (0, to(target(terms.0), vec![h2, bs])),
+                    (2, to(exit, vec![h2])),
+                    (3, if switches.below(2) == 0 { to(target(terms.0), vec![h2, bs]) } else { to(other, vec![h2, bs]) }),
+                ],
+                default: to(target(terms.1), vec![h2, bs]),
+            }
         } else {
             let one = lit(&mut g, &mut bn, 1);
             let zero = lit(&mut g, &mut bn, 0);
@@ -351,15 +368,7 @@ fn random_graph(rng: &mut Rng) -> Program {
     });
     // block 0 has parameters, which an entry cannot: put a start block in front and shift every target by one
     for b in &mut blocks {
-        let shift = |t: &mut Target| t.block += 1;
-        match &mut b.term {
-            Terminator::Jump(t) => shift(t),
-            Terminator::Branch { accept, reject, .. } => {
-                shift(accept);
-                shift(reject);
-            }
-            _ => {}
-        }
+        b.term.targets_mut().into_iter().for_each(|t| t.block += 1);
     }
     let mut start_nodes = std::mem::take(&mut blocks[0].nodes);
     // the entry's values move to the start block; the guard keeps its own
@@ -386,7 +395,7 @@ fn random_graph(rng: &mut Rng) -> Program {
 #[test]
 fn random_graphs_keep_their_values_when_structured() {
     let mut rng = Rng(0x0dd_ba11_cafe_f00d);
-    let (mut structured, mut refused, mut routed) = (0, 0, 0);
+    let (mut structured, mut refused, mut routed, mut switched) = (0, 0, 0, 0);
     for _ in 0..1500 {
         let p = random_graph(&mut rng);
         iridia_ir::validate(&p).unwrap_or_else(|e| panic!("{e:?}\n{}", iridia_ir::text::print(&p.entry)));
@@ -400,6 +409,10 @@ fn random_graphs_keep_their_values_when_structured() {
             }
         }
         iridia_ir::validate(&s).unwrap_or_else(|e| panic!("{e:?}\n{}", iridia_ir::text::print(&s.entry)));
+        support::round_trip(&s.entry);
+        if iridia_ir::text::print(&s.entry).contains("switch '") {
+            switched += 1;
+        }
         let mut b = s.clone();
         routed += iridia_passes::break_flags(&mut b.entry).unwrap();
         iridia_ir::validate(&b).unwrap_or_else(|e| panic!("{e:?}\n{}", iridia_ir::text::print(&b.entry)));
@@ -418,12 +431,13 @@ fn random_graphs_keep_their_values_when_structured() {
                 "seed {seed}\n{}",
                 iridia_ir::text::print(&b.entry)
             );
+            support::agrees_flat(&b, &[[seed, 0, 0, 0]], &[]);
         }
         iridia_naga::wgsl(&b, &iridia_naga::Profile::NAGA)
             .unwrap_or_else(|e| panic!("{e}\n{}", iridia_ir::text::print(&b.entry)));
     }
     assert!(
-        structured > 500 && refused > 0 && routed > 500,
-        "{structured} structured, {refused} refused, {routed} routed"
+        structured > 500 && refused > 0 && routed > 500 && switched > 200,
+        "{structured} structured, {refused} refused, {routed} routed, {switched} with a switch"
     );
 }

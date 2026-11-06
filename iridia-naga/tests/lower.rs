@@ -39,6 +39,8 @@ fn program(
     let p = Program {
         stage: Stage::Pixel,
         entry,
+        patch: None,
+        workgroup: None,
         interface: Interface {
             stage: Stage::Pixel,
             inputs: inputs

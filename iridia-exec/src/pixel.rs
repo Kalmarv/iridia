@@ -39,7 +39,11 @@ struct Member {
 /// A pixel program with the register view the D3D readers' callers use.
 #[derive(Debug)]
 pub struct ProgramShader {
-    program: Program,
+    /// The program compiled, as the naga-based lifters give it ([`ProgramShader::new`]) or as the IR
+    /// ([`ProgramShader::from_ir`]).
+    program: Option<Program>,
+    ir: Option<iridia_ir::Program>,
+    interface: Interface,
     executable: Executable,
     arguments: Vec<Argument>,
     members: Vec<Member>,
@@ -100,7 +104,36 @@ impl ProgramShader {
             return Err(error("not a pixel or vertex program"));
         }
         let executable = Executable::new(&program)?;
-        let interface = &program.interface;
+        let mut shader = Self::assemble(executable, program.interface.clone(), |id| rows_of(&program, id))?;
+        shader.program = Some(program);
+        Ok(shader)
+    }
+
+    /// [`ProgramShader::new`] for a program of the IR ([`Executable::from_ir`]).
+    pub fn from_ir(program: iridia_ir::Program) -> Result<Self, Error> {
+        if !matches!(program.stage, Stage::Pixel | Stage::Vertex) {
+            return Err(error("not a pixel or vertex program"));
+        }
+        let executable = Executable::from_ir(&program)?;
+        let rows = |id: ResourceId| {
+            program.interface.resources.iter().find(|r| r.id == id).and_then(|r| match &r.kind {
+                ResourceKind::ConstantBuffer { layout } => Some(layout.size.div_ceil(16)),
+                _ => None,
+            })
+        };
+        let mut shader = Self::assemble(executable, program.interface.clone(), rows)?;
+        shader.ir = Some(program);
+        Ok(shader)
+    }
+
+    /// The register view of a compiled program with this interface; `rows` gives a constant buffer's rows.
+    fn assemble(
+        executable: Executable,
+        interface_owned: Interface,
+        rows: impl Fn(ResourceId) -> Option<u32>,
+    ) -> Result<Self, Error> {
+        let interface = &interface_owned;
+        let stage = interface.stage;
         let mut arguments = Vec::new();
         let mut input_count = 0;
         // the module's arguments: the interface's inputs the entry point carries, in order
@@ -156,7 +189,7 @@ impl ProgramShader {
         let position = interface
             .outputs
             .iter()
-            .position(|v| program.stage == Stage::Vertex && v.system == Some(SystemValue::ClipPosition));
+            .position(|v| stage == Stage::Vertex && v.system == Some(SystemValue::ClipPosition));
         for v in &interface.outputs {
             let name = Program::varying_name(&v.label);
             // depth, coverage and stencil have no output register
@@ -198,7 +231,7 @@ impl ProgramShader {
             slots.insert(r.id, binding.register);
             match &r.kind {
                 ResourceKind::ConstantBuffer { .. } => {
-                    let rows = rows_of(&program, r.id).ok_or_else(|| {
+                    let rows = rows(r.id).ok_or_else(|| {
                         error(format!(
                             "constant buffer {} has no module array",
                             r.provenance.name
@@ -232,7 +265,9 @@ impl ProgramShader {
         samplers.dedup();
         let constant_buffers = constants.iter().map(|&(slot, _, rows)| (slot, rows)).collect();
         Ok(Self {
-            program,
+            program: None,
+            ir: None,
+            interface: interface_owned,
             executable,
             arguments,
             members,
@@ -251,9 +286,14 @@ impl ProgramShader {
         })
     }
 
-    /// The vertex or pixel program the shader runs.
-    pub fn program(&self) -> &Program {
-        &self.program
+    /// The vertex or pixel program the shader runs, where it came from a naga-based lifter.
+    pub fn program(&self) -> Option<&Program> {
+        self.program.as_ref()
+    }
+
+    /// The vertex or pixel program the shader runs, where it is a program of the IR.
+    pub fn ir(&self) -> Option<&iridia_ir::Program> {
+        self.ir.as_ref()
     }
 
     /// Whether a caller that wants this program's exact results must run it as a quad ([`Executable::needs_quad`]).
@@ -585,7 +625,7 @@ impl Backend for SlotBackend<'_> {
 
 impl PixelShader for ProgramShader {
     fn interface(&self) -> &Interface {
-        &self.program.interface
+        &self.interface
     }
     fn input_count(&self) -> usize {
         self.input_count

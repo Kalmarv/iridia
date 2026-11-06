@@ -1,13 +1,16 @@
 //! The validator: types of every operation, scoping of values in regions and dominance in a graph, exits against
 //! their constructs, interface and resource references against the interface, and stage rules.
 
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, format, string::String, vec, vec::Vec};
 use core::fmt;
 
 use crate::{
-    Binary, Block, Body, End, Function, LabelId, Level, Node, Op, Program, Region, Scalar, Terminator, Type,
-    Unary, ValueId,
-    interface::{Interface, ResourceKind, ScalarType, Stage, TextureDim, Value},
+    AtomicOp, Binary, Block, Body, Builtin, End, Function, GatherOffset, LabelId, Level, Memory, Node, Op,
+    Program, Query, Region, Res, Scalar, Terminator, Ternary, Type, Unary, ValueId,
+    interface::{
+        BufferKind, Interface, Resource, ResourceKind, SampleType, ScalarType, Stage, StageFacts,
+        StorageTarget, TextureDim, Value, Varying,
+    },
 };
 
 /// One broken rule, with the value it is about where there is one.
@@ -78,10 +81,20 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
         | Op::Convert(..)
         | Op::Bitcast(_)
         | Op::LoadInput(..)
+        | Op::LoadInputAt(..)
+        | Op::LoadOutputAt(..)
+        | Op::LoadPatch(..)
+        | Op::Builtin(_)
         | Op::LoadVar(_)
+        | Op::LoadElement(..)
         | Op::LoadState(_)
         | Op::LoadBuffer { .. }
-        | Op::Sample { .. } => return Ok(None),
+        | Op::Sample { .. }
+        | Op::Gather { .. }
+        | Op::LoadTexel { .. }
+        | Op::Query(..)
+        | Op::Atomic { .. }
+        | Op::Counter(..) => return Ok(None),
         Op::Unary(u, a) => {
             let t = get(*a)?;
             match u {
@@ -103,9 +116,33 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
                     }
                     Type::BOOL
                 }
-                Unary::IsNan => {
-                    float(t, "isnan")?;
+                Unary::IsNan | Unary::IsInf => {
+                    float(t, "a float test")?;
                     t.with(Scalar::Bool)
+                }
+                Unary::CountOnes | Unary::BitReverse => {
+                    if !t.scalar.is_integer() {
+                        return Err(format!("a bit operation of {t}"));
+                    }
+                    t
+                }
+                Unary::FirstBitHigh | Unary::FirstBitHighSigned | Unary::FirstBitLow => {
+                    if !t.scalar.is_integer() || t.scalar.bits() != 32 {
+                        return Err(format!("a first-bit operation of {t}, which is not a 32-bit integer"));
+                    }
+                    t
+                }
+                Unary::F32ToF16 => {
+                    if t.scalar != Scalar::F32 {
+                        return Err(format!("f32tof16 of {t}"));
+                    }
+                    t.with(Scalar::U32)
+                }
+                Unary::F16ToF32 => {
+                    if t.scalar != Scalar::U32 {
+                        return Err(format!("f16tof32 of {t}"));
+                    }
+                    t.with(Scalar::F32)
                 }
                 Unary::ClampRange { lo, hi, nan } => {
                     let (l, h) = (f32::from_bits(*lo), f32::from_bits(*hi));
@@ -134,6 +171,13 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
                 }
             }
         }
+        Op::Binary(Binary::Shl | Binary::ShrU | Binary::ShrS, x, y) => {
+            let (a, c) = (get(*x)?, get(*y)?);
+            if !a.scalar.is_integer() || !c.scalar.is_unsigned() || a.lanes != c.lanes {
+                return Err(format!("a shift of {a} by {c}"));
+            }
+            a
+        }
         Op::Binary(b, x, y) => {
             let (a, c) = (get(*x)?, get(*y)?);
             same(a, c, "binary operands")?;
@@ -142,6 +186,7 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
                 | Binary::FSub
                 | Binary::FMul(_)
                 | Binary::FDiv
+                | Binary::FRem
                 | Binary::FMin(_)
                 | Binary::FMax(_)
                 | Binary::FPow => {
@@ -163,8 +208,16 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
                 | Binary::IMul
                 | Binary::UDiv(_)
                 | Binary::URem(_)
+                | Binary::SDiv(_)
+                | Binary::SRem(_)
+                | Binary::UMulHigh
+                | Binary::SMulHigh
+                | Binary::UAddCarry
+                | Binary::USubBorrow
                 | Binary::SMin
                 | Binary::SMax
+                | Binary::UMin
+                | Binary::UMax
                 | Binary::Xor => {
                     if !a.scalar.is_integer() {
                         return Err(format!("an integer operation of {a}"));
@@ -177,7 +230,41 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
                     }
                     a
                 }
+                Binary::Shl | Binary::ShrU | Binary::ShrS => unreachable!("matched above"),
             }
+        }
+        Op::Ternary(Ternary::Fma, x, y, z) => {
+            let (a, b, c) = (get(*x)?, get(*y)?, get(*z)?);
+            same(a, b, "fma operands")?;
+            same(a, c, "fma operands")?;
+            float(a, "a fused multiply-add")?;
+            a
+        }
+        Op::Ternary(Ternary::BitExtract { .. }, x, offset, count) => {
+            let a = get(*x)?;
+            if !a.scalar.is_integer() || a.scalar.bits() != 32 {
+                return Err(format!("a bit field of {a}, which is not a 32-bit integer"));
+            }
+            for c in [offset, count] {
+                same(get(*c)?, a.with(Scalar::U32), "a bit field count")?;
+            }
+            a
+        }
+        Op::BitInsert {
+            base,
+            insert,
+            offset,
+            count,
+        } => {
+            let a = get(*base)?;
+            same(get(*insert)?, a, "a bit field insert")?;
+            if !a.scalar.is_integer() || a.scalar.bits() != 32 {
+                return Err(format!("a bit field of {a}, which is not a 32-bit integer"));
+            }
+            for c in [offset, count] {
+                same(get(*c)?, a.with(Scalar::U32), "a bit field count")?;
+            }
+            a
         }
         Op::Select { cond, accept, reject } => {
             let (c, a, r) = (get(*cond)?, get(*accept)?, get(*reject)?);
@@ -229,11 +316,116 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
     }))
 }
 
+/// The interface's resource of an id.
+fn resource(interface: &Interface, r: Res) -> Result<&Resource, String> {
+    interface
+        .resources
+        .iter()
+        .find(|x| x.id == r.id)
+        .ok_or_else(|| format!("resource {} is not in the interface", r.id.0))
+}
+
+/// The lanes of a texture coordinate without an array layer.
+fn dims(dim: TextureDim) -> u8 {
+    match dim {
+        TextureDim::D1 => 1,
+        TextureDim::D2 => 2,
+        TextureDim::D3 | TextureDim::Cube => 3,
+    }
+}
+
+/// The IR scalar a texel of a sample type reads as.
+fn sample_scalar(s: SampleType) -> Scalar {
+    match s {
+        SampleType::Float | SampleType::Depth => Scalar::F32,
+        SampleType::Sint => Scalar::I32,
+        SampleType::Uint => Scalar::U32,
+    }
+}
+
+/// The type of a value the pipeline gives.
+pub fn builtin_type(b: Builtin) -> Type {
+    match b {
+        Builtin::OutputControlPoint | Builtin::PrimitiveId | Builtin::GsInstance | Builtin::PhaseInstance => {
+            Type::U32
+        }
+        Builtin::DomainLocation => Type::vector(Scalar::F32, 3),
+    }
+}
+
+/// The patch constants of a hull or domain program.
+pub fn patch_constants(interface: &Interface) -> &[Varying] {
+    match &interface.facts {
+        StageFacts::Hull(h) => &h.patch_constants,
+        StageFacts::Domain(d) => &d.patch_constants,
+        _ => &[],
+    }
+}
+
+fn index_type(t: Type, what: &str) -> Result<(), String> {
+    if t == Type::U32 || t == Type::I32 {
+        Ok(())
+    } else {
+        Err(format!("{what} of {t}"))
+    }
+}
+
+fn int_coord(t: Type, lanes: u8, what: &str) -> Result<(), String> {
+    if (t.scalar == Scalar::U32 || t.scalar == Scalar::I32) && t.lanes == lanes {
+        Ok(())
+    } else {
+        Err(format!("{what} of {t}, where {lanes} integer lanes are wanted"))
+    }
+}
+
 /// Check an operation whose type is stated: the operands' types and the stated type agree with the rule.
 fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), String> {
     let get = |v: ValueId| {
         f.ty(v)
             .ok_or_else(|| format!("operand %{} is not a value of the function", v.0))
+    };
+    let element = |r: Res| -> Result<(), String> {
+        let res = resource(interface, r)?;
+        match r.index {
+            Some(i) => index_type(get(i)?, "a resource array index"),
+            None if res.count == 0 => Err(format!("resource {} has no elements", res.provenance.name)),
+            None => Ok(()),
+        }
+    };
+    let var = |v: crate::VarId| {
+        f.vars
+            .get(v.0 as usize)
+            .ok_or_else(|| format!("variable {} does not exist", v.0))
+    };
+    // a filtered read's texture, sampler and coordinate: the texture's dimensions (without a layer) and sample type
+    let sampled = |texture: Res, sampler: Res, coord: ValueId, compare: Option<ValueId>| {
+        element(texture)?;
+        element(sampler)?;
+        let ResourceKind::Texture {
+            dim,
+            arrayed,
+            sample,
+            multisampled,
+        } = resource(interface, texture)?.kind
+        else {
+            return Err("sample of a resource that is not a texture".to_owned());
+        };
+        if multisampled {
+            return Err("a sample of a multisampled texture".into());
+        }
+        if !matches!(resource(interface, sampler)?.kind, ResourceKind::Sampler { .. }) {
+            return Err("sample through a resource that is not a sampler".into());
+        }
+        let n = dims(dim);
+        same(
+            get(coord)?,
+            Type::vector(Scalar::F32, n.saturating_add(u8::from(arrayed))),
+            "sample coordinate",
+        )?;
+        if let Some(c) = compare {
+            same(get(c)?, Type::F32, "a comparison reference")?;
+        }
+        Ok((n, sample))
     };
     match op {
         Op::Literal(_) | Op::Undef | Op::Param => Ok(()),
@@ -267,7 +459,10 @@ fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), S
                 Err(format!("splat of {} to {t}", get(*a)?))
             }
         }
-        Op::LoadInput(slot, mask) => {
+        Op::LoadInput(slot, mask) | Op::LoadInputAt(slot, mask, _) => {
+            if let Op::LoadInputAt(_, _, at) = op {
+                index_type(get(*at)?, "a vertex index")?;
+            }
             let v = interface.inputs.get(*slot as usize).ok_or_else(|| {
                 format!(
                     "input slot {slot}, where the interface has {}",
@@ -276,12 +471,35 @@ fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), S
             })?;
             same(masked_type(v.value, *mask)?, t, "input")
         }
-        Op::LoadVar(var) => {
-            let v = f
-                .vars
-                .get(var.0 as usize)
-                .ok_or_else(|| format!("variable {} does not exist", var.0))?;
-            same(v.ty, t, "variable load")
+        Op::LoadOutputAt(slot, mask, at) => {
+            index_type(get(*at)?, "a control point index")?;
+            let v = interface
+                .outputs
+                .get(*slot as usize)
+                .ok_or_else(|| format!("output slot {slot} is not in the interface"))?;
+            same(masked_type(v.value, *mask)?, t, "output control point")
+        }
+        Op::LoadPatch(slot, mask) => {
+            let v = patch_constants(interface)
+                .get(*slot as usize)
+                .ok_or_else(|| format!("patch constant slot {slot} is not in the interface"))?;
+            same(masked_type(v.value, *mask)?, t, "patch constant")
+        }
+        Op::Builtin(b) => same(builtin_type(*b), t, "a pipeline value"),
+        Op::LoadVar(v) => {
+            let d = var(*v)?;
+            if d.len.is_some() {
+                return Err(format!("a whole load of the array variable {}", d.name));
+            }
+            same(d.ty, t, "variable load")
+        }
+        Op::LoadElement(v, i, _) => {
+            let d = var(*v)?;
+            if d.len.is_none() {
+                return Err(format!("an element load of {}, which is not an array", d.name));
+            }
+            index_type(get(*i)?, "an element index")?;
+            same(d.ty, t, "element load")
         }
         Op::LoadState(resource) => {
             let r = interface
@@ -294,20 +512,23 @@ fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), S
                 _ => Err(format!("state load from {:?}", r.kind)),
             }
         }
-        Op::LoadBuffer { resource, index, .. } => {
-            let r = interface
-                .resources
-                .iter()
-                .find(|r| r.id == *resource)
-                .ok_or_else(|| format!("resource {} is not in the interface", resource.0))?;
-            if !matches!(r.kind, ResourceKind::ConstantBuffer { .. }) {
-                return Err(format!("buffer load from {:?}", r.kind));
+        Op::LoadBuffer {
+            resource: r,
+            address,
+            ..
+        } => {
+            element(*r)?;
+            match &resource(interface, *r)?.kind {
+                ResourceKind::ConstantBuffer { .. }
+                | ResourceKind::Buffer(BufferKind::Raw | BufferKind::Structured { .. })
+                | ResourceKind::Storage {
+                    target: StorageTarget::Buffer(_),
+                    ..
+                } => {}
+                k => return Err(format!("buffer load from {k:?}")),
             }
-            if let Some(i) = index {
-                let i = get(*i)?;
-                if i != Type::U32 && i != Type::I32 {
-                    return Err(format!("buffer index of {i}"));
-                }
+            if let Some(i) = address.index {
+                index_type(get(i)?, "a buffer index")?;
             }
             if t.scalar.bits() != 32 || t.scalar == Scalar::Bool {
                 return Err(format!("buffer load of {t}"));
@@ -319,42 +540,214 @@ fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), S
             sampler,
             coord,
             level,
+            compare,
+            clamp,
+            ..
         } => {
-            let kind = |id| {
-                interface
-                    .resources
-                    .iter()
-                    .find(|r| r.id == id)
-                    .map(|r| &r.kind)
-                    .ok_or_else(|| format!("resource {} is not in the interface", id.0))
-            };
-            let ResourceKind::Texture { dim, arrayed, .. } = kind(*texture)? else {
-                return Err("sample of a resource that is not a texture".into());
-            };
-            if !matches!(kind(*sampler)?, ResourceKind::Sampler { .. }) {
-                return Err("sample through a resource that is not a sampler".into());
-            }
-            let lanes: u8 = match (dim, arrayed) {
-                (TextureDim::D1, false) => 1,
-                (TextureDim::D1, true) | (TextureDim::D2, false) => 2,
-                (TextureDim::D2, true) | (TextureDim::D3 | TextureDim::Cube, false) => 3,
-                (TextureDim::D3 | TextureDim::Cube, true) => 4,
-            };
-            same(
-                get(*coord)?,
-                Type::vector(Scalar::F32, lanes),
-                "sample coordinate",
-            )?;
+            let (n, sample) = sampled(*texture, *sampler, *coord, *compare)?;
             match level {
                 Level::Bias(x) | Level::Exact(x) => same(get(*x)?, Type::F32, "sample level")?,
                 Level::Grad(x, y) => {
-                    let c = get(*coord)?;
-                    same(get(*x)?, c, "sample gradient along x")?;
-                    same(get(*y)?, c, "sample gradient along y")?;
+                    let g = Type::vector(Scalar::F32, n);
+                    same(get(*x)?, g, "sample gradient along x")?;
+                    same(get(*y)?, g, "sample gradient along y")?;
                 }
                 Level::Auto | Level::Zero => {}
             }
-            same(t, Type::F32X4, "sample result")
+            if let Some(c) = clamp {
+                same(get(*c)?, Type::F32, "a level clamp")?;
+            }
+            let want = if compare.is_some() || sample == SampleType::Depth {
+                Type::F32
+            } else {
+                Type::vector(sample_scalar(sample), 4)
+            };
+            same(t, want, "sample result")
+        }
+        Op::Gather {
+            texture,
+            sampler,
+            coord,
+            component,
+            compare,
+            offset,
+        } => {
+            let (n, sample) = sampled(*texture, *sampler, *coord, *compare)?;
+            if *component > 3 {
+                return Err(format!("a gather of lane {component}"));
+            }
+            if let GatherOffset::Dynamic(o) = offset {
+                same(get(*o)?, Type::vector(Scalar::I32, n), "a gather offset")?;
+            }
+            let want = if compare.is_some() {
+                Type::vector(Scalar::F32, 4)
+            } else {
+                Type::vector(sample_scalar(sample), 4)
+            };
+            same(t, want, "gather result")
+        }
+        Op::LoadTexel {
+            texture,
+            coord,
+            level,
+            sample,
+            ..
+        } => {
+            element(*texture)?;
+            let c = get(*coord)?;
+            for x in level.iter().chain(sample.iter()) {
+                index_type(get(*x)?, "a texel level or sample")?;
+            }
+            let want = match resource(interface, *texture)?.kind {
+                ResourceKind::Texture {
+                    dim,
+                    arrayed,
+                    multisampled,
+                    sample: s,
+                } => {
+                    int_coord(c, dims(dim).saturating_add(u8::from(arrayed)), "a texel coordinate")?;
+                    if multisampled != sample.is_some() {
+                        return Err("a texel load whose sample does not match the texture".into());
+                    }
+                    if s == SampleType::Depth {
+                        Type::F32
+                    } else {
+                        Type::vector(sample_scalar(s), 4)
+                    }
+                }
+                ResourceKind::Storage {
+                    target: StorageTarget::Image { dim, arrayed, sample: s },
+                    ..
+                } => {
+                    int_coord(c, dims(dim).saturating_add(u8::from(arrayed)), "a texel coordinate")?;
+                    Type::vector(sample_scalar(s), 4)
+                }
+                ResourceKind::Buffer(BufferKind::Typed(v))
+                | ResourceKind::Storage {
+                    target: StorageTarget::Buffer(BufferKind::Typed(v)),
+                    ..
+                } => {
+                    int_coord(c, 1, "a buffer element")?;
+                    Type::vector(value_type(v).scalar, 4)
+                }
+                ref k => return Err(format!("texel load from {k:?}")),
+            };
+            same(t, want, "texel load")
+        }
+        Op::Query(r, q) => {
+            element(*r)?;
+            let kind = &resource(interface, *r)?.kind;
+            let image = match kind {
+                ResourceKind::Texture {
+                    dim,
+                    arrayed,
+                    multisampled,
+                    ..
+                } => Some((*dim, *arrayed, *multisampled, true)),
+                ResourceKind::Storage {
+                    target: StorageTarget::Image { dim, arrayed, .. },
+                    ..
+                } => Some((*dim, *arrayed, false, false)),
+                _ => None,
+            };
+            let buffer = matches!(
+                kind,
+                ResourceKind::Buffer(_)
+                    | ResourceKind::Storage {
+                        target: StorageTarget::Buffer(_),
+                        ..
+                    }
+            );
+            match (q, image) {
+                (Query::Size(level), Some((dim, _, ms, levels))) => {
+                    if level.is_some() != (levels && !ms) {
+                        return Err("a size query whose level does not match the resource".into());
+                    }
+                    if let Some(l) = level {
+                        index_type(get(*l)?, "a size query's level")?;
+                    }
+                    same(t, Type::vector(Scalar::U32, dims(dim)), "size query")
+                }
+                (Query::Layers, Some((_, true, _, _))) => same(t, Type::U32, "layer query"),
+                (Query::Levels, Some((_, _, false, true))) => same(t, Type::U32, "level query"),
+                (Query::Samples, Some((_, _, true, _))) => same(t, Type::U32, "sample query"),
+                (Query::SamplePosition(i), Some((_, _, true, _))) => {
+                    index_type(get(*i)?, "a sample index")?;
+                    same(t, Type::vector(Scalar::F32, 2), "sample position")
+                }
+                (Query::Elements, None) if buffer => same(t, Type::U32, "element query"),
+                (q, _) => Err(format!("{q:?} of {kind:?}")),
+            }
+        }
+        Op::Atomic {
+            memory,
+            op: aop,
+            value,
+            compare,
+        } => {
+            let v = get(*value)?;
+            if !v.scalar.is_integer() || v.lanes != 1 || !(v.scalar.bits() == 32 || v.scalar.bits() == 64) {
+                return Err(format!("an atomic operation of {v}"));
+            }
+            same(t, v, "atomic result")?;
+            if (*aop == AtomicOp::CompareExchange) != compare.is_some() {
+                return Err("a comparand without a compare-exchange, or the reverse".into());
+            }
+            if let Some(c) = compare {
+                same(get(*c)?, v, "a comparand")?;
+            }
+            match memory {
+                Memory::Buffer(r, address) => {
+                    element(*r)?;
+                    if !matches!(
+                        resource(interface, *r)?.kind,
+                        ResourceKind::Storage {
+                            target: StorageTarget::Buffer(_),
+                            ..
+                        }
+                    ) {
+                        return Err("an atomic operation on a resource that is not a storage buffer".into());
+                    }
+                    if let Some(i) = address.index {
+                        index_type(get(i)?, "a buffer index")?;
+                    }
+                }
+                Memory::Image(r, c) => {
+                    element(*r)?;
+                    let ResourceKind::Storage {
+                        target: StorageTarget::Image { dim, arrayed, .. },
+                        ..
+                    } = resource(interface, *r)?.kind
+                    else {
+                        return Err("an atomic operation on a resource that is not a storage image".into());
+                    };
+                    int_coord(get(*c)?, dims(dim).saturating_add(u8::from(arrayed)), "a texel coordinate")?;
+                }
+                Memory::Var(x, i) => {
+                    let d = var(*x)?;
+                    if d.len.is_some() != i.is_some() {
+                        return Err(format!("an atomic operation on {} without its element", d.name));
+                    }
+                    if let Some(i) = i {
+                        index_type(get(*i)?, "an element index")?;
+                    }
+                    same(d.ty, v, "an atomic variable")?;
+                }
+            }
+            Ok(())
+        }
+        Op::Counter(r, _) => {
+            element(*r)?;
+            if !matches!(
+                resource(interface, *r)?.kind,
+                ResourceKind::Storage {
+                    target: StorageTarget::Buffer(BufferKind::Structured { .. }),
+                    ..
+                }
+            ) {
+                return Err("a counter of a resource that is not a structured storage buffer".into());
+            }
+            same(t, Type::U32, "a counter")
         }
         _ => Ok(()),
     }
@@ -368,6 +761,8 @@ struct Checker<'a> {
     placed: Vec<bool>,
     labels: Vec<(LabelId, Vec<ValueId>, Option<Vec<ValueId>>)>,
     problems: Vec<Problem>,
+    /// Checking a hull program's patch constant function.
+    patch: bool,
 }
 
 impl Checker<'_> {
@@ -453,6 +848,33 @@ impl Checker<'_> {
         if matches!(def.op, Op::Unary(Unary::Derivative(..), _)) && self.stage != Stage::Pixel {
             self.problem(Some(v), "a derivative outside a pixel program");
         }
+        let (stage, patch) = (self.stage, self.patch);
+        let wrong = match &def.op {
+            Op::LoadInputAt(..) if !matches!(stage, Stage::Geometry | Stage::Hull | Stage::Domain) => {
+                Some("a control point or vertex input outside a geometry, hull or domain program")
+            }
+            Op::LoadOutputAt(..) if !patch => Some("an output control point read outside a patch constant function"),
+            Op::LoadPatch(..) if !(stage == Stage::Domain || patch) => {
+                Some("a patch constant read outside a domain program or a patch constant function")
+            }
+            Op::Builtin(Builtin::OutputControlPoint) if stage != Stage::Hull || patch => {
+                Some("the output control point outside a hull program's main function")
+            }
+            Op::Builtin(Builtin::PhaseInstance) if !patch => Some("a phase instance outside a patch constant function"),
+            Op::Builtin(Builtin::PrimitiveId) if !matches!(stage, Stage::Geometry | Stage::Hull | Stage::Domain) => {
+                Some("the primitive id builtin outside a geometry, hull or domain program")
+            }
+            Op::Builtin(Builtin::GsInstance) if stage != Stage::Geometry => {
+                Some("the geometry instance outside a geometry program")
+            }
+            Op::Builtin(Builtin::DomainLocation) if stage != Stage::Domain => {
+                Some("the domain location outside a domain program")
+            }
+            _ => None,
+        };
+        if let Some(w) = wrong {
+            self.problem(Some(v), w);
+        }
     }
     fn node(&mut self, n: &Node) {
         match n {
@@ -476,6 +898,149 @@ impl Checker<'_> {
                         Some(*value),
                         format!("store to variable {}, which does not exist", var.0),
                     ),
+                }
+            }
+            Node::StoreElement(var, i, value, _) => {
+                self.uses(None, *i);
+                self.uses(None, *value);
+                match self.f.vars.get(var.0 as usize) {
+                    Some(d) if d.len.is_none() => {
+                        let m = format!("an element store to {}, which is not an array", d.name);
+                        self.problem(Some(*value), m);
+                    }
+                    Some(d) if Some(d.ty) != self.ty(*value) => {
+                        let m = format!("stores {:?} into an element of {} of {}", self.ty(*value), d.name, d.ty);
+                        self.problem(Some(*value), m);
+                    }
+                    Some(_) => {}
+                    None => self.problem(Some(*value), format!("store to variable {}, which does not exist", var.0)),
+                }
+                if let Some(t) = self.ty(*i)
+                    && let Err(e) = index_type(t, "an element index")
+                {
+                    self.problem(Some(*i), e);
+                }
+            }
+            Node::StoreBuffer {
+                resource: r,
+                address,
+                value,
+            } => {
+                for v in n.values() {
+                    self.uses(None, v);
+                }
+                let t = self.ty(*value);
+                let mut wrong = Vec::new();
+                match resource(self.interface, *r) {
+                    Ok(Resource {
+                        kind: ResourceKind::Storage {
+                            target: StorageTarget::Buffer(_),
+                            ..
+                        },
+                        ..
+                    }) => {}
+                    Ok(res) => wrong.push(format!("a buffer store to {:?}", res.kind)),
+                    Err(e) => wrong.push(e),
+                }
+                if let Some(i) = address.index.or(r.index)
+                    && let Some(it) = self.ty(i)
+                    && let Err(e) = index_type(it, "a buffer index")
+                {
+                    wrong.push(e);
+                }
+                if t.is_none_or(|t| t.scalar.bits() != 32 || t.scalar == Scalar::Bool) {
+                    wrong.push(format!("a buffer store of {t:?}"));
+                }
+                for w in wrong {
+                    self.problem(Some(*value), w);
+                }
+            }
+            Node::StoreTexel { image, coord, value } => {
+                for v in n.values() {
+                    self.uses(None, v);
+                }
+                let want = match resource(self.interface, *image).map(|r| &r.kind) {
+                    Ok(ResourceKind::Storage {
+                        target: StorageTarget::Image { dim, arrayed, sample },
+                        ..
+                    }) => Ok((dims(*dim).saturating_add(u8::from(*arrayed)), sample_scalar(*sample))),
+                    Ok(ResourceKind::Storage {
+                        target: StorageTarget::Buffer(BufferKind::Typed(v)),
+                        ..
+                    }) => Ok((1, value_type(*v).scalar)),
+                    Ok(k) => Err(format!("a texel store to {k:?}")),
+                    Err(e) => Err(e),
+                };
+                match want {
+                    Ok((lanes, scalar)) => {
+                        if let Some(c) = self.ty(*coord)
+                            && let Err(e) = int_coord(c, lanes, "a texel coordinate")
+                        {
+                            self.problem(Some(*coord), e);
+                        }
+                        if self.ty(*value) != Some(Type::vector(scalar, 4)) {
+                            let m = format!("a texel store of {:?} where vec4<{}> is wanted", self.ty(*value), scalar.name());
+                            self.problem(Some(*value), m);
+                        }
+                    }
+                    Err(e) => self.problem(Some(*value), e),
+                }
+            }
+            Node::StorePatch(slot, mask, value) => {
+                self.uses(None, *value);
+                if !self.patch {
+                    self.problem(Some(*value), "a patch constant store outside a patch constant function");
+                }
+                match patch_constants(self.interface).get(*slot as usize).map(|o| masked_type(o.value, *mask)) {
+                    Some(Ok(t)) if Some(t) == self.ty(*value) => {}
+                    Some(Ok(t)) => {
+                        let m = format!("patch constant {slot} lanes {mask:#06b} of {t} take {:?}", self.ty(*value));
+                        self.problem(Some(*value), m);
+                    }
+                    Some(Err(e)) => self.problem(Some(*value), format!("patch constant {slot}: {e}")),
+                    None => self.problem(Some(*value), format!("patch constant slot {slot} is not in the interface")),
+                }
+            }
+            Node::Barrier(_) if !matches!(self.stage, Stage::Compute | Stage::Mesh) => {
+                self.problem(None, "a barrier outside a compute or mesh program");
+            }
+            Node::Barrier(_) => {}
+            Node::Emit(_) | Node::Cut(_) if self.stage != Stage::Geometry => {
+                self.problem(None, "a vertex emitted or a strip cut outside a geometry program");
+            }
+            Node::Emit(_) | Node::Cut(_) => {}
+            Node::Switch {
+                label,
+                selector,
+                cases,
+                default,
+                results,
+            } => {
+                self.uses(None, *selector);
+                if !matches!(self.ty(*selector), Some(Type::U32 | Type::I32)) {
+                    self.problem(Some(*selector), "a switch selector that is not a 32-bit integer");
+                }
+                let mut seen: Vec<u32> = Vec::new();
+                for c in cases {
+                    if c.values.is_empty() {
+                        self.problem(None, "a switch case with no values");
+                    }
+                    for v in &c.values {
+                        if seen.contains(v) {
+                            self.problem(None, format!("switch value {v} in two cases"));
+                        }
+                        seen.push(*v);
+                    }
+                }
+                let before = self.visible.clone();
+                self.labels.push((*label, results.clone(), None));
+                for r in cases.iter().map(|c| &c.body).chain(core::iter::once(default)) {
+                    self.region(r, Some(results));
+                    self.hide(&before);
+                }
+                self.labels.pop();
+                for r in results {
+                    self.define(*r, true);
                 }
             }
             Node::StoreOutput(slot, mask, value) => {
@@ -616,13 +1181,7 @@ impl Checker<'_> {
             self.problem(None, "a graph with no blocks");
             return;
         }
-        let succ = |b: &Block| -> Vec<u32> {
-            match &b.term {
-                Terminator::Jump(t) => vec![t.block],
-                Terminator::Branch { accept, reject, .. } => vec![accept.block, reject.block],
-                _ => Vec::new(),
-            }
-        };
+        let succ = |b: &Block| -> Vec<u32> { b.term.targets().iter().map(|t| t.block).collect() };
         let idom = dominators(blocks.iter().map(succ).collect());
         // a value is visible in a block when its own block dominates it (earlier in the same block)
         let mut home = vec![None; self.f.values.len()];
@@ -685,34 +1244,44 @@ impl Checker<'_> {
                         self.define(*v, false);
                         local.push(*v);
                     }
-                    Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => {
-                        seen(self, &local, None, *x);
+                    Node::If { .. } | Node::Block { .. } | Node::Loop { .. } | Node::Switch { .. } => {
+                        self.problem(None, "a construct inside a graph block")
+                    }
+                    _ => {
+                        for x in node.values() {
+                            seen(self, &local, None, x);
+                        }
                         let saved = self.visible.clone();
                         self.visible.iter_mut().for_each(|s| *s = true);
                         self.node(node);
                         self.visible = saved;
                     }
-                    Node::Demote => self.node(node),
-                    Node::If { .. } | Node::Block { .. } | Node::Loop { .. } => {
-                        self.problem(None, "a construct inside a graph block")
-                    }
                 }
             }
-            let targets: Vec<&crate::Target> = match &b.term {
-                Terminator::Jump(t) => vec![t],
-                Terminator::Branch { cond, accept, reject } => {
+            match &b.term {
+                Terminator::Branch { cond, .. } => {
                     seen(self, &local, None, *cond);
                     if self.ty(*cond) != Some(Type::BOOL) {
                         self.problem(Some(*cond), "a branch condition that is not a bool");
                     }
-                    vec![accept, reject]
+                }
+                Terminator::Switch { selector, cases, .. } => {
+                    seen(self, &local, None, *selector);
+                    if !matches!(self.ty(*selector), Some(Type::U32 | Type::I32)) {
+                        self.problem(Some(*selector), "a switch selector that is not a 32-bit integer");
+                    }
+                    let mut values: Vec<u32> = cases.iter().map(|(v, _)| *v).collect();
+                    values.sort_unstable();
+                    if values.windows(2).any(|w| w.first() == w.get(1)) {
+                        self.problem(None, "a switch value with two targets");
+                    }
                 }
                 Terminator::Kill if self.stage != Stage::Pixel => {
                     self.problem(None, "a kill outside a pixel program");
-                    Vec::new()
                 }
-                _ => Vec::new(),
-            };
+                _ => {}
+            }
+            let targets = b.term.targets();
             for t in targets {
                 match blocks.get(t.block as usize) {
                     None => self.problem(None, format!("a branch to block {}, of {n}", t.block)),
@@ -818,9 +1387,7 @@ pub fn dominators(succ: Vec<Vec<u32>>) -> Vec<Option<usize>> {
     idom
 }
 
-/// Check a program: every problem found.
-pub fn validate(p: &Program) -> Result<(), Vec<Problem>> {
-    let f = &p.entry;
+fn check_function(p: &Program, f: &Function, patch: bool, problems: &mut Vec<Problem>) {
     let mut c = Checker {
         f,
         interface: &p.interface,
@@ -829,9 +1396,18 @@ pub fn validate(p: &Program) -> Result<(), Vec<Problem>> {
         placed: vec![false; f.values.len()],
         labels: Vec::new(),
         problems: Vec::new(),
+        patch,
     };
-    if p.stage != p.interface.stage {
-        c.problem(None, "the program's stage is not its interface's");
+    for v in &f.vars {
+        if v.space == crate::Space::Workgroup && !matches!(p.stage, Stage::Compute | Stage::Mesh) {
+            c.problem(None, format!("workgroup variable {} outside a compute or mesh program", v.name));
+        }
+        if !v.init.is_empty() && v.init.len() != v.len.map_or(1, |n| n as usize) {
+            c.problem(None, format!("variable {} starts with {} elements", v.name, v.init.len()));
+        }
+        if v.len == Some(0) {
+            c.problem(None, format!("array variable {} has no elements", v.name));
+        }
     }
     match &f.body {
         Body::Regions(r) => {
@@ -845,9 +1421,49 @@ pub fn validate(p: &Program) -> Result<(), Vec<Problem>> {
         }
         Body::Cfg(blocks) => c.cfg(blocks),
     }
-    if c.problems.is_empty() {
+    problems.extend(c.problems);
+}
+
+/// Check a program: every problem found.
+pub fn validate(p: &Program) -> Result<(), Vec<Problem>> {
+    let mut problems = Vec::new();
+    if p.stage != p.interface.stage {
+        problems.push(Problem {
+            value: None,
+            message: "the program's stage is not its interface's".into(),
+        });
+    }
+    check_function(p, &p.entry, false, &mut problems);
+    match (&p.patch, p.stage) {
+        (Some(f), Stage::Hull) => check_function(p, f, true, &mut problems),
+        (Some(_), _) => problems.push(Problem {
+            value: None,
+            message: "a patch constant function in a program that is not a hull program".into(),
+        }),
+        (None, Stage::Hull) => problems.push(Problem {
+            value: None,
+            message: "a hull program without its patch constant function".into(),
+        }),
+        (None, _) => {}
+    }
+    match (p.workgroup, matches!(p.stage, Stage::Compute | Stage::Mesh)) {
+        (Some(size), true) if size.contains(&0) => problems.push(Problem {
+            value: None,
+            message: "a thread group with no invocations along an axis".into(),
+        }),
+        (None, true) => problems.push(Problem {
+            value: None,
+            message: "a compute or mesh program without its thread group".into(),
+        }),
+        (Some(_), false) => problems.push(Problem {
+            value: None,
+            message: "a thread group in a program that is not a compute or mesh program".into(),
+        }),
+        _ => {}
+    }
+    if problems.is_empty() {
         Ok(())
     } else {
-        Err(c.problems)
+        Err(problems)
     }
 }

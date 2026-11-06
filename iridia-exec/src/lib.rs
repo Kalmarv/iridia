@@ -78,6 +78,7 @@ use iridia::Interface;
 mod compile;
 mod flat;
 pub mod geometry;
+mod ir;
 mod mask;
 pub mod mesh;
 mod pipeline;
@@ -159,6 +160,22 @@ impl Executable {
             )
         })?;
         compile::compile(program, &info, None).map_err(error)
+    }
+
+    /// Check an [`iridia_ir::Program`] and compile its entry function, its values run by `iridia_exec_ir`'s
+    /// definitions. The body must be structured with its exits as `iridia_passes::break_flags` leaves them; a construct
+    /// the compile does not take is refused here, by name.
+    pub fn from_ir(program: &iridia_ir::Program) -> Result<Self, Error> {
+        iridia_ir::validate(program).map_err(|problems| {
+            error(
+                problems
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        })?;
+        ir::compile(program).map_err(error)
     }
 
     /// Compile one function of a program made of functions (a hull program's `main` and `patch_constant`, a domain

@@ -5,7 +5,7 @@
 //! `texdp3`, `texdp3tex`; in 1.4 `texld`, `texcrd` and `texdepth`.
 
 use iridia_ir::{
-    Binary, Cmp as Compare, End, Level, MinMaxNan, Op, SaturateNan, Type, Unary, ValueId,
+    Binary, Cmp as Compare, End, Level, MinMaxNan, Op, Res, SaturateNan, Type, Unary, ValueId,
     interface::{StateParam, TextureDim},
 };
 
@@ -292,10 +292,13 @@ impl Lift<'_> {
             Ok(l.b.value(
                 Type::F32X4,
                 Op::Sample {
-                    texture,
-                    sampler: sampler.sampler,
+                    texture: Res::of(texture),
+                    sampler: Res::of(sampler.sampler),
                     coord,
                     level: Level::Auto,
+                    compare: None,
+                    offset: [0; 3],
+                    clamp: None,
                 },
             ))
         };
@@ -385,10 +388,13 @@ impl Lift<'_> {
             _ => return Err(error(self.at, "TEX control 3 (projection and bias together)")),
         };
         let op = Op::Sample {
-            texture,
-            sampler: sampler.sampler,
+            texture: Res::of(texture),
+            sampler: Res::of(sampler.sampler),
             coord,
             level,
+            compare: None,
+            offset: [0; 3],
+            clamp: None,
         };
         // a 2.x sampler's swizzle is not applied, as DXVK; a 3.0 one is checked above to be the identity
         Ok(self.b.value(Type::F32X4, op))

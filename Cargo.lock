@@ -281,6 +281,8 @@ dependencies = [
  "iridia",
  "iridia-dxil",
  "iridia-exec",
+ "iridia-ir",
+ "iridia-passes",
  "primase-naga",
  "primase-testdata",
  "serde_json",
@@ -308,7 +310,9 @@ dependencies = [
  "iridia",
  "iridia-dxbc",
  "iridia-dxil",
+ "iridia-exec-ir",
  "iridia-interface",
+ "iridia-ir",
  "primase-foundations",
  "primase-naga",
  "thiserror",
@@ -353,14 +357,19 @@ dependencies = [
 name = "iridia-naga"
 version = "0.5.0"
 dependencies = [
+ "iridia",
+ "iridia-exec",
+ "iridia-exec-ir",
  "iridia-ir",
  "naga",
+ "primase-naga",
 ]
 
 [[package]]
 name = "iridia-passes"
 version = "0.5.0"
 dependencies = [
+ "iridia-exec",
  "iridia-exec-ir",
  "iridia-ir",
  "iridia-naga",

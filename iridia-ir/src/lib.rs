@@ -45,11 +45,13 @@ pub const VERSION: u32 = 2;
 
 pub use builder::Builder;
 pub use func::{
-    Block, Body, End, Function, Node, Origin, Precision, Region, Target, Terminator, ValueDef, Var,
+    Block, Body, Case, End, Function, Node, Origin, Precision, Region, Space, Target, Terminator, ValueDef,
+    Var,
 };
 pub use op::{
-    Axis, Binary, Cmp, Fineness, FloatToInt, LabelId, Level, MinMaxNan, MulZero, OnZero, Op, OutOfBounds,
-    Rounding, SaturateNan, Unary, ValueId, VarId,
+    Address, AtomicOp, Axis, Barrier, Binary, Builtin, Cmp, CounterOp, Fineness, FloatToInt, GatherOffset,
+    LabelId, Level, Memory, MinMaxNan, MulZero, OnZero, Op, OutOfBounds, Query, Res, Rounding, SaturateNan,
+    Scope, Ternary, Unary, ValueId, VarId,
 };
 pub use program::{ClipDepth, Conventions, Corner, Denormals, FloatEnv, Program, Provenance};
 pub use refusal::{Refusal, Unit, source_hash};

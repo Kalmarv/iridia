@@ -43,6 +43,8 @@ let varying = |name: &str, width, system| Varying {
 let program = Program {
     stage: Stage::Pixel,
     entry,
+    patch: None,
+    workgroup: None,
     interface: Interface {
         stage: Stage::Pixel,
         inputs: vec![varying("TEXCOORD", 1, None)],

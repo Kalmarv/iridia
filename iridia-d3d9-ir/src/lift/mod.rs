@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use d3d9_reader::Modifier;
 use iridia_ir::{
-    Binary, Builder, Cmp, Conventions, End, FloatEnv, FloatToInt, LabelId, MulZero, Op, OutOfBounds,
-    Precision, Program, Provenance, Rounding, SaturateNan, Scalar, Type, Unary, ValueId, VarId,
+    Address, Binary, Builder, Cmp, Conventions, End, FloatEnv, FloatToInt, LabelId, MulZero, Op, OutOfBounds,
+    Precision, Program, Provenance, Res, Rounding, SaturateNan, Scalar, Type, Unary, ValueId, VarId,
     interface::{ShaderFormat, TextureDim},
     source_hash,
 };
@@ -347,10 +347,8 @@ impl Lift<'_> {
                 }
                 let bank = self.bank()?;
                 let load = Op::LoadBuffer {
-                    resource: bank.resource,
-                    index: None,
-                    stride: 16,
-                    offset: n.saturating_mul(16),
+                    resource: Res::of(bank.resource),
+                    address: Address::fixed(n.saturating_mul(16)),
                     oob: OutOfBounds::Zero,
                 };
                 let v = self.b.value(Type::F32X4, load);
@@ -507,10 +505,12 @@ impl Lift<'_> {
             .i32(i32::try_from(base).map_err(|_| error(self.at, "constant register"))?);
         let index = self.binary(Binary::IAdd, a, offset)?;
         let load = Op::LoadBuffer {
-            resource: bank.resource,
-            index: Some(index),
-            stride: 16,
-            offset: 0,
+            resource: Res::of(bank.resource),
+            address: Address {
+                index: Some(index),
+                stride: 16,
+                offset: 0,
+            },
             oob: OutOfBounds::Zero,
         };
         let mut v = self.b.value(Type::F32X4, load);
@@ -535,10 +535,8 @@ impl Lift<'_> {
             .integers
             .ok_or_else(|| error(self.at, "integer constant bank not allocated"))?;
         let load = Op::LoadBuffer {
-            resource: bank.resource,
-            index: None,
-            stride: 16,
-            offset: n.saturating_mul(16),
+            resource: Res::of(bank.resource),
+            address: Address::fixed(n.saturating_mul(16)),
             oob: OutOfBounds::Zero,
         };
         Ok(self.b.value(Type::vector(Scalar::I32, 4), load))
@@ -553,10 +551,8 @@ impl Lift<'_> {
             .booleans
             .ok_or_else(|| error(self.at, "boolean constant bank not allocated"))?;
         let load = Op::LoadBuffer {
-            resource: bank.resource,
-            index: None,
-            stride: 4,
-            offset: n.saturating_mul(4),
+            resource: Res::of(bank.resource),
+            address: Address::fixed(n.saturating_mul(4)),
             oob: OutOfBounds::Zero,
         };
         let word = self.b.value(Type::U32, load);
@@ -715,6 +711,8 @@ impl Lift<'_> {
         let program = Program {
             stage: source.stage,
             entry,
+            patch: None,
+            workgroup: None,
             interface: self.signature.interface,
             conventions: Conventions::D3D,
             float: FloatEnv::default(),

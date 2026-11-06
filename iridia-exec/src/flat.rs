@@ -17,6 +17,8 @@ pub(super) enum BinOp {
     SubU,
     MulU,
     DivU,
+    DivI,
+    ModI,
     ModU,
     And,
     Or,
@@ -62,6 +64,11 @@ pub(super) enum CvtOp {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum MathOp {
+    FirstLeadingU,
+    FirstLeadingI,
+    ExtractU,
+    ExtractI,
+    Insert,
     AbsF,
     AbsI,
     MinF,
@@ -198,12 +205,12 @@ pub(super) enum Op {
     },
     Math {
         f: MathOp,
-        a: u32,
-        b: u32,
-        c: u32,
+        /// The operands' slots (0 for one the function does not take).
+        args: [u32; 4],
         n: u8,
-        /// The third operand is a scalar given to every lane (`mix` of vectors by a scalar).
-        c1: bool,
+        /// Bit `k`: operand `k` is a scalar given to every lane (`mix` of vectors by a scalar, `extractBits`'s
+        /// offset and count).
+        scalars: u8,
     },
     Deriv {
         src: u32,
@@ -260,6 +267,26 @@ pub(super) enum Op {
         elem_words: u32,
         /// The element of an array of buffers.
         pick: Option<Pick>,
+    },
+    /// An operation of an [`iridia_ir::Program`] whose definition is `iridia_exec_ir::eval`'s: its operands are the
+    /// registers their value ids number, typed by [`Executable::ir_types`].
+    Ir(Box<iridia_ir::Op>),
+    /// Element `index` (the first lane of a register, its bits as `u32`) of an array at `loc`, `stride` words apart and
+    /// `len` elements long: `n` words, or zero for an index past the end.
+    Element {
+        loc: Loc,
+        index: u32,
+        stride: u32,
+        len: u32,
+        n: u8,
+    },
+    /// `n` consecutive words of a buffer (global `g`, the element `pick` of an array of them) from the word index in
+    /// the first lane of register `word`; each word past the buffer's end reads as zero.
+    Words {
+        g: u32,
+        pick: Pick,
+        word: u32,
+        n: u8,
     },
 }
 /// Which element of a resource array an operation reads.
@@ -448,6 +475,24 @@ pub(super) enum St {
     },
     Break,
     Continue,
+    /// Store `n` words to element `index` of an array, as [`Op::Element`] reads one; an index past the end stores
+    /// nothing.
+    StoreElement {
+        loc: Loc,
+        index: u32,
+        stride: u32,
+        len: u32,
+        src: u32,
+        n: u8,
+    },
+    /// Store `n` words to a buffer, as [`Op::Words`] reads them; a word past the buffer's end is not written.
+    StoreWords {
+        g: u32,
+        pick: Pick,
+        word: u32,
+        src: u32,
+        n: u8,
+    },
     /// Leave, with these members as the result (in the order of the interface's outputs).
     Return(Vec<Member>),
     Kill,
@@ -555,4 +600,7 @@ pub struct Executable {
     pub(super) mesh_output: Option<(usize, u32)>,
     /// Per entry argument, the built-in it carries.
     pub(super) builtins: Vec<Option<naga::BuiltIn>>,
+    /// The type of each register an [`Op::Ir`] reads or writes, by register (empty for a program compiled from a naga
+    /// module).
+    pub(super) ir_types: Vec<iridia_ir::Type>,
 }

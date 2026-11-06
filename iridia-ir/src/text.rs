@@ -6,8 +6,9 @@ use alloc::string::String;
 use core::fmt::Write;
 
 use crate::{
-    Binary, Body, End, Function, Level, Node, Op, Precision, Region, Scalar, Target, Terminator, Type, Unary,
-    ValueId,
+    Address, Barrier, Binary, Body, Builtin, End, Function, GatherOffset, Level, Memory, Node, Op,
+    OutOfBounds, Precision, Query, Region, Res, Scalar, Scope, Space, Target, Terminator, Ternary, Type,
+    Unary, ValueId, Var,
 };
 
 mod parse;
@@ -105,9 +106,102 @@ fn binary(b: &Binary) -> String {
         Binary::UCmp(c) => alloc::format!("ucmp.{c:?}"),
         Binary::UDiv(z) => alloc::format!("udiv.{z:?}"),
         Binary::URem(z) => alloc::format!("urem.{z:?}"),
+        Binary::SDiv(z) => alloc::format!("sdiv.{z:?}"),
+        Binary::SRem(z) => alloc::format!("srem.{z:?}"),
         other => alloc::format!("{other:?}"),
     }
     .to_lowercase()
+}
+
+fn ternary(t: &Ternary) -> &'static str {
+    match t {
+        Ternary::Fma => "fma",
+        Ternary::BitExtract { signed: false } => "bitextract.unsigned",
+        Ternary::BitExtract { signed: true } => "bitextract.signed",
+    }
+}
+
+fn oob(o: OutOfBounds) -> &'static str {
+    match o {
+        OutOfBounds::Zero => "oob.zero",
+        OutOfBounds::Undef => "oob.undef",
+    }
+}
+
+fn builtin(b: Builtin) -> String {
+    alloc::format!("{b:?}").to_lowercase()
+}
+
+/// `rN`, an element of an array `rN@%i`, a non-uniform one `rN@%i!`.
+fn res(r: &Res) -> String {
+    match r.index {
+        None => alloc::format!("r{}", r.id.0),
+        Some(i) => alloc::format!("r{}@%{}{}", r.id.0, i.0, if r.nonuniform { "!" } else { "" }),
+    }
+}
+
+/// `[%i * stride] + offset`, or `+ offset` for a fixed address.
+fn address(a: &Address) -> String {
+    match a.index {
+        Some(i) => alloc::format!("[%{} * {}] + {}", i.0, a.stride, a.offset),
+        None => alloc::format!(" + {}", a.offset),
+    }
+}
+
+fn offsets(o: &[i8; 3]) -> String {
+    alloc::format!("({},{},{})", o[0], o[1], o[2])
+}
+
+fn var_name(f: &Function, v: crate::VarId) -> &str {
+    f.vars.get(v.0 as usize).map_or("?", |d| d.name.as_str())
+}
+
+fn memory(f: &Function, m: &Memory) -> String {
+    match m {
+        Memory::Buffer(r, a) => alloc::format!("buffer {}{}", res(r), address(a)),
+        Memory::Image(r, c) => alloc::format!("image {}, %{}", res(r), c.0),
+        Memory::Var(v, None) => alloc::format!("var {}", var_name(f, *v)),
+        Memory::Var(v, Some(i)) => alloc::format!("var {}[%{}]", var_name(f, *v), i.0),
+    }
+}
+
+/// The text of a barrier: `barrier` and what it waits for.
+fn barrier(b: &Barrier) -> String {
+    let mut out = String::from("barrier");
+    if b.execution {
+        out.push_str(" execution");
+    }
+    if b.workgroup {
+        out.push_str(" workgroup");
+    }
+    match b.storage {
+        Some(Scope::Workgroup) => out.push_str(" storage.workgroup"),
+        Some(Scope::Device) => out.push_str(" storage.device"),
+        None => {}
+    }
+    out
+}
+
+/// A variable's declaration after `var `: `name: T`, an array `name: [T; n]`, in workgroup memory `... workgroup`,
+/// with a start `... = {T(..), ...}`.
+fn declaration(out: &mut String, v: &Var) {
+    let _ = match v.len {
+        None => write!(out, "{}: {}", v.name, v.ty),
+        Some(n) => write!(out, "{}: [{}; {n}]", v.name, v.ty),
+    };
+    if v.space == Space::Workgroup {
+        out.push_str(" workgroup");
+    }
+    if !v.init.is_empty() {
+        out.push_str(" = {");
+        for (i, e) in v.init.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            literal(out, v.ty, e);
+        }
+        out.push('}');
+    }
 }
 
 fn op(out: &mut String, f: &Function, ty: Type, o: &Op) {
@@ -149,36 +243,130 @@ fn op(out: &mut String, f: &Function, ty: Type, o: &Op) {
         Op::LoadState(r) => write!(out, "state r{}", r.0),
         Op::LoadBuffer {
             resource,
-            index,
-            stride,
-            offset,
-            oob,
-        } => {
-            let _ = write!(out, "buffer r{}", resource.0);
-            if let Some(i) = index {
-                let _ = write!(out, "[%{} * {stride}]", i.0);
-            }
-            write!(
-                out,
-                " + {offset} oob.{}",
-                alloc::format!("{oob:?}").to_lowercase()
-            )
-        }
+            address: a,
+            oob: rule,
+        } => write!(out, "buffer {}{} {}", res(resource), address(a), oob(*rule)),
         Op::Sample {
             texture,
             sampler,
             coord,
             level,
+            compare,
+            offset,
+            clamp,
         } => {
-            let _ = write!(out, "sample r{}, r{}, %{}", texture.0, sampler.0, coord.0);
-            match level {
+            let _ = write!(out, "sample {}, {}, %{}", res(texture), res(sampler), coord.0);
+            let _ = match level {
                 Level::Auto => Ok(()),
                 Level::Zero => write!(out, " level 0"),
                 Level::Bias(x) => write!(out, " bias %{}", x.0),
                 Level::Exact(x) => write!(out, " level %{}", x.0),
                 Level::Grad(x, y) => write!(out, " grad %{}, %{}", x.0, y.0),
+            };
+            if let Some(c) = compare {
+                let _ = write!(out, " compare %{}", c.0);
+            }
+            if *offset != [0; 3] {
+                let _ = write!(out, " offset {}", offsets(offset));
+            }
+            match clamp {
+                Some(c) => write!(out, " clamp %{}", c.0),
+                None => Ok(()),
             }
         }
+        Op::Ternary(t, a, b, c) => write!(out, "{} %{}, %{}, %{}", ternary(t), a.0, b.0, c.0),
+        Op::BitInsert {
+            base,
+            insert,
+            offset,
+            count,
+        } => write!(
+            out,
+            "bitinsert %{}, %{}, %{}, %{}",
+            base.0, insert.0, offset.0, count.0
+        ),
+        Op::LoadInputAt(slot, mask, at) => write!(out, "input {slot}.{} [%{}]", lanes(*mask), at.0),
+        Op::LoadOutputAt(slot, mask, at) => write!(out, "output {slot}.{} [%{}]", lanes(*mask), at.0),
+        Op::LoadPatch(slot, mask) => write!(out, "patch {slot}.{}", lanes(*mask)),
+        Op::Builtin(b) => write!(out, "builtin {}", builtin(*b)),
+        Op::LoadElement(v, i, rule) => write!(out, "load {}[%{}] {}", var_name(f, *v), i.0, oob(*rule)),
+        Op::Gather {
+            texture,
+            sampler,
+            coord,
+            component,
+            compare,
+            offset,
+        } => {
+            let _ = write!(
+                out,
+                "gather.{} {}, {}, %{}",
+                lane(*component),
+                res(texture),
+                res(sampler),
+                coord.0
+            );
+            if let Some(c) = compare {
+                let _ = write!(out, " compare %{}", c.0);
+            }
+            match offset {
+                GatherOffset::Fixed(o) if *o == [0; 3] => Ok(()),
+                GatherOffset::Fixed(o) => write!(out, " offset {}", offsets(o)),
+                GatherOffset::Dynamic(v) => write!(out, " offset %{}", v.0),
+            }
+        }
+        Op::LoadTexel {
+            texture,
+            coord,
+            level,
+            sample,
+            offset,
+        } => {
+            let _ = write!(out, "texel {}, %{}", res(texture), coord.0);
+            if let Some(l) = level {
+                let _ = write!(out, " level %{}", l.0);
+            }
+            if let Some(x) = sample {
+                let _ = write!(out, " sample %{}", x.0);
+            }
+            if *offset != [0; 3] {
+                let _ = write!(out, " offset {}", offsets(offset));
+            }
+            Ok(())
+        }
+        Op::Query(r, q) => match q {
+            Query::Size(None) => write!(out, "query.size {}", res(r)),
+            Query::Size(Some(l)) => write!(out, "query.size {} level %{}", res(r), l.0),
+            Query::Layers => write!(out, "query.layers {}", res(r)),
+            Query::Levels => write!(out, "query.levels {}", res(r)),
+            Query::Samples => write!(out, "query.samples {}", res(r)),
+            Query::SamplePosition(i) => write!(out, "query.sampleposition {} index %{}", res(r), i.0),
+            Query::Elements => write!(out, "query.elements {}", res(r)),
+        },
+        Op::Atomic {
+            memory: m,
+            op: aop,
+            value,
+            compare,
+        } => {
+            let _ = write!(
+                out,
+                "atomic.{} {} value %{}",
+                alloc::format!("{aop:?}").to_lowercase(),
+                memory(f, m),
+                value.0
+            );
+            match compare {
+                Some(c) => write!(out, " compare %{}", c.0),
+                None => Ok(()),
+            }
+        }
+        Op::Counter(r, c) => write!(
+            out,
+            "counter.{} {}",
+            alloc::format!("{c:?}").to_lowercase(),
+            res(r)
+        ),
     };
 }
 
@@ -274,6 +462,63 @@ impl Printer<'_> {
                 self.indent();
                 self.out.push_str("demote\n");
             }
+            Node::StoreElement(var, i, v, rule) => {
+                self.indent();
+                let name = var_name(self.f, *var);
+                let _ = writeln!(self.out, "{name}[%{}] = %{} {}", i.0, v.0, oob(*rule));
+            }
+            Node::StoreBuffer {
+                resource,
+                address: a,
+                value,
+            } => {
+                self.indent();
+                let _ = writeln!(self.out, "store buffer {}{} = %{}", res(resource), address(a), value.0);
+            }
+            Node::StoreTexel { image, coord, value } => {
+                self.indent();
+                let _ = writeln!(self.out, "store texel {}, %{} = %{}", res(image), coord.0, value.0);
+            }
+            Node::StorePatch(slot, mask, v) => {
+                self.indent();
+                let _ = writeln!(self.out, "patch {slot}.{} = %{}", lanes(*mask), v.0);
+            }
+            Node::Barrier(b) => {
+                self.indent();
+                let _ = writeln!(self.out, "{}", barrier(b));
+            }
+            Node::Emit(stream) => {
+                self.indent();
+                let _ = writeln!(self.out, "emit {stream}");
+            }
+            Node::Cut(stream) => {
+                self.indent();
+                let _ = writeln!(self.out, "cut {stream}");
+            }
+            Node::Switch {
+                label,
+                selector,
+                cases,
+                default,
+                results,
+            } => {
+                self.indent();
+                let _ = writeln!(self.out, "switch '{} %{} {{", label.0, selector.0);
+                for c in cases {
+                    self.indent();
+                    self.out.push_str("case ");
+                    for (i, v) in c.values.iter().enumerate() {
+                        let sep = if i == 0 { "" } else { ", " };
+                        let _ = write!(self.out, "{sep}{v}");
+                    }
+                    self.out.push_str(":\n");
+                    self.region(&c.body);
+                }
+                self.indent();
+                self.out.push_str("default:\n");
+                self.region(default);
+                self.close(results);
+            }
             Node::If {
                 cond,
                 accept,
@@ -328,7 +573,9 @@ pub fn print(f: &Function) -> String {
     };
     let _ = writeln!(p.out, "{SCHEMA}\nfn {} {{", f.name);
     for var in &f.vars {
-        let _ = writeln!(p.out, "  var {}: {}", var.name, var.ty);
+        p.out.push_str("  var ");
+        declaration(&mut p.out, var);
+        p.out.push('\n');
     }
     match &f.body {
         Body::Regions(r) => p.region(r),
@@ -352,6 +599,19 @@ pub fn print(f: &Function) -> String {
                         p.target(accept);
                         p.out.push_str(", ");
                         p.target(reject);
+                    }
+                    Terminator::Switch {
+                        selector,
+                        cases,
+                        default,
+                    } => {
+                        let _ = write!(p.out, "switch %{}", selector.0);
+                        for (v, t) in cases {
+                            let _ = write!(p.out, ", {v}: ");
+                            p.target(t);
+                        }
+                        p.out.push_str(", default: ");
+                        p.target(default);
                     }
                     Terminator::Return => p.out.push_str("return"),
                     Terminator::Kill => p.out.push_str("kill"),

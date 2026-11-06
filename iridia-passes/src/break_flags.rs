@@ -1,7 +1,9 @@
 //! Exits a target with innermost-only `break` and `continue` cannot take, routed through a jump variable: the form
-//! naga and WGSL need. An exit is left as it is where it can be taken directly: a `Br` or `Continue` to a loop with
-//! no other loop between, and a `Br` to a block from the end of the block's own body (which becomes its fall-off). Any
-//! other exit (a `Br` to a block from inside a construct within it, an exit across a loop) is routed:
+//! naga and WGSL need, where `break` leaves the innermost loop or switch and `continue` the innermost loop. An exit is
+//! left as it is where it can be taken directly: a `Br` to a loop or a switch with no other loop or switch between, a
+//! `Continue` to a loop with no other loop between, and a `Br` to a block from the end of the block's own body (which
+//! becomes its fall-off). Any other exit (a `Br` to a block from inside a construct within it, an exit across a loop
+//! or a switch) is routed:
 //!
 //! - it sets the jump variable to its own number and leaves its innermost construct the ordinary way: off the end of
 //!   an `If` arm or a block's body, or by a `Br` to its innermost loop;
@@ -33,7 +35,7 @@ fn new_value(f: &mut Function, ty: Type, op: Op) -> Result<ValueId, String> {
 
 fn new_var(f: &mut Function, name: String, ty: Type) -> Result<VarId, String> {
     let id = VarId(u32::try_from(f.vars.len()).map_err(|_| String::from("more than 2^32 variables"))?);
-    f.vars.push(Var { name, ty });
+    f.vars.push(Var::new(&name, ty));
     Ok(id)
 }
 
@@ -142,6 +144,35 @@ impl Demote<'_> {
                     });
                     self.loads(&results, &rvars, &mut out);
                 }
+                Node::Switch {
+                    label,
+                    selector,
+                    mut cases,
+                    default,
+                    results,
+                } => {
+                    let vars = self.vars_for(&results, "switch")?;
+                    self.labels.insert(
+                        label,
+                        Carried {
+                            results: vars.clone(),
+                            params: Vec::new(),
+                        },
+                    );
+                    for c in &mut cases {
+                        let body = core::mem::take(&mut c.body);
+                        c.body = self.region(body, &vars)?;
+                    }
+                    let default = self.region(default, &vars)?;
+                    out.push(Node::Switch {
+                        label,
+                        selector,
+                        cases,
+                        default,
+                        results: Vec::new(),
+                    });
+                    self.loads(&results, &vars, &mut out);
+                }
                 other => out.push(other),
             }
         }
@@ -180,14 +211,39 @@ enum Frame {
     If,
     Block(LabelId),
     Loop(LabelId),
+    Switch(LabelId),
 }
 
 impl Frame {
     fn label(self) -> Option<LabelId> {
         match self {
             Frame::If => None,
-            Frame::Block(l) | Frame::Loop(l) => Some(l),
+            Frame::Block(l) | Frame::Loop(l) | Frame::Switch(l) => Some(l),
         }
+    }
+    /// Whether a target's `break` leaves it.
+    fn breakable(self) -> bool {
+        matches!(self, Frame::Loop(_) | Frame::Switch(_))
+    }
+    fn of(n: &Node) -> Option<Frame> {
+        match n {
+            Node::If { .. } => Some(Frame::If),
+            Node::Block { label, .. } => Some(Frame::Block(*label)),
+            Node::Loop { label, .. } => Some(Frame::Loop(*label)),
+            Node::Switch { label, .. } => Some(Frame::Switch(*label)),
+            _ => None,
+        }
+    }
+}
+
+/// Whether an exit to the frame at `at` of `stack` is taken directly: a break of the innermost loop or switch, a
+/// continue of the innermost loop.
+fn direct(stack: &[Frame], at: usize, resume: bool) -> bool {
+    let inner = stack.get(at.saturating_add(1)..).unwrap_or_default();
+    match (stack.get(at), resume) {
+        (Some(Frame::Loop(_)), true) => !inner.iter().any(|f| matches!(f, Frame::Loop(_))),
+        (Some(f), false) if f.breakable() => !inner.iter().any(|f| f.breakable()),
+        _ => false,
     }
 }
 
@@ -230,7 +286,7 @@ impl Flags<'_> {
     fn leave(k: Option<Frame>) -> Result<End, String> {
         match k {
             Some(Frame::Loop(l)) => Ok(End::Br(l, Vec::new())),
-            Some(Frame::If | Frame::Block(_)) => Ok(End::Yield(Vec::new())),
+            Some(Frame::If | Frame::Block(_) | Frame::Switch(_)) => Ok(End::Yield(Vec::new())),
             None => Err("a route past the function's body".into()),
         }
     }
@@ -256,7 +312,7 @@ impl Flags<'_> {
             let end = match (k, r.resume) {
                 (Some(Frame::Loop(l)), true) => End::Continue(l, Vec::new()),
                 (Some(Frame::Loop(l)), false) => End::Br(l, Vec::new()),
-                (Some(Frame::Block(_)), false) => End::Yield(Vec::new()),
+                (Some(Frame::Block(_) | Frame::Switch(_)), false) => End::Yield(Vec::new()),
                 _ => return Err("a route that arrives at a construct its exit cannot take".into()),
             };
             nodes.push(Node::If {
@@ -332,6 +388,34 @@ impl Flags<'_> {
                         s,
                     )
                 }
+                Node::Switch {
+                    label,
+                    selector,
+                    mut cases,
+                    default,
+                    results,
+                } => {
+                    stack.push(Frame::Switch(label));
+                    let mut left = Vec::new();
+                    for c in &mut cases {
+                        let (body, s) = self.region(core::mem::take(&mut c.body), stack)?;
+                        c.body = body;
+                        left.extend(s);
+                    }
+                    let (default, s) = self.region(default, stack)?;
+                    left.extend(s);
+                    stack.pop();
+                    (
+                        Node::Switch {
+                            label,
+                            selector,
+                            cases,
+                            default,
+                            results,
+                        },
+                        left,
+                    )
+                }
                 other => (other, Vec::new()),
             };
             out.push(node);
@@ -377,12 +461,7 @@ impl Flags<'_> {
                     .rposition(|f| f.label() == Some(t))
                     .ok_or_else(|| format!("an exit to label {}, which no enclosing construct has", t.0))?;
                 let inner = stack.get(at.saturating_add(1)..).unwrap_or_default();
-                let direct = match stack.get(at) {
-                    // a loop's own exits, with no loop between
-                    Some(Frame::Loop(_)) => !inner.iter().any(|f| matches!(f, Frame::Loop(_))),
-                    _ => false,
-                };
-                if direct {
+                if direct(stack, at, resume) {
                     Some(e)
                 } else if inner.is_empty() && !resume {
                     // the end of the block's own body: falling off it is the exit
@@ -407,35 +486,25 @@ impl Flags<'_> {
 
 /// Whether any exit in `r` (within `stack`) needs routing.
 fn needs(r: &Region, stack: &mut Vec<Frame>) -> bool {
-    let inner = r.nodes.iter().any(|n| match n {
-        Node::If { accept, reject, .. } => {
-            stack.push(Frame::If);
-            let x = needs(accept, stack) || needs(reject, stack);
+    let inner = r.nodes.iter().any(|n| match Frame::of(n) {
+        Some(frame) => {
+            stack.push(frame);
+            let x = n.regions().into_iter().any(|inner| needs(inner, stack));
             stack.pop();
             x
         }
-        Node::Block { label, body, .. } | Node::Loop { label, body, .. } => {
-            stack.push(if matches!(n, Node::Block { .. }) {
-                Frame::Block(*label)
-            } else {
-                Frame::Loop(*label)
-            });
-            let x = needs(body, stack);
-            stack.pop();
-            x
-        }
-        _ => false,
+        None => false,
     });
     inner
         || match &r.end {
-            Some(End::Br(t, _) | End::Continue(t, _)) => {
+            Some(e @ (End::Br(t, _) | End::Continue(t, _))) => {
+                let resume = matches!(e, End::Continue(..));
                 match stack.iter().rposition(|f| f.label() == Some(*t)) {
                     Some(at) => {
                         let between = stack.get(at.saturating_add(1)..).unwrap_or_default();
-                        match stack.get(at) {
-                            Some(Frame::Loop(_)) => between.iter().any(|f| matches!(f, Frame::Loop(_))),
-                            _ => !between.is_empty(),
-                        }
+                        // a block's exit from the end of its own body is its fall-off
+                        let tail = matches!(stack.get(at), Some(Frame::Block(_))) && between.is_empty() && !resume;
+                        !direct(stack, at, resume) && !tail
                     }
                     None => false,
                 }
@@ -447,24 +516,12 @@ fn needs(r: &Region, stack: &mut Vec<Frame>) -> bool {
 /// Each `Br` to a block from the end of the block's own body made its fall-off.
 fn tails(r: &mut Region, stack: &mut Vec<Frame>) {
     for n in &mut r.nodes {
-        match n {
-            Node::If { accept, reject, .. } => {
-                stack.push(Frame::If);
-                tails(accept, stack);
-                tails(reject, stack);
-                stack.pop();
+        if let Some(frame) = Frame::of(n) {
+            stack.push(frame);
+            for inner in n.regions_mut() {
+                tails(inner, stack);
             }
-            Node::Block { label, body, .. } => {
-                stack.push(Frame::Block(*label));
-                tails(body, stack);
-                stack.pop();
-            }
-            Node::Loop { label, body, .. } => {
-                stack.push(Frame::Loop(*label));
-                tails(body, stack);
-                stack.pop();
-            }
-            _ => {}
+            stack.pop();
         }
     }
     if let Some(End::Br(t, vs)) = &mut r.end

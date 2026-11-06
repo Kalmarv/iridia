@@ -15,7 +15,7 @@ use alloc::{
 };
 
 use iridia_ir::{
-    Block, Body, End, Function, LabelId, Node, Op, Precision, Region, Target, Terminator, ValueDef, ValueId,
+    Block, Body, End, Function, LabelId, Node, Op, Precision, Region, Terminator, ValueDef, ValueId,
     Var, VarId,
 };
 
@@ -27,19 +27,16 @@ fn reads(f: &Function, b: &Block) -> Vec<ValueId> {
     for n in &b.nodes {
         match n {
             Node::Value(v) => out.extend(f.value(*v).map(|d| d.op.operands()).unwrap_or_default()),
-            Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => out.push(*x),
-            Node::Demote | Node::If { .. } | Node::Block { .. } | Node::Loop { .. } => {}
+            other => out.extend(other.values()),
         }
     }
-    let target = |t: &Target, out: &mut Vec<ValueId>| out.extend(t.args.iter().copied());
     match &b.term {
-        Terminator::Jump(t) => target(t, &mut out),
-        Terminator::Branch { cond, accept, reject } => {
-            out.push(*cond);
-            target(accept, &mut out);
-            target(reject, &mut out);
-        }
-        Terminator::Return | Terminator::Kill | Terminator::Unreachable => {}
+        Terminator::Branch { cond, .. } => out.push(*cond),
+        Terminator::Switch { selector, .. } => out.push(*selector),
+        _ => {}
+    }
+    for t in b.term.targets() {
+        out.extend(t.args.iter().copied());
     }
     out
 }
@@ -53,10 +50,7 @@ fn add_value(f: &mut Function, def: ValueDef) -> Result<ValueId, String> {
 fn add_var(f: &mut Function, v: ValueId) -> Result<VarId, String> {
     let ty = f.ty(v).ok_or_else(|| format!("%{} is not a value", v.0))?;
     let id = VarId(u32::try_from(f.vars.len()).map_err(|_| String::from("more than 2^32 variables"))?);
-    f.vars.push(Var {
-        name: format!("v{}", v.0),
-        ty,
-    });
+    f.vars.push(Var::new(&format!("v{}", v.0), ty));
     Ok(id)
 }
 
@@ -147,11 +141,10 @@ fn demote(f: &mut Function, blocks: &mut [Block]) -> Result<Vec<Vec<VarId>>, Str
                         d.op.map_operands(sub);
                     }
                 }
-                Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => *x = sub(*x),
-                Node::Demote => {}
-                Node::If { .. } | Node::Block { .. } | Node::Loop { .. } => {
+                Node::If { .. } | Node::Block { .. } | Node::Loop { .. } | Node::Switch { .. } => {
                     return Err(format!("block {i} holds a construct"));
                 }
+                other => other.values_mut().into_iter().for_each(|x| *x = sub(*x)),
             }
             let store = match n {
                 Node::Value(v) => stored.get(&v).map(|&x| Node::StoreVar(x, v)),
@@ -161,15 +154,13 @@ fn demote(f: &mut Function, blocks: &mut [Block]) -> Result<Vec<Vec<VarId>>, Str
             nodes.extend(store);
         }
         b.nodes = nodes;
-        let target = |t: &mut Target| t.args.iter_mut().for_each(|a| *a = sub(*a));
         match &mut b.term {
-            Terminator::Jump(t) => target(t),
-            Terminator::Branch { cond, accept, reject } => {
-                *cond = sub(*cond);
-                target(accept);
-                target(reject);
-            }
-            Terminator::Return | Terminator::Kill | Terminator::Unreachable => {}
+            Terminator::Branch { cond, .. } => *cond = sub(*cond),
+            Terminator::Switch { selector, .. } => *selector = sub(*selector),
+            _ => {}
+        }
+        for t in b.term.targets_mut() {
+            t.args.iter_mut().for_each(|a| *a = sub(*a));
         }
     }
     Ok(params)
@@ -182,8 +173,26 @@ struct Build {
     blocks: BTreeMap<Label, LabelId>,
     loops: BTreeMap<Label, LabelId>,
     labels: u32,
-    /// The `If` arm being built: its node and which way, for the edge it starts with.
-    arm: Option<(usize, bool)>,
+    /// The `If` or `Switch` arm being built: its node and which of its distinct targets (an `If`'s accept 0, reject
+    /// 1), for the edge it starts with.
+    arm: Option<(usize, usize)>,
+}
+
+/// The distinct target blocks of a terminator, in order of first appearance, as the structure's graph has them: an
+/// `If`'s two (even where they are one block), a switch's each once.
+fn distinct(term: &Terminator) -> Vec<usize> {
+    match term {
+        Terminator::Branch { accept, reject, .. } => alloc::vec![accept.block as usize, reject.block as usize],
+        other => {
+            let mut out: Vec<usize> = Vec::new();
+            for t in other.targets() {
+                if !out.contains(&(t.block as usize)) {
+                    out.push(t.block as usize);
+                }
+            }
+            out
+        }
+    }
 }
 
 impl Build {
@@ -200,7 +209,7 @@ impl Build {
             Some(Terminator::Jump(t)) => t,
             Some(Terminator::Branch { accept, reject, .. }) => match self.arm {
                 Some((n, way)) if n == from => {
-                    if way {
+                    if way == 0 {
                         accept
                     } else {
                         reject
@@ -209,6 +218,14 @@ impl Build {
                 _ if accept.block as usize == to => accept,
                 _ => reject,
             },
+            Some(term @ Terminator::Switch { .. }) => {
+                // every edge from a switch to one block carries the same arguments (a source's phi has one entry
+                // per predecessor), checked where the graph is structured
+                term.targets()
+                    .into_iter()
+                    .find(|t| t.block as usize == to)
+                    .ok_or_else(|| format!("an edge from block {from} to {to}, which it does not branch to"))?
+            }
             _ => return Err(format!("an edge from block {from}, which does not branch")),
         };
         let vars = self
@@ -283,9 +300,9 @@ impl Build {
                 };
                 let cond = *cond;
                 let outer = self.arm;
-                self.arm = Some((*n, true));
+                self.arm = Some((*n, 0));
                 let accept = self.region(accept, End::Yield(Vec::new()))?;
-                self.arm = Some((*n, false));
+                self.arm = Some((*n, 1));
                 let reject = self.region(reject, End::Yield(Vec::new()))?;
                 self.arm = outer;
                 r.nodes.push(Node::If {
@@ -295,8 +312,48 @@ impl Build {
                     results: Vec::new(),
                 });
             }
-            Code::Switch(n, _) => {
-                return Err(format!("block {n} is a switch, which a graph body has none of"));
+            Code::Switch(n, arms) => {
+                let Some(term) = self.terms.get(*n).cloned() else {
+                    return Err(format!("block {n} is a switch, and does not switch"));
+                };
+                let targets = distinct(&term);
+                let Terminator::Switch {
+                    selector,
+                    cases,
+                    default,
+                } = term
+                else {
+                    return Err(format!("block {n} is a switch, and does not switch"));
+                };
+                if arms.len() != targets.len() {
+                    return Err(format!("block {n}'s switch has {} arms for {} targets", arms.len(), targets.len()));
+                }
+                let label = self.label();
+                let outer = self.arm;
+                let mut built = Vec::new();
+                let mut default_region = None;
+                for (i, (arm, &to)) in arms.iter().zip(&targets).enumerate() {
+                    self.arm = Some((*n, i));
+                    let body = self.region(arm, End::Yield(Vec::new()))?;
+                    if to == default.block as usize {
+                        default_region = Some(body);
+                    } else {
+                        let values = cases
+                            .iter()
+                            .filter(|(_, t)| t.block as usize == to)
+                            .map(|(v, _)| *v)
+                            .collect();
+                        built.push(iridia_ir::Case { values, body });
+                    }
+                }
+                self.arm = outer;
+                r.nodes.push(Node::Switch {
+                    label,
+                    selector,
+                    cases: built,
+                    default: default_region.ok_or_else(|| format!("block {n}'s switch has no default arm"))?,
+                    results: Vec::new(),
+                });
             }
             Code::Br(label) => {
                 let l = self
@@ -343,10 +400,24 @@ pub fn structurize(f: &mut Function) -> Result<(), String> {
                 Terminator::Branch { accept, reject, .. } => {
                     Term::If(accept.block as usize, reject.block as usize)
                 }
+                t @ Terminator::Switch { .. } => Term::Switch(distinct(t)),
                 Terminator::Return | Terminator::Kill | Terminator::Unreachable => Term::Exit,
             })
             .collect(),
     };
+    for (i, b) in blocks.iter().enumerate() {
+        if let Terminator::Switch { .. } = &b.term {
+            let targets = b.term.targets();
+            for t in &targets {
+                if targets.iter().any(|u| u.block == t.block && u.args != t.args) {
+                    return Err(format!(
+                        "block {i}'s switch gives block {} two sets of arguments",
+                        t.block
+                    ));
+                }
+            }
+        }
+    }
     let code = structure::structure(&cfg).map_err(|e| format!("{e}"))?;
     let params = demote(f, &mut blocks)?;
     let mut build = Build {

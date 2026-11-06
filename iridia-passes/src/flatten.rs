@@ -5,7 +5,8 @@
 //! results; a `Block` continues in the block it starts in and leaves to an exit block, whose parameters are its
 //! results; a `Loop` jumps from the block it starts in to a header block, whose parameters are the loop's, and leaves
 //! to an exit block. A yield jumps to its construct's join or exit, a `Br` to its label's exit and a `Continue` to its
-//! label's header, each with its values as the target's arguments. A value defined in a region is visible only in it
+//! label's header, each with its values as the target's arguments. A `Switch` branches to a block per case and its
+//! default, which join (and its `Br`s leave) to a block whose parameters are its results. A value defined in a region is visible only in it
 //! and the regions it holds, whose blocks its block dominates, so no value needs moving.
 
 use alloc::{collections::BTreeMap, format, string::String, vec::Vec};
@@ -63,8 +64,41 @@ impl Flat {
     fn region(&mut self, r: Region, join: Option<u32>) -> Result<(), String> {
         for node in r.nodes {
             match node {
-                Node::Value(_) | Node::StoreVar(..) | Node::StoreOutput(..) | Node::Demote => {
-                    self.current()?.nodes.push(node)
+                Node::Switch {
+                    label,
+                    selector,
+                    cases,
+                    default,
+                    results,
+                } => {
+                    let after = self.block(results)?;
+                    self.labels.insert(label, Exits { exit: after, header: None });
+                    let to = |block| Target {
+                        block,
+                        args: Vec::new(),
+                    };
+                    let mut arms = Vec::new();
+                    let mut targets = Vec::new();
+                    for c in cases {
+                        let b = self.block(Vec::new())?;
+                        targets.extend(c.values.iter().map(|&v| (v, to(b))));
+                        arms.push((b, c.body));
+                    }
+                    let d = self.block(Vec::new())?;
+                    arms.push((d, default));
+                    self.end(
+                        Terminator::Switch {
+                            selector,
+                            cases: targets,
+                            default: to(d),
+                        },
+                        d,
+                    )?;
+                    for (b, body) in arms {
+                        self.at = b as usize;
+                        self.region(body, Some(after))?;
+                    }
+                    self.at = after as usize;
                 }
                 Node::If {
                     cond,
@@ -123,6 +157,7 @@ impl Flat {
                     self.region(body, Some(exit))?;
                     self.at = exit as usize;
                 }
+                other => self.current()?.nodes.push(other),
             }
         }
         let term = match r.end {

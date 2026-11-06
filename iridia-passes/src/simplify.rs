@@ -139,19 +139,13 @@ impl Simplify<'_> {
                         continue;
                     }
                 }
-                Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => *x = self.sub(*x),
-                Node::Demote => {}
-                Node::If {
-                    cond, accept, reject, ..
-                } => {
-                    *cond = self.sub(*cond);
-                    self.region(accept);
-                    self.region(reject);
-                }
-                Node::Block { body, .. } => self.region(body),
-                Node::Loop { inits, body, .. } => {
-                    self.subs(inits);
-                    self.region(body);
+                other => {
+                    for x in other.values_mut() {
+                        *x = self.sub(*x);
+                    }
+                    for inner in other.regions_mut() {
+                        self.region(inner);
+                    }
                 }
             }
             r.nodes.push(n);
@@ -176,19 +170,11 @@ fn count(f: &Function, r: &Region, uses: &mut [u32]) {
                     d.op.operands().into_iter().for_each(|o| add(uses, o));
                 }
             }
-            Node::StoreVar(_, x) | Node::StoreOutput(_, _, x) => add(uses, *x),
-            Node::Demote => {}
-            Node::If {
-                cond, accept, reject, ..
-            } => {
-                add(uses, *cond);
-                count(f, accept, uses);
-                count(f, reject, uses);
-            }
-            Node::Block { body, .. } => count(f, body, uses),
-            Node::Loop { inits, body, .. } => {
-                inits.iter().for_each(|&o| add(uses, o));
-                count(f, body, uses);
+            other => {
+                other.values().into_iter().for_each(|o| add(uses, o));
+                for inner in other.regions() {
+                    count(f, inner, uses);
+                }
             }
         }
     }
@@ -197,19 +183,17 @@ fn count(f: &Function, r: &Region, uses: &mut [u32]) {
     }
 }
 
-fn drop_unused(r: &mut Region, uses: &[u32]) -> bool {
+fn drop_unused(f: &Function, r: &mut Region, uses: &[u32]) -> bool {
     let before = r.nodes.len();
-    r.nodes
-        .retain(|n| !matches!(n, Node::Value(v) if uses.get(v.0 as usize).copied().unwrap_or(1) == 0));
+    // an operation with an effect (an atomic, a counter) stays where nothing reads its value
+    r.nodes.retain(|n| {
+        !matches!(n, Node::Value(v) if uses.get(v.0 as usize).copied().unwrap_or(1) == 0
+            && !f.value(*v).is_some_and(|d| d.op.has_effect()))
+    });
     let mut changed = r.nodes.len() != before;
     for n in &mut r.nodes {
-        match n {
-            Node::If { accept, reject, .. } => {
-                changed |= drop_unused(accept, uses);
-                changed |= drop_unused(reject, uses);
-            }
-            Node::Block { body, .. } | Node::Loop { body, .. } => changed |= drop_unused(body, uses),
-            _ => {}
+        for inner in n.regions_mut() {
+            changed |= drop_unused(f, inner, uses);
         }
     }
     changed
@@ -225,11 +209,11 @@ pub fn simplify(f: &mut Function) {
         f,
     };
     s.region(&mut body);
-    // every operation is pure: a value nothing uses is removed, until none is left
+    // every operation but the effects is pure: a value nothing uses is removed, until none is left
     loop {
         let mut uses = vec![0u32; f.values.len()];
         count(f, &body, &mut uses);
-        if !drop_unused(&mut body, &uses) {
+        if !drop_unused(f, &mut body, &uses) {
             break;
         }
     }

@@ -116,7 +116,8 @@ fn binary(op: Binary, a: [u64; 4], b: [u64; 4], at: Type, t: Type) -> Option<[u6
                 (Some(q), _, _) if matches!(op, Binary::UDiv(_)) => Some(q),
                 (_, Some(r), _) if matches!(op, Binary::URem(_)) => Some(r),
                 (_, _, OnZero::AllOnes) => Some(u64::MAX),
-                (_, _, OnZero::Dividend) => Some(x),
+                (_, _, OnZero::ByOne) if matches!(op, Binary::UDiv(_)) => Some(x),
+                (_, _, OnZero::ByOne) => Some(0),
                 _ => None,
             }
         }),

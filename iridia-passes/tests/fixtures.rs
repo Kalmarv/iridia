@@ -64,6 +64,7 @@ fn main {
         for prog in [&p, &q] {
             let (out, _) = run(prog, &[f(x)], &[]).unwrap();
             assert_eq!(out[0].unwrap()[0], want.to_bits(), "x {x}");
+            support::agrees_flat(prog, &[f(x)], &[]);
         }
     }
 }
@@ -175,7 +176,7 @@ fn main {
   %6: bool = ucmp.lt %3, %4
   %7: u32 = u32(0)
   %8: u32 = udiv.allones %1, %7
-  %9: u32 = urem.dividend %1, %7
+  %9: u32 = urem.byone %1, %7
   %10: u32 = udiv.undef %1, %7
   %11: i32 = smin %3, %4
   %12: bool = and %5, %6
@@ -202,7 +203,7 @@ fn main {
     assert_eq!(lit(6), Some([0, 0, 0, 0]));
     // a division by zero by its rule; one whose rule is undefined is the target's
     assert_eq!(lit(8), Some([u64::from(u32::MAX), 0, 0, 0]));
-    assert_eq!(lit(9), Some([2, 0, 0, 0]));
+    assert_eq!(lit(9), Some([0, 0, 0, 0]));
     assert_eq!(lit(10), None);
     assert_eq!(lit(11), Some([u64::from((-3i32).cast_unsigned()), 0, 0, 0]));
     assert_eq!(lit(13), Some([1, 0, 0, 0]));
@@ -316,6 +317,9 @@ fn main {
             let (out, _) = run(prog, &[f(x)], &[]).unwrap();
             assert_eq!(out[0].unwrap()[0], want.to_bits(), "x {x}");
         }
+        let mut flagged = again.clone();
+        iridia_passes::break_flags(&mut flagged.entry).unwrap();
+        support::agrees_flat(&flagged, &[f(x)], &[]);
     }
 }
 
@@ -404,5 +408,108 @@ fn main {
         iridia_ir::validate(&q).unwrap();
         let ids: Vec<u32> = q.interface.resources.iter().map(|r| r.id.0).collect();
         assert_eq!(ids, [kept, 3, 4], "{dim:?}");
+    }
+}
+
+/// A switch with a case of two values, a break and a default, around reads and writes of an array with an immediate
+/// start, one of them past its end: the value of `x & 3` and `x` it outputs.
+const SWITCH: &str = "iridia-ir 1
+fn main {
+  var t: [u32; 4] = {u32(10), u32(20), u32(30), u32(40)}
+  %0: u32 = input 0.x
+  %1: u32 = u32(3)
+  %2: u32 = and %0, %1
+  switch '0 %2 {
+  case 0:
+    %3: u32 = load t[%0] oob.zero
+    br '0 %3
+  case 1, 3:
+    %4: u32 = u32(7)
+    t[%2] = %4 oob.zero
+    %5: u32 = load t[%2] oob.zero
+    yield %5
+  default:
+    %6: u32 = u32(99)
+    yield %6
+  } -> %7: u32
+  output 0.x = %7
+  return
+}
+";
+
+/// What [`SWITCH`] outputs for `x`: element `x` of the table for `x & 3 = 0` (zero past its end), 7 for 1 and 3, else 99.
+fn switched(x: u32) -> u32 {
+    match x & 3 {
+        0 => [10, 20, 30, 40].get(x as usize).copied().unwrap_or(0),
+        1 | 3 => 7,
+        _ => 99,
+    }
+}
+
+#[test]
+fn a_switch_and_an_array_keep_their_values_through_every_pass_and_lower() {
+    const U1: (ScalarType, u8) = (ScalarType::Uint, 1);
+    let p = from_text(SWITCH, &[U1], &[U1], Vec::new());
+    let mut promoted = p.clone();
+    iridia_passes::promote(&mut promoted.entry).unwrap();
+    iridia_passes::simplify(&mut promoted.entry);
+    // an array is memory: promotion leaves it a variable
+    assert!(iridia_ir::text::print(&promoted.entry).contains("var t: [u32; 4]"));
+    let mut graph = promoted.clone();
+    iridia_passes::flatten(&mut graph.entry).unwrap();
+    let mut again = graph.clone();
+    iridia_passes::structurize(&mut again.entry).unwrap();
+    iridia_passes::simplify(&mut again.entry);
+    let mut flagged = again.clone();
+    iridia_passes::break_flags(&mut flagged.entry).unwrap();
+    for (form, q) in [
+        ("promoted", &promoted),
+        ("graph", &graph),
+        ("restructured", &again),
+        ("flagged", &flagged),
+    ] {
+        iridia_ir::validate(q).unwrap_or_else(|e| panic!("{form}: {e:?}\n{}", iridia_ir::text::print(&q.entry)));
+        support::round_trip(&q.entry);
+        for x in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 12, 0xffff_fffc] {
+            let (out, _) = run(q, &[[x, 0, 0, 0]], &[]).unwrap();
+            assert_eq!(out[0].unwrap()[0], switched(x), "{form}, x {x}");
+            if form == "flagged" {
+                support::agrees_flat(q, &[[x, 0, 0, 0]], &[]);
+            }
+        }
+    }
+    assert!(iridia_ir::text::print(&again.entry).contains("switch '"), "the graph's switch is structured as one");
+    for q in [&promoted, &flagged] {
+        let wgsl = iridia_naga::wgsl(q, &iridia_naga::Profile::NAGA).unwrap();
+        assert!(wgsl.contains("switch") && wgsl.contains("case 1u, 3u"), "{wgsl}");
+    }
+}
+
+#[test]
+fn specialise_takes_the_case_a_known_selector_names() {
+    let text = SWITCH.replace("%0: u32 = input 0.x\n  %1: u32 = u32(3)\n  %2: u32 = and %0, %1", "%0: u32 = input 0.x\n  %1: u32 = u32(3)\n  %2: u32 = state r0");
+    let state = Resource {
+        id: ResourceId(0),
+        kind: ResourceKind::PipelineState(StateParam::TextureDim(0)),
+        count: 1,
+        provenance: ResourceProvenance {
+            name: "dim0".into(),
+            ..ResourceProvenance::default()
+        },
+    };
+    const U1: (ScalarType, u8) = (ScalarType::Uint, 1);
+    let p = from_text(&text, &[U1], &[U1], vec![state]);
+    for (known, x, want) in [(0u32, 2u32, 30u32), (0, 9, 0), (1, 0, 7), (3, 0, 7), (2, 0, 99), (4, 0, 99)] {
+        let mut q = p.clone();
+        iridia_passes::specialise(&mut q, &[(ResourceId(0), [u64::from(known), 0, 0, 0])]).unwrap();
+        iridia_passes::simplify(&mut q.entry);
+        iridia_ir::validate(&q).unwrap_or_else(|e| panic!("{e:?}\n{}", iridia_ir::text::print(&q.entry)));
+        let printed = iridia_ir::text::print(&q.entry);
+        assert!(!printed.contains("switch") && !printed.contains("state"), "{printed}");
+        let (out, _) = run(&q, &[[x, 0, 0, 0]], &[]).unwrap();
+        assert_eq!(out[0].unwrap()[0], want, "state {known}, x {x}");
+        let (out, _) = run(&p, &[[x, 0, 0, 0]], &[(ResourceId(0), [known, 0, 0, 0])]).unwrap();
+        assert_eq!(out[0].unwrap()[0], want, "unspecialised, state {known}, x {x}");
+        iridia_naga::wgsl(&q, &iridia_naga::Profile::NAGA).unwrap_or_else(|e| panic!("{e}\n{printed}"));
     }
 }

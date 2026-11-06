@@ -5,7 +5,7 @@ use alloc::{format, string::String, vec, vec::Vec};
 
 use iridia_ir::{
     Axis, Binary, Body, Cmp, End, Fineness, FloatToInt, Function, Level, MinMaxNan, MulZero, Node, OnZero,
-    Op, OutOfBounds, Program, Region, Rounding, SaturateNan, Scalar, Type, Unary, ValueId,
+    Op, OutOfBounds, Program, Region, Rounding, SaturateNan, Scalar, Ternary, Type, Unary, ValueId,
     interface::{ResourceId, ResourceKind, Stage, TextureDim, Value},
 };
 use naga::{
@@ -78,8 +78,16 @@ struct Construct {
     results: Vec<Handle<LocalVariable>>,
     /// The locals a continue stores the loop's parameters in; `None` for a construct that is not a loop.
     params: Option<Vec<Handle<LocalVariable>>>,
-    /// Whether the construct is lowered as a naga loop (so `Break` leaves it).
-    naga_loop: bool,
+    /// What naga construct it is lowered as: a loop (`Break` and `Continue` reach it), a switch (`Break` reaches it), or
+    /// a block (neither does).
+    kind: Kind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Block,
+    Loop,
+    Switch,
 }
 
 /// What a region's yield does.
@@ -415,7 +423,369 @@ impl Lower<'_> {
         let away = self.binary(Bo::Add, truncated, sign);
         Ok(self.select(up, away, truncated))
     }
-    fn unsigned_divide(
+    /// Lane `k` of a value of type `t` (the value itself for a scalar).
+    fn lane(&mut self, x: Handle<E>, t: Type, k: u8) -> Result<Handle<E>, Error> {
+        Ok(if t.lanes == 1 {
+            x
+        } else {
+            self.expr(E::AccessIndex {
+                base: x,
+                index: u32::from(k),
+            })
+        })
+    }
+    /// A value of type `t` built a lane at a time: `f` gives lane `k` as a scalar.
+    fn per_lane(
+        &mut self,
+        t: Type,
+        mut f: impl FnMut(&mut Self, u8) -> Result<Handle<E>, Error>,
+    ) -> Result<Handle<E>, Error> {
+        let parts = (0..t.lanes).map(|k| f(self, k)).collect::<Result<Vec<_>, _>>()?;
+        match parts.as_slice() {
+            [one] => Ok(*one),
+            _ => {
+                let ty = self.ty_of(t)?;
+                Ok(self.expr(E::Compose { ty, components: parts }))
+            }
+        }
+    }
+    /// A `u32` count's low five bits: the count modulo 32.
+    fn low_five(&mut self, x: Handle<E>) -> Result<Handle<E>, Error> {
+        let mask = self.literal_bits(Scalar::U32, 31)?;
+        Ok(self.binary(Bo::And, x, mask))
+    }
+    /// 1 where a bool lane holds, else 0, in the integer type `t`.
+    fn bool_to_int(&mut self, cond: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        let one = self.constant(t, t.scalar, 1)?;
+        let zero = self.constant(t, t.scalar, 0)?;
+        Ok(self.select(cond, one, zero))
+    }
+    /// -1, 0 or 1 by the sign; a zero gives itself and NaN 0 (WGSL's `sign` leaves both open).
+    fn sign(&mut self, x: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        let signed = self.math(Mf::Sign, x, &[]);
+        let zero = self.f32s(t, 0.0)?;
+        let is_zero = self.binary(Bo::Equal, x, zero);
+        let kept = self.select(is_zero, x, signed);
+        let nan = self.is_nan(x, t)?;
+        Ok(self.select(nan, zero, kept))
+    }
+    /// Whether a float is an infinity, by its bits.
+    fn is_inf(&mut self, x: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        if t.scalar != Scalar::F32 {
+            return Err(err(format!("an infinity test of {t} is not lowered yet")));
+        }
+        let bits = self.bitcast(x, ScalarKind::Uint);
+        let u = t.with(Scalar::U32);
+        let abs = self.constant(u, Scalar::U32, 0x7fff_ffff)?;
+        let infinity = self.constant(u, Scalar::U32, 0x7f80_0000)?;
+        let magnitude = self.binary(Bo::And, bits, abs);
+        Ok(self.binary(Bo::Equal, magnitude, infinity))
+    }
+    /// D3D's `firstbit_hi` (of `u32` bits) or `firstbit_shi` (of `i32` bits) of an integer of type `t`: 31 less WGSL's
+    /// `firstLeadingBit`, all ones where that finds none.
+    fn first_bit_high(&mut self, x: Handle<E>, t: Type, signed: bool) -> Result<Handle<E>, Error> {
+        let kind = if signed { ScalarKind::Sint } else { ScalarKind::Uint };
+        let own = naga_scalar(t.scalar)?.kind;
+        let x = if own == kind { x } else { self.bitcast(x, kind) };
+        let index = self.math(Mf::FirstLeadingBit, x, &[]);
+        let index = if signed { self.bitcast(index, ScalarKind::Uint) } else { index };
+        let u = t.with(Scalar::U32);
+        let none = self.constant(u, Scalar::U32, u64::from(u32::MAX))?;
+        let top = self.constant(u, Scalar::U32, 31)?;
+        let found = self.binary(Bo::Equal, index, none);
+        let above = self.binary(Bo::Subtract, top, index);
+        let r = self.select(found, none, above);
+        Ok(if own == ScalarKind::Uint { r } else { self.bitcast(r, own) })
+    }
+    /// The nearest binary16 to each `f32` lane, in the low 16 bits: integer arithmetic, so every backend gives the same
+    /// bits (`pack2x16float` needs naga's f16 capability and leaves the rounding open). Ties go to even; NaN keeps
+    /// its payload's top bits and is quiet, a value beyond the range is an infinity, a binary16 denormal is kept.
+    fn f32_to_f16(&mut self, x: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        let u = t.with(Scalar::U32);
+        let k = |l: &mut Self, v: u32| l.constant(u, Scalar::U32, u64::from(v));
+        let w = self.bitcast(x, ScalarKind::Uint);
+        let (c16, c23, c13) = (k(self, 16)?, k(self, 23)?, k(self, 13)?);
+        let high = self.binary(Bo::ShiftRight, w, c16);
+        let m8000 = k(self, 0x8000)?;
+        let sign = self.binary(Bo::And, high, m8000);
+        let shifted = self.binary(Bo::ShiftRight, w, c23);
+        let mff = k(self, 0xff)?;
+        let exp = self.binary(Bo::And, shifted, mff);
+        let fraction = k(self, 0x7f_ffff)?;
+        let man = self.binary(Bo::And, w, fraction);
+        let zero = k(self, 0)?;
+        let one = k(self, 1)?;
+        // NaN and infinity
+        let infinity = k(self, 0x7c00)?;
+        let signed_infinity = self.binary(Bo::InclusiveOr, sign, infinity);
+        let payload = self.binary(Bo::ShiftRight, man, c13);
+        let m200 = k(self, 0x200)?;
+        let payload = self.binary(Bo::InclusiveOr, payload, m200);
+        let man_zero = self.binary(Bo::Equal, man, zero);
+        let payload = self.select(man_zero, zero, payload);
+        let special = self.binary(Bo::InclusiveOr, signed_infinity, payload);
+        // a normal half keeps the exponent less 112 and drops 13 bits; below one the implicit bit joins a significand
+        // shifted further, a denormal
+        let c112 = k(self, 112)?;
+        let normal = self.binary(Bo::Greater, exp, c112);
+        let implicit = k(self, 0x80_0000)?;
+        let with_lead = self.binary(Bo::InclusiveOr, man, implicit);
+        let sig = self.select(normal, man, with_lead);
+        let c126 = k(self, 126)?;
+        let below = self.binary(Bo::Subtract, c126, exp);
+        let shift = self.select(normal, c13, below);
+        let rebased = self.binary(Bo::Subtract, exp, c112);
+        let c10 = k(self, 10)?;
+        let rebased = self.binary(Bo::ShiftLeft, rebased, c10);
+        let top = self.select(normal, rebased, zero);
+        let half = self.binary(Bo::ShiftRight, sig, shift);
+        let unit = self.binary(Bo::ShiftLeft, one, shift);
+        let below_unit = self.binary(Bo::Subtract, unit, one);
+        let rest = self.binary(Bo::And, sig, below_unit);
+        let shift_less = self.binary(Bo::Subtract, shift, one);
+        let mid = self.binary(Bo::ShiftLeft, one, shift_less);
+        let above = self.binary(Bo::Greater, rest, mid);
+        let tie = self.binary(Bo::Equal, rest, mid);
+        let odd = self.binary(Bo::And, half, one);
+        let odd = self.binary(Bo::Equal, odd, one);
+        let tie_odd = self.binary(Bo::And, tie, odd);
+        let up = self.binary(Bo::InclusiveOr, above, tie_odd);
+        let up = self.select(up, one, zero);
+        // a carry out of the significand moves into the exponent, to an infinity at the top
+        let body = self.binary(Bo::InclusiveOr, top, half);
+        let body = self.binary(Bo::Add, body, up);
+        let rounded = self.binary(Bo::InclusiveOr, sign, body);
+        let c102 = k(self, 102)?;
+        let tiny = self.binary(Bo::Less, exp, c102);
+        let r = self.select(tiny, sign, rounded);
+        let c143 = k(self, 143)?;
+        let big = self.binary(Bo::GreaterEqual, exp, c143);
+        let r = self.select(big, signed_infinity, r);
+        let all_ones = self.binary(Bo::Equal, exp, mff);
+        Ok(self.select(all_ones, special, r))
+    }
+    /// The `f32` of the binary16 in each lane's low 16 bits, in integer arithmetic (`unpack2x16float` needs naga's
+    /// f16 capability).
+    fn f16_to_f32(&mut self, x: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        let u = t.with(Scalar::U32);
+        let k = |l: &mut Self, v: u32| l.constant(u, Scalar::U32, u64::from(v));
+        let m8000 = k(self, 0x8000)?;
+        let c16 = k(self, 16)?;
+        let sign = self.binary(Bo::And, x, m8000);
+        let sign = self.binary(Bo::ShiftLeft, sign, c16);
+        let c10 = k(self, 10)?;
+        let shifted = self.binary(Bo::ShiftRight, x, c10);
+        let m1f = k(self, 0x1f)?;
+        let exp = self.binary(Bo::And, shifted, m1f);
+        let m3ff = k(self, 0x3ff)?;
+        let man = self.binary(Bo::And, x, m3ff);
+        let (c13, c23, zero) = (k(self, 13)?, k(self, 23)?, k(self, 0)?);
+        let fraction = self.binary(Bo::ShiftLeft, man, c13);
+        // a normal half: the exponent plus 112
+        let c112 = k(self, 112)?;
+        let e = self.binary(Bo::Add, exp, c112);
+        let e = self.binary(Bo::ShiftLeft, e, c23);
+        let normal = self.binary(Bo::InclusiveOr, e, fraction);
+        // a denormal, normalised: its leading bit becomes the implicit one
+        let leading = self.math(Mf::CountLeadingZeros, man, &[]);
+        let c21 = k(self, 21)?;
+        let lead = self.binary(Bo::Subtract, leading, c21);
+        let c113 = k(self, 113)?;
+        let de = self.binary(Bo::Subtract, c113, lead);
+        let de = self.binary(Bo::ShiftLeft, de, c23);
+        let dm = self.binary(Bo::ShiftLeft, man, lead);
+        let dm = self.binary(Bo::And, dm, m3ff);
+        let dm = self.binary(Bo::ShiftLeft, dm, c13);
+        let denormal = self.binary(Bo::InclusiveOr, de, dm);
+        let man_zero = self.binary(Bo::Equal, man, zero);
+        let denormal = self.select(man_zero, zero, denormal);
+        // infinity and NaN
+        let infinity = k(self, 0x7f80_0000)?;
+        let special = self.binary(Bo::InclusiveOr, infinity, fraction);
+        let exp_zero = self.binary(Bo::Equal, exp, zero);
+        let r = self.select(exp_zero, denormal, normal);
+        let exp_top = self.binary(Bo::Equal, exp, m1f);
+        let r = self.select(exp_top, special, r);
+        let r = self.binary(Bo::InclusiveOr, sign, r);
+        Ok(self.bitcast(r, ScalarKind::Float))
+    }
+    /// C's `fmod` of `f32` lanes, exact: WGSL's `%` is `x - y * trunc(x / y)` with each step rounded, so the remainder
+    /// is a long division of the significands in integers, one bit of the exponents' difference a step, every lane
+    /// in one loop that stops when no lane has a step left.
+    fn remainder(&mut self, x: Handle<E>, y: Handle<E>, t: Type) -> Result<Handle<E>, Error> {
+        if t.scalar != Scalar::F32 {
+            return Err(err(format!("a remainder of {t} is not lowered yet")));
+        }
+        let u = t.with(Scalar::U32);
+        let k = |l: &mut Self, v: u32| l.constant(u, Scalar::U32, u64::from(v));
+        let (bx, by) = (self.bitcast(x, ScalarKind::Uint), self.bitcast(y, ScalarKind::Uint));
+        let magnitude = k(self, 0x7fff_ffff)?;
+        let (ax, ay) = (self.binary(Bo::And, bx, magnitude), self.binary(Bo::And, by, magnitude));
+        let sign_bit = k(self, 0x8000_0000)?;
+        let sign = self.binary(Bo::And, bx, sign_bit);
+        let infinity = k(self, 0x7f80_0000)?;
+        let zero = k(self, 0)?;
+        let one = k(self, 1)?;
+        let implicit = k(self, 0x80_0000)?;
+        let fraction = k(self, 0x7f_ffff)?;
+        let twenty_three = k(self, 23)?;
+        // NaN: x infinite or NaN, y zero or NaN; x itself: |x| < |y| (a zero x too) or y infinite
+        let x_special = self.binary(Bo::GreaterEqual, ax, infinity);
+        let y_zero = self.binary(Bo::Equal, ay, zero);
+        let y_nan = self.binary(Bo::Greater, ay, infinity);
+        let nan = self.binary(Bo::InclusiveOr, x_special, y_zero);
+        let nan = self.binary(Bo::InclusiveOr, nan, y_nan);
+        let y_infinite = self.binary(Bo::Equal, ay, infinity);
+        let small = self.binary(Bo::Less, ax, ay);
+        let unchanged = self.binary(Bo::InclusiveOr, small, y_infinite);
+        let skip = self.binary(Bo::InclusiveOr, nan, unchanged);
+        // each significand normalised to its top bit at bit 23, its exponent (32 more than the biased one, so a
+        // denormal's stays positive) lowered by the shift
+        let eight = k(self, 8)?;
+        let thirty_two = k(self, 32)?;
+        let parts = |l: &mut Self, a: Handle<E>| -> Result<(Handle<E>, Handle<E>), Error> {
+            let e = l.binary(Bo::ShiftRight, a, twenty_three);
+            let denormal = l.binary(Bo::Equal, e, zero);
+            let lead = l.select(denormal, zero, implicit);
+            let f = l.binary(Bo::And, a, fraction);
+            let m = l.binary(Bo::InclusiveOr, f, lead);
+            let leading = l.math(Mf::CountLeadingZeros, m, &[]);
+            let up = l.binary(Bo::Subtract, leading, eight);
+            let m = l.binary(Bo::ShiftLeft, m, up);
+            let e = l.math(Mf::Max, e, &[one]);
+            let e = l.binary(Bo::Add, e, thirty_two);
+            Ok((l.binary(Bo::Subtract, e, up), m))
+        };
+        let (ex, mx) = parts(self, ax)?;
+        let (ey, my) = parts(self, ay)?;
+        let difference = self.binary(Bo::Subtract, ex, ey);
+        let steps = self.select(skip, zero, difference);
+        let (m, d) = (self.local(u)?, self.local(u)?);
+        self.store_local(m, mx)?;
+        self.store_local(d, steps)?;
+        // while a lane has a step: m = (m >= my ? m - my : m) << 1, one exponent fewer
+        self.open();
+        let pm = self.expr(E::LocalVariable(m));
+        let pd = self.expr(E::LocalVariable(d));
+        let mv = self.expr(E::Load { pointer: pm });
+        let dv = self.expr(E::Load { pointer: pd });
+        let active = self.binary(Bo::Greater, dv, zero);
+        let any = if t.lanes == 1 {
+            active
+        } else {
+            self.expr(E::Relational {
+                fun: RelationalFunction::Any,
+                argument: active,
+            })
+        };
+        let none = self.expr(E::Unary {
+            op: UnaryOperator::LogicalNot,
+            expr: any,
+        });
+        self.open();
+        self.statement(Statement::Break)?;
+        let leave = self.close()?;
+        self.statement(Statement::If {
+            condition: none,
+            accept: leave,
+            reject: Block::new(),
+        })?;
+        let ge = self.binary(Bo::GreaterEqual, mv, my);
+        let less = self.binary(Bo::Subtract, mv, my);
+        let reduced = self.select(ge, less, mv);
+        let doubled = self.binary(Bo::ShiftLeft, reduced, one);
+        let next = self.select(active, doubled, mv);
+        let fewer = self.binary(Bo::Subtract, dv, one);
+        let left = self.select(active, fewer, dv);
+        self.statement(Statement::Store { pointer: pm, value: next })?;
+        self.statement(Statement::Store { pointer: pd, value: left })?;
+        let body = self.close()?;
+        self.statement(Statement::Loop {
+            body,
+            continuing: Block::new(),
+            break_if: None,
+        })?;
+        let pm = self.expr(E::LocalVariable(m));
+        let mv = self.expr(E::Load { pointer: pm });
+        let ge = self.binary(Bo::GreaterEqual, mv, my);
+        let less = self.binary(Bo::Subtract, mv, my);
+        let r = self.select(ge, less, mv);
+        // the remainder (below 2^24, at y's exponent) normalised; a biased exponent below 1 makes it a denormal,
+        // shifted down (exact: a remainder is representable)
+        let leading = self.math(Mf::CountLeadingZeros, r, &[]);
+        let up = self.binary(Bo::Subtract, leading, eight);
+        let rn = self.binary(Bo::ShiftLeft, r, up);
+        let e = self.binary(Bo::Subtract, ey, up);
+        let normal_floor = k(self, 33)?;
+        let is_normal = self.binary(Bo::GreaterEqual, e, normal_floor);
+        let biased = self.binary(Bo::Subtract, e, thirty_two);
+        let high = self.binary(Bo::ShiftLeft, biased, twenty_three);
+        let low = self.binary(Bo::And, rn, fraction);
+        let normal = self.binary(Bo::InclusiveOr, high, low);
+        let down = self.binary(Bo::Subtract, normal_floor, e);
+        let thirty_one = k(self, 31)?;
+        let down = self.math(Mf::Min, down, &[thirty_one]);
+        let denormal = self.binary(Bo::ShiftRight, rn, down);
+        let bits = self.select(is_normal, normal, denormal);
+        let r_zero = self.binary(Bo::Equal, r, zero);
+        let bits = self.select(r_zero, zero, bits);
+        let bits = self.binary(Bo::InclusiveOr, bits, sign);
+        let result = self.bitcast(bits, ScalarKind::Float);
+        let kept = self.select(unchanged, x, result);
+        // naga takes no NaN literal: the quiet NaN's bits
+        let quiet = k(self, 0x7fc0_0000)?;
+        let quiet = self.bitcast(quiet, ScalarKind::Float);
+        Ok(self.select(nan, quiet, kept))
+    }
+    /// The high half of the 64-bit product of 32-bit integers, from 16-bit halves (WGSL has no 64-bit integers in
+    /// browsers): unsigned, then for signed operands less each operand where the other is negative.
+    fn mul_high(&mut self, a: Handle<E>, b: Handle<E>, t: Type, signed: bool) -> Result<Handle<E>, Error> {
+        let u = t.with(Scalar::U32);
+        let (a, b) = if signed {
+            (self.bitcast(a, ScalarKind::Uint), self.bitcast(b, ScalarKind::Uint))
+        } else {
+            (a, b)
+        };
+        let sixteen = self.constant(u, Scalar::U32, 16)?;
+        let low = self.constant(u, Scalar::U32, 0xffff)?;
+        let al = self.binary(Bo::And, a, low);
+        let ah = self.binary(Bo::ShiftRight, a, sixteen);
+        let bl = self.binary(Bo::And, b, low);
+        let bh = self.binary(Bo::ShiftRight, b, sixteen);
+        let ll = self.binary(Bo::Multiply, al, bl);
+        let lh = self.binary(Bo::Multiply, al, bh);
+        let hl = self.binary(Bo::Multiply, ah, bl);
+        let hh = self.binary(Bo::Multiply, ah, bh);
+        // the middle column: the carry into the high half, each part below 2^16
+        let ll_high = self.binary(Bo::ShiftRight, ll, sixteen);
+        let lh_low = self.binary(Bo::And, lh, low);
+        let hl_low = self.binary(Bo::And, hl, low);
+        let mid = self.binary(Bo::Add, ll_high, lh_low);
+        let mid = self.binary(Bo::Add, mid, hl_low);
+        let carry = self.binary(Bo::ShiftRight, mid, sixteen);
+        let lh_high = self.binary(Bo::ShiftRight, lh, sixteen);
+        let hl_high = self.binary(Bo::ShiftRight, hl, sixteen);
+        let high = self.binary(Bo::Add, hh, lh_high);
+        let high = self.binary(Bo::Add, high, hl_high);
+        let high = self.binary(Bo::Add, high, carry);
+        if !signed {
+            return Ok(high);
+        }
+        let zero = self.constant(u, Scalar::U32, 0)?;
+        let sign = self.constant(u, Scalar::U32, 0x8000_0000)?;
+        let a_sign = self.binary(Bo::And, a, sign);
+        let a_negative = self.binary(Bo::NotEqual, a_sign, zero);
+        let b_sign = self.binary(Bo::And, b, sign);
+        let b_negative = self.binary(Bo::NotEqual, b_sign, zero);
+        let less_b = self.select(a_negative, b, zero);
+        let less_a = self.select(b_negative, a, zero);
+        let high = self.binary(Bo::Subtract, high, less_b);
+        let high = self.binary(Bo::Subtract, high, less_a);
+        Ok(self.bitcast(high, ScalarKind::Sint))
+    }
+    /// An integer division or remainder (`op`) with the zero rule; WGSL's own is `ByOne`, and the most negative value
+    /// by -1 is the IR's (itself, and 0).
+    fn divide(
         &mut self,
         op: Bo,
         a: Handle<E>,
@@ -424,7 +794,7 @@ impl Lower<'_> {
         zero: OnZero,
     ) -> Result<Handle<E>, Error> {
         match zero {
-            OnZero::Dividend | OnZero::Undef => Ok(self.binary(op, a, b)),
+            OnZero::ByOne | OnZero::Undef => Ok(self.binary(op, a, b)),
             OnZero::AllOnes => {
                 let z = self.constant(t, t.scalar, 0)?;
                 let one = self.constant(t, t.scalar, 1)?;
@@ -610,6 +980,14 @@ impl Lower<'_> {
                     Unary::FLog2 => self.math(Mf::Log2, x, &[]),
                     Unary::FSin => self.math(Mf::Sin, x, &[]),
                     Unary::FCos => self.math(Mf::Cos, x, &[]),
+                    Unary::FTan => self.math(Mf::Tan, x, &[]),
+                    Unary::FAsin => self.math(Mf::Asin, x, &[]),
+                    Unary::FAcos => self.math(Mf::Acos, x, &[]),
+                    Unary::FAtan => self.math(Mf::Atan, x, &[]),
+                    Unary::FSinh => self.math(Mf::Sinh, x, &[]),
+                    Unary::FCosh => self.math(Mf::Cosh, x, &[]),
+                    Unary::FTanh => self.math(Mf::Tanh, x, &[]),
+                    Unary::FSign => self.sign(x, at)?,
                     Unary::Saturate(nan) => self.saturate(x, at, nan)?,
                     Unary::ClampRange { lo, hi, nan } => self.clamp_range(x, at, lo, hi, nan)?,
                     Unary::Quantize { frac_bits, rounding } => self.quantize(x, at, frac_bits, rounding)?,
@@ -642,6 +1020,15 @@ impl Lower<'_> {
                         argument: x,
                     }),
                     Unary::IsNan => self.is_nan(x, at)?,
+                    Unary::IsInf => self.is_inf(x, at)?,
+                    Unary::CountOnes => self.math(Mf::CountOneBits, x, &[]),
+                    Unary::BitReverse => self.math(Mf::ReverseBits, x, &[]),
+                    Unary::FirstBitHigh => self.first_bit_high(x, at, false)?,
+                    Unary::FirstBitHighSigned => self.first_bit_high(x, at, true)?,
+                    // WGSL's `firstTrailingBit` gives all ones where no bit is set, as D3D's `firstbit_lo` does
+                    Unary::FirstBitLow => self.math(Mf::FirstTrailingBit, x, &[]),
+                    Unary::F32ToF16 => self.f32_to_f16(x, at)?,
+                    Unary::F16ToF32 => self.f16_to_f32(x, at)?,
                 }
             }
             Op::Binary(b, l, r) => {
@@ -669,12 +1056,32 @@ impl Lower<'_> {
                         self.select(either, zero, product)
                     }
                     Binary::FDiv => self.binary(Bo::Divide, x, y),
+                    // WGSL's `%` on floats is `x - y * trunc(x / y)`
+                    Binary::FRem => self.remainder(x, y, at)?,
+                    Binary::UMulHigh => self.mul_high(x, y, at, false)?,
+                    Binary::SMulHigh => self.mul_high(x, y, at, true)?,
+                    Binary::UAddCarry => {
+                        let sum = self.binary(Bo::Add, x, y);
+                        let wrapped = self.binary(Bo::Less, sum, x);
+                        self.bool_to_int(wrapped, at)?
+                    }
+                    Binary::USubBorrow => {
+                        let below = self.binary(Bo::Less, x, y);
+                        self.bool_to_int(below, at)?
+                    }
+                    Binary::SDiv(z) => self.divide(Bo::Divide, x, y, at, z)?,
+                    Binary::SRem(z) => self.divide(Bo::Modulo, x, y, at, z)?,
+                    Binary::UMin => self.math(Mf::Min, x, &[y]),
+                    Binary::UMax => self.math(Mf::Max, x, &[y]),
+                    // WGSL takes a shift's count modulo the bit width, as the IR does
+                    Binary::Shl => self.binary(Bo::ShiftLeft, x, y),
+                    Binary::ShrU | Binary::ShrS => self.binary(Bo::ShiftRight, x, y),
                     Binary::FMin(nan) => self.min_max(Mf::Min, x, y, at, nan)?,
                     Binary::FMax(nan) => self.min_max(Mf::Max, x, y, at, nan)?,
                     Binary::FPow => self.math(Mf::Pow, x, &[y]),
                     Binary::FCmp(c) | Binary::SCmp(c) | Binary::UCmp(c) => self.binary(cmp(c), x, y),
-                    Binary::UDiv(z) => self.unsigned_divide(Bo::Divide, x, y, at, z)?,
-                    Binary::URem(z) => self.unsigned_divide(Bo::Modulo, x, y, at, z)?,
+                    Binary::UDiv(z) => self.divide(Bo::Divide, x, y, at, z)?,
+                    Binary::URem(z) => self.divide(Bo::Modulo, x, y, at, z)?,
                     Binary::SMin => self.math(Mf::Min, x, &[y]),
                     Binary::SMax => self.math(Mf::Max, x, &[y]),
                     Binary::And if at.scalar == Scalar::Bool => self.binary(Bo::LogicalAnd, x, y),
@@ -683,6 +1090,42 @@ impl Lower<'_> {
                     Binary::Or => self.binary(Bo::InclusiveOr, x, y),
                     Binary::Xor => self.binary(Bo::ExclusiveOr, x, y),
                 }
+            }
+            Op::Ternary(op, a, b, c) => {
+                let at = self.vty(a)?;
+                let (x, y, z) = (self.get(a)?, self.get(b)?, self.get(c)?);
+                match op {
+                    Ternary::Fma => self.math(Mf::Fma, x, &[y, z]),
+                    // WGSL's `extractBits` cuts the field at the top bit as D3D does; it does not take the counts
+                    // modulo 32, so they are masked first; its counts are one scalar for every lane, so a vector's
+                    // lanes are taken one at a time
+                    Ternary::BitExtract { .. } => self.per_lane(at, |l, k| {
+                        let xs = l.lane(x, at, k)?;
+                        let os = l.lane(y, at, k)?;
+                        let cs = l.lane(z, at, k)?;
+                        let os = l.low_five(os)?;
+                        let cs = l.low_five(cs)?;
+                        Ok(l.math(Mf::ExtractBits, xs, &[os, cs]))
+                    })?,
+                }
+            }
+            Op::BitInsert {
+                base,
+                insert,
+                offset,
+                count,
+            } => {
+                let at = self.vty(base)?;
+                let (b, i, o, c) = (self.get(base)?, self.get(insert)?, self.get(offset)?, self.get(count)?);
+                self.per_lane(at, |l, k| {
+                    let bs = l.lane(b, at, k)?;
+                    let is = l.lane(i, at, k)?;
+                    let os = l.lane(o, at, k)?;
+                    let cs = l.lane(c, at, k)?;
+                    let os = l.low_five(os)?;
+                    let cs = l.low_five(cs)?;
+                    Ok(l.math(Mf::InsertBits, bs, &[is, os, cs]))
+                })?
             }
             Op::Select { cond, accept, reject } => {
                 let (c, a, r) = (self.get(cond)?, self.get(accept)?, self.get(reject)?);
@@ -789,19 +1232,53 @@ impl Lower<'_> {
                 let p = self.expr(E::LocalVariable(local));
                 self.expr(E::Load { pointer: p })
             }
+            Op::LoadElement(var, index, oob) => {
+                let (pointer, inside) = self.element(var, index, oob)?;
+                let v = self.expr(E::Load { pointer });
+                match inside {
+                    None => v,
+                    Some(inside) => {
+                        let ty = self.ty_of(t)?;
+                        let zero = self.expr(E::ZeroValue(ty));
+                        self.select(inside, v, zero)
+                    }
+                }
+            }
+            Op::LoadInputAt(..) => return Err(err("a read of one vertex's input is not lowered yet")),
+            Op::LoadOutputAt(..) => return Err(err("a read of one control point's output is not lowered yet")),
+            Op::LoadPatch(..) => return Err(err("a patch constant read is not lowered yet")),
+            Op::Builtin(b) => return Err(err(format!("builtin {b:?} is not lowered yet"))),
+            Op::Gather { .. } => return Err(err("a gather is not lowered yet")),
+            Op::LoadTexel { .. } => return Err(err("a texel load is not lowered yet")),
+            Op::Query(..) => return Err(err("a resource query is not lowered yet")),
+            Op::Atomic { .. } => return Err(err("an atomic is not lowered yet")),
+            Op::Counter(..) => return Err(err("a buffer counter is not lowered yet")),
             Op::LoadBuffer {
                 resource,
-                index,
-                stride,
-                offset,
+                address,
                 oob,
-            } => self.load_buffer(resource, index, stride, offset, oob, t)?,
+            } => {
+                if resource.index.is_some() {
+                    return Err(err("a read of an element of an array of buffers is not lowered yet"));
+                }
+                self.load_buffer(resource.id, address.index, address.stride, address.offset, oob, t)?
+            }
             Op::Sample {
                 texture,
                 sampler,
                 coord,
                 level,
+                compare,
+                offset,
+                clamp,
             } => {
+                if texture.index.is_some() || sampler.index.is_some() {
+                    return Err(err("a sample of an element of an array of resources is not lowered yet"));
+                }
+                if compare.is_some() || clamp.is_some() || offset != [0; 3] {
+                    return Err(err("a sample with a comparison, offset or level clamp is not lowered yet"));
+                }
+                let (texture, sampler) = (texture.id, sampler.id);
                 let image = self.global(texture)?;
                 let image = self.expr(E::GlobalVariable(image));
                 let s = self.global(sampler)?;
@@ -832,6 +1309,43 @@ impl Lower<'_> {
         })
     }
 
+    /// The pointer to element `index` of array variable `var`, and where an index past its end reads zero and writes
+    /// nothing (`OutOfBounds::Zero`), whether the index is inside: the pointer is then to the index clamped, which WGSL
+    /// keeps in bounds. A signed index is taken as unsigned, so a negative one is past the end.
+    fn element(
+        &mut self,
+        var: iridia_ir::VarId,
+        index: ValueId,
+        oob: OutOfBounds,
+    ) -> Result<(Handle<E>, Option<Handle<E>>), Error> {
+        let local = *self
+            .vars
+            .get(var.0 as usize)
+            .ok_or_else(|| err(format!("variable {} does not exist", var.0)))?;
+        let len = self
+            .f
+            .vars
+            .get(var.0 as usize)
+            .and_then(|v| v.len)
+            .ok_or_else(|| err(format!("variable {} is not an array", var.0)))?;
+        let base = self.expr(E::LocalVariable(local));
+        let i = self.get(index)?;
+        let i = if self.vty(index)? == Type::I32 {
+            self.bitcast(i, ScalarKind::Uint)
+        } else {
+            i
+        };
+        match oob {
+            OutOfBounds::Undef => Ok((self.expr(E::Access { base, index: i }), None)),
+            OutOfBounds::Zero => {
+                let end = self.literal_bits(Scalar::U32, u64::from(len))?;
+                let last = self.literal_bits(Scalar::U32, u64::from(len.saturating_sub(1)))?;
+                let inside = self.binary(Bo::Less, i, end);
+                let clamped = self.math(Mf::Min, i, &[last]);
+                Ok((self.expr(E::Access { base, index: clamped }), Some(inside)))
+            }
+        }
+    }
     fn local(&mut self, t: Type) -> Result<Handle<LocalVariable>, Error> {
         let ty = self.ty_of(t)?;
         Ok(self.func.local_variables.append(
@@ -996,14 +1510,17 @@ impl Lower<'_> {
                 ))
             })
     }
-    /// An exit to construct `at` is a naga `Break` or `Continue` only when no naga loop lies between.
-    fn innermost_loop(&self, at: usize) -> Result<(), Error> {
-        let last = self.constructs.iter().rposition(|c| c.naga_loop);
+    /// A break to construct `at` is a naga `Break` only when it is the innermost loop or switch; a continue, when it
+    /// is the innermost loop (a switch between does not stop it).
+    fn innermost(&self, at: usize, continues: bool) -> Result<(), Error> {
+        let last = self.constructs.iter().rposition(|c| {
+            c.kind == Kind::Loop || (!continues && c.kind == Kind::Switch)
+        });
         if last == Some(at) {
             Ok(())
         } else {
             Err(err(
-                "an exit past an enclosing construct needs break_flags, which is not run yet",
+                "an exit past an enclosing construct: run iridia_passes::break_flags first",
             ))
         }
     }
@@ -1024,14 +1541,14 @@ impl Lower<'_> {
             },
             Some(End::Br(l, vs)) => {
                 let (at, c) = self.construct(*l)?;
-                let (locals, naga_loop) = (c.results.clone(), c.naga_loop);
+                let (locals, kind) = (c.results.clone(), c.kind);
                 self.store_all(&locals, vs)?;
-                if !naga_loop {
+                if kind == Kind::Block {
                     return Err(err(
-                        "a break out of a block needs break_flags, which is not run yet",
+                        "a break out of a block: run iridia_passes::break_flags first",
                     ));
                 }
-                self.innermost_loop(at)?;
+                self.innermost(at, false)?;
                 self.statement(Statement::Break)?;
             }
             Some(End::Continue(l, vs)) => {
@@ -1041,7 +1558,7 @@ impl Lower<'_> {
                     .clone()
                     .ok_or_else(|| err("a continue to a construct that is not a loop"))?;
                 self.store_all(&locals, vs)?;
-                self.innermost_loop(at)?;
+                self.innermost(at, true)?;
                 self.statement(Statement::Continue)?;
             }
             Some(End::Return) => self.ret()?,
@@ -1104,6 +1621,78 @@ impl Lower<'_> {
                     }
                 }
             }
+            Node::StoreElement(var, index, x, oob) => {
+                let value = self.get(*x)?;
+                let (pointer, inside) = self.element(*var, *index, *oob)?;
+                match inside {
+                    None => self.statement(Statement::Store { pointer, value })?,
+                    Some(condition) => {
+                        self.open();
+                        self.statement(Statement::Store { pointer, value })?;
+                        let accept = self.close()?;
+                        self.statement(Statement::If {
+                            condition,
+                            accept,
+                            reject: Block::new(),
+                        })?;
+                    }
+                }
+            }
+            Node::Switch {
+                label,
+                selector,
+                cases,
+                default,
+                results,
+            } => {
+                let sel = self.get(*selector)?;
+                let signed = self.vty(*selector)? == Type::I32;
+                let locals = self.locals_for(results)?;
+                self.constructs.push(Construct {
+                    label: *label,
+                    results: locals.clone(),
+                    params: None,
+                    kind: Kind::Switch,
+                });
+                let mut naga_cases = Vec::new();
+                for c in cases {
+                    self.open();
+                    self.region(&c.body, Yield::Fall(&locals))?;
+                    let body = self.close()?;
+                    // a case of several values: each but the last falls through, empty, to the last
+                    let last = c.values.len().saturating_sub(1);
+                    for (k, v) in c.values.iter().enumerate() {
+                        naga_cases.push(naga::SwitchCase {
+                            value: if signed {
+                                naga::SwitchValue::I32(v.cast_signed())
+                            } else {
+                                naga::SwitchValue::U32(*v)
+                            },
+                            body: if k == last { body.clone() } else { Block::new() },
+                            fall_through: k != last,
+                        });
+                    }
+                }
+                self.open();
+                self.region(default, Yield::Fall(&locals))?;
+                let body = self.close()?;
+                naga_cases.push(naga::SwitchCase {
+                    value: naga::SwitchValue::Default,
+                    body,
+                    fall_through: false,
+                });
+                self.constructs.pop();
+                self.statement(Statement::Switch {
+                    selector: sel,
+                    cases: naga_cases,
+                })?;
+                self.load_locals(results, &locals)?;
+            }
+            Node::StoreBuffer { .. } => return Err(err("a buffer store is not lowered yet")),
+            Node::StoreTexel { .. } => return Err(err("an image store is not lowered yet")),
+            Node::StorePatch(..) => return Err(err("a patch constant store is not lowered yet")),
+            Node::Barrier(_) => return Err(err("a barrier is not lowered yet")),
+            Node::Emit(_) | Node::Cut(_) => return Err(err("a geometry program's emit and cut are not lowered yet")),
             Node::If {
                 cond,
                 accept,
@@ -1131,7 +1720,7 @@ impl Lower<'_> {
                     label: *label,
                     results: locals.clone(),
                     params: None,
-                    naga_loop: false,
+                    kind: Kind::Block,
                 });
                 self.open();
                 self.region(body, Yield::Fall(&locals))?;
@@ -1154,7 +1743,7 @@ impl Lower<'_> {
                     label: *label,
                     results: locals.clone(),
                     params: Some(param_locals.clone()),
-                    naga_loop: true,
+                    kind: Kind::Loop,
                 });
                 self.open();
                 self.load_locals(params, &param_locals)?;
@@ -1178,28 +1767,17 @@ fn direct(body: &Region) -> bool {
     fn nested(r: &Region) -> bool {
         r.nodes.iter().any(|n| match n {
             Node::StoreOutput(..) => true,
-            Node::If { accept, reject, .. } => {
-                nested(accept) || nested(reject) || returns(accept) || returns(reject)
-            }
-            Node::Block { body, .. } | Node::Loop { body, .. } => nested(body) || returns(body),
-            _ => false,
+            _ => inner(n),
         })
     }
     fn returns(r: &Region) -> bool {
-        matches!(r.end, Some(End::Return))
-            || r.nodes.iter().any(|n| match n {
-                Node::If { accept, reject, .. } => returns(accept) || returns(reject),
-                Node::Block { body, .. } | Node::Loop { body, .. } => returns(body),
-                _ => false,
-            })
+        matches!(r.end, Some(End::Return)) || r.nodes.iter().any(|n| n.regions().into_iter().any(returns))
     }
-    !body.nodes.iter().any(|n| match n {
-        Node::If { accept, reject, .. } => {
-            nested(accept) || nested(reject) || returns(accept) || returns(reject)
-        }
-        Node::Block { body, .. } | Node::Loop { body, .. } => nested(body) || returns(body),
-        _ => false,
-    })
+    // a construct's regions store an output or return
+    fn inner(n: &Node) -> bool {
+        n.regions().into_iter().any(|r| nested(r) || returns(r))
+    }
+    !body.nodes.iter().any(inner)
 }
 
 /// The module of a program: its resources as the plan binds them, its entry point `main`.
@@ -1366,7 +1944,24 @@ pub fn module(program: &Program, plan: &BindingPlan) -> Result<naga::Module, Err
         }
     }
     for var in &f.vars {
-        let ty = l.ty_of(var.ty)?;
+        if var.space != iridia_ir::Space::Private {
+            return Err(err(format!("workgroup variable {} is not lowered yet", var.name)));
+        }
+        let element = l.ty_of(var.ty)?;
+        let ty = match var.len {
+            None => element,
+            Some(len) => {
+                // WGSL's layout: a vector of three lanes takes the room of four
+                let lanes = if var.ty.lanes == 3 { 4 } else { u32::from(var.ty.lanes) };
+                let stride = lanes.saturating_mul(var.ty.scalar.bits() / 8);
+                let size = core::num::NonZeroU32::new(len).ok_or_else(|| err("an array of no elements"))?;
+                l.ty(TypeInner::Array {
+                    base: element,
+                    size: ArraySize::Constant(size),
+                    stride,
+                })
+            }
+        };
         let local = l.func.local_variables.append(
             LocalVariable {
                 name: Some(var.name.clone()),
@@ -1376,6 +1971,36 @@ pub fn module(program: &Program, plan: &BindingPlan) -> Result<naga::Module, Err
             Span::UNDEFINED,
         );
         l.vars.push(local);
+        // an initial value (an immediate constant table) is stored before the body
+        if !var.init.is_empty() {
+            let mut elements = Vec::new();
+            for bits in &var.init {
+                let lanes = bits
+                    .iter()
+                    .take(usize::from(var.ty.lanes))
+                    .map(|b| l.literal_bits(var.ty.scalar, *b))
+                    .collect::<Result<Vec<_>, _>>()?;
+                elements.push(match lanes.as_slice() {
+                    [one] => *one,
+                    _ => l.expr(E::Compose {
+                        ty: element,
+                        components: lanes,
+                    }),
+                });
+            }
+            let value = match (var.len, elements.as_slice()) {
+                (None, [one]) => *one,
+                _ => {
+                    // elements past those given start as zero
+                    let len = var.len.unwrap_or(1) as usize;
+                    while elements.len() < len {
+                        elements.push(l.expr(E::ZeroValue(element)));
+                    }
+                    l.expr(E::Compose { ty, components: elements })
+                }
+            };
+            l.store_local(local, value)?;
+        }
     }
     l.outputs = if direct(body) {
         Outputs::Direct(vec![None; l.members.len()])

@@ -1,10 +1,13 @@
 //! Variables to values: each load of a variable becomes the value last stored to it on that path, and a construct
 //! that stores to a variable carries it out (an `If`'s or a `Block`'s results, a `Loop`'s parameters and results).
-//! A load before any store reads an undefined value. The variables are gone afterwards.
+//! A load before any store reads an undefined value. The promoted variables are gone afterwards; those that are not
+//! values (arrays, workgroup memory, a variable an atomic operation reaches) stay, renumbered.
 
 use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
 
-use iridia_ir::{Body, End, Function, LabelId, Node, Op, Precision, Region, ValueDef, ValueId, VarId};
+use iridia_ir::{
+    Body, End, Function, LabelId, Memory, Node, Op, Precision, Region, Space, ValueDef, ValueId, VarId,
+};
 
 struct Label {
     id: LabelId,
@@ -19,6 +22,8 @@ struct Promote<'a> {
     /// The value each removed load stands for.
     subst: Vec<Option<ValueId>>,
     labels: Vec<Label>,
+    /// Each variable's number after the pass, where it stays; `None` for one promoted.
+    keep: Vec<Option<VarId>>,
 }
 
 /// The variables stored to anywhere in a region, in order.
@@ -28,17 +33,36 @@ fn stored(r: &Region, out: &mut BTreeSet<VarId>) {
             Node::StoreVar(v, _) => {
                 out.insert(*v);
             }
-            Node::If { accept, reject, .. } => {
-                stored(accept, out);
-                stored(reject, out);
+            other => {
+                for r in other.regions() {
+                    stored(r, out);
+                }
             }
-            Node::Block { body, .. } | Node::Loop { body, .. } => stored(body, out),
-            Node::Value(_) | Node::StoreOutput(..) | Node::Demote => {}
+        }
+    }
+}
+
+/// The variables an atomic operation reaches anywhere in a region.
+fn atomic_vars(f: &Function, r: &Region, out: &mut BTreeSet<VarId>) {
+    for n in &r.nodes {
+        if let Node::Value(v) = n
+            && let Some(Op::Atomic {
+                memory: Memory::Var(var, _),
+                ..
+            }) = f.value(*v).map(|d| &d.op)
+        {
+            out.insert(*var);
+        }
+        for inner in n.regions() {
+            atomic_vars(f, inner, out);
         }
     }
 }
 
 impl Promote<'_> {
+    fn promoted(&self, var: VarId) -> bool {
+        self.keep.get(var.0 as usize).is_some_and(|k| k.is_none())
+    }
     fn id(&self) -> Result<ValueId, String> {
         u32::try_from(self.f.values.len())
             .map(ValueId)
@@ -121,7 +145,9 @@ impl Promote<'_> {
                     };
                     let mut op = def.op.clone();
                     op.map_operands(|o| self.sub(o));
-                    if let Op::LoadVar(var) = op {
+                    if let Op::LoadVar(var) = op
+                        && self.promoted(var)
+                    {
                         let value = self.current(var, &mut out)?;
                         if let Some(s) = self.subst.get_mut(v.0 as usize) {
                             *s = Some(value);
@@ -133,12 +159,49 @@ impl Promote<'_> {
                     }
                     out.push(Node::Value(v));
                 }
-                Node::StoreVar(var, x) => {
+                Node::StoreVar(var, x) if self.promoted(var) => {
                     let x = self.sub(x);
                     self.set(var, x)?;
                 }
-                Node::StoreOutput(slot, mask, x) => out.push(Node::StoreOutput(slot, mask, self.sub(x))),
-                Node::Demote => out.push(Node::Demote),
+                Node::Switch {
+                    label,
+                    selector,
+                    mut cases,
+                    default,
+                    mut results,
+                } => {
+                    let mut carried = BTreeSet::new();
+                    for c in &cases {
+                        stored(&c.body, &mut carried);
+                    }
+                    stored(&default, &mut carried);
+                    let carried: Vec<VarId> = carried.into_iter().collect();
+                    let before = self.env.clone();
+                    self.labels.push(Label {
+                        id: label,
+                        carried: carried.clone(),
+                    });
+                    for c in &mut cases {
+                        self.env.clone_from(&before);
+                        let body = core::mem::take(&mut c.body);
+                        c.body = self.region(body, &carried)?;
+                    }
+                    self.env.clone_from(&before);
+                    let default = self.region(default, &carried)?;
+                    self.labels.pop();
+                    self.env = before;
+                    let new = self.results(&carried, &mut results)?;
+                    for (&var, p) in carried.iter().zip(new) {
+                        self.set(var, p)?;
+                    }
+                    out.push(Node::Switch {
+                        label,
+                        selector: self.sub(selector),
+                        cases,
+                        default,
+                        results,
+                    });
+                }
                 Node::If {
                     cond,
                     accept,
@@ -223,6 +286,12 @@ impl Promote<'_> {
                         results,
                     });
                 }
+                mut other => {
+                    for v in other.values_mut() {
+                        *v = self.sub(*v);
+                    }
+                    out.push(other);
+                }
             }
         }
         let end = match r.end {
@@ -249,20 +318,67 @@ impl Promote<'_> {
     }
 }
 
-/// Promote every variable of a `Regions` function to values; the function then has no variables. A graph body is
-/// refused: its variables are promoted by the graph's own construction (block parameters), not here.
+/// Renumber the variables a region names by `keep`.
+fn renumber(f: &mut Function, r: &mut Region, keep: &[Option<VarId>]) {
+    let new = |v: &mut VarId| {
+        if let Some(Some(n)) = keep.get(v.0 as usize) {
+            *v = *n;
+        }
+    };
+    for n in &mut r.nodes {
+        match n {
+            Node::Value(v) => match f.values.get_mut(v.0 as usize).map(|d| &mut d.op) {
+                Some(Op::LoadVar(var) | Op::LoadElement(var, ..))
+                | Some(Op::Atomic {
+                    memory: Memory::Var(var, _),
+                    ..
+                }) => new(var),
+                _ => {}
+            },
+            Node::StoreVar(var, _) | Node::StoreElement(var, ..) => new(var),
+            _ => {}
+        }
+        for inner in n.regions_mut() {
+            renumber(f, inner, keep);
+        }
+    }
+}
+
+/// Promote every private variable of a `Regions` function that is not an array, and that no atomic operation
+/// reaches, to values; the variables that stay are renumbered in order. A graph body is refused: its variables are
+/// promoted by the graph's own construction (block parameters), not here.
 pub fn promote(f: &mut Function) -> Result<(), String> {
     let Body::Regions(body) = core::mem::replace(&mut f.body, Body::Regions(Region::default())) else {
         return Err("promote takes a Regions body".into());
     };
+    let mut atomic = BTreeSet::new();
+    atomic_vars(f, &body, &mut atomic);
+    let mut keep = Vec::new();
+    let mut next = 0u32;
+    for (v, i) in f.vars.iter().zip(0u32..) {
+        let stays = v.len.is_some() || v.space != Space::Private || atomic.contains(&VarId(i));
+        keep.push(stays.then(|| {
+            let n = VarId(next);
+            next = next.saturating_add(1);
+            n
+        }));
+    }
     let mut p = Promote {
         env: alloc::vec![None; f.vars.len()],
         subst: alloc::vec![None; f.values.len()],
         labels: Vec::new(),
+        keep: keep.clone(),
         f,
     };
-    let body = p.region(body, &[])?;
+    let mut body = p.region(body, &[])?;
+    renumber(f, &mut body, &keep);
     f.body = Body::Regions(body);
-    f.vars.clear();
+    let vars = core::mem::take(&mut f.vars);
+    f.vars = vars
+        .into_iter()
+        .zip(&keep)
+        .filter(|(_, k)| k.is_some())
+        .map(|(v, _)| v)
+        .collect();
     Ok(())
 }

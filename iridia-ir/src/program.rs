@@ -96,6 +96,12 @@ pub struct Program {
     pub stage: Stage,
     /// The entry function.
     pub entry: Function,
+    /// A hull program's patch constant function: run once per patch after the entry has run for every output control
+    /// point, it reads the input and output control points and stores the patch constants.
+    pub patch: Option<Function>,
+    /// The thread group a compute or mesh program runs in (`numthreads`), invocations along x, y and z; `None` for
+    /// every other stage.
+    pub workgroup: Option<[u32; 3]>,
     /// The varyings, resources and stage facts.
     pub interface: Interface,
     /// The pipeline rules it was written for.

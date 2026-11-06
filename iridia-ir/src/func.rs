@@ -2,7 +2,7 @@
 
 use alloc::{string::String, vec::Vec};
 
-use crate::{LabelId, Op, Type, Unit, ValueId, VarId};
+use crate::{Address, Barrier, LabelId, Op, OutOfBounds, Res, Type, Unit, ValueId, VarId};
 
 /// Where in the source bytes an operation comes from, for refusals, notes and mapping back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
@@ -36,13 +36,44 @@ pub struct ValueDef {
     pub precision: Precision,
 }
 
-/// A mutable variable: a source register until `promote` turns its loads and stores into values.
+/// Who shares a variable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Space {
+    /// Each invocation has its own.
+    #[default]
+    Private,
+    /// The invocations of a compute workgroup share it (D3D's group shared memory); it starts as zero.
+    Workgroup,
+}
+
+/// A variable: a source register until `promote` turns its loads and stores into values, or an array (a source's
+/// indexable registers, an immediate constant table, workgroup memory) read and written by element.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Var {
     /// Its name, for the text form and target names (`r0`).
     pub name: String,
-    /// Its type.
+    /// Its type, or its elements' type.
     pub ty: Type,
+    /// The elements of an array; `None` for a variable that is not one.
+    pub len: Option<u32>,
+    /// Who shares it.
+    pub space: Space,
+    /// Its value at the start, each element's lanes as a literal's (an immediate constant table); empty for none, where
+    /// a private variable starts undefined and a workgroup one zero.
+    pub init: Vec<[u64; 4]>,
+}
+
+impl Var {
+    /// A private variable of `ty` that is not an array.
+    pub fn new(name: &str, ty: Type) -> Var {
+        Var {
+            name: name.into(),
+            ty,
+            len: None,
+            space: Space::Private,
+            init: Vec::new(),
+        }
+    }
 }
 
 /// A step of a region or a block.
@@ -60,6 +91,53 @@ pub enum Node {
     /// it: it goes on as a helper invocation, which its quad's derivatives still read, and its later output stores have
     /// no effect. It ends as killed, with the outputs it stored before.
     Demote,
+    /// Element `.1` (a `u32` or `i32`) of an array variable takes the value, with the stated rule for an index past
+    /// its end.
+    StoreElement(VarId, ValueId, ValueId, OutOfBounds),
+    /// Consecutive 32-bit words of a storage buffer from the byte address (its low two bits ignored) take the value's
+    /// lanes; a word past the buffer's size is not written.
+    StoreBuffer {
+        /// The buffer.
+        resource: Res,
+        /// The byte address of the first word.
+        address: Address,
+        /// The value: 32-bit lanes.
+        value: ValueId,
+    },
+    /// The texel of a storage image or typed storage buffer at an integer coordinate (an array layer as its last
+    /// lane; the element for a buffer) takes the value: `vec4` of the image's lanes' type. A texel outside it is not
+    /// written.
+    StoreTexel {
+        /// The image or buffer.
+        image: Res,
+        /// The coordinate (`i32` or `u32`).
+        coord: ValueId,
+        /// The texel.
+        value: ValueId,
+    },
+    /// Lanes of patch constant slot `.0` take the value (a hull program's patch constant function), as `StoreOutput`.
+    StorePatch(u32, u8, ValueId),
+    /// A barrier of the workgroup.
+    Barrier(Barrier),
+    /// A geometry program emits the outputs stored so far as a vertex of stream `.0`; the outputs are undefined after it
+    /// until stored again.
+    Emit(u8),
+    /// A geometry program ends the strip it is emitting on stream `.0`.
+    Cut(u8),
+    /// A multi-way choice on an integer (`u32` or `i32`, by its bits): the case whose values hold it, else the default.
+    /// Each region ends in a yield of the results' values or an exit; none falls into the next.
+    Switch {
+        /// The label a `Br` names to leave it.
+        label: LabelId,
+        /// The value chosen on.
+        selector: ValueId,
+        /// The cases: the values that choose each, and its region.
+        cases: Vec<Case>,
+        /// The region run for every other value.
+        default: Region,
+        /// The values the construct defines (`Op::Param`), given by each region's yield and each `Br` to it.
+        results: Vec<ValueId>,
+    },
     /// Two-way choice. Each arm ends in a yield of the results' values, or an exit that leaves it.
     If {
         /// A scalar bool.
@@ -93,6 +171,106 @@ pub enum Node {
         /// The values the construct defines (`Op::Param`), given by the body's yield and each `Br` to it.
         results: Vec<ValueId>,
     },
+}
+
+impl Node {
+    /// The values the node itself reads (a construct's condition, selector or initial values; not its regions').
+    pub fn values(&self) -> Vec<ValueId> {
+        match self {
+            Node::Value(_) | Node::Demote | Node::Barrier(_) | Node::Emit(_) | Node::Cut(_) | Node::Block { .. } => {
+                Vec::new()
+            }
+            Node::StoreVar(_, v) | Node::StoreOutput(_, _, v) | Node::StorePatch(_, _, v) => alloc::vec![*v],
+            Node::StoreElement(_, i, v, _) => alloc::vec![*i, *v],
+            Node::StoreBuffer {
+                resource,
+                address,
+                value,
+            } => resource
+                .index
+                .into_iter()
+                .chain(address.index)
+                .chain(core::iter::once(*value))
+                .collect(),
+            Node::StoreTexel { image, coord, value } => {
+                image.index.into_iter().chain([*coord, *value]).collect()
+            }
+            Node::If { cond, .. } => alloc::vec![*cond],
+            Node::Switch { selector, .. } => alloc::vec![*selector],
+            Node::Loop { inits, .. } => inits.clone(),
+        }
+    }
+
+    /// The values the node itself reads, to change.
+    pub fn values_mut(&mut self) -> Vec<&mut ValueId> {
+        match self {
+            Node::Value(_) | Node::Demote | Node::Barrier(_) | Node::Emit(_) | Node::Cut(_) | Node::Block { .. } => {
+                Vec::new()
+            }
+            Node::StoreVar(_, v) | Node::StoreOutput(_, _, v) | Node::StorePatch(_, _, v) => alloc::vec![v],
+            Node::StoreElement(_, i, v, _) => alloc::vec![i, v],
+            Node::StoreBuffer {
+                resource,
+                address,
+                value,
+            } => resource
+                .index
+                .as_mut()
+                .into_iter()
+                .chain(address.index.as_mut())
+                .chain(core::iter::once(value))
+                .collect(),
+            Node::StoreTexel { image, coord, value } => {
+                image.index.as_mut().into_iter().chain([coord, value]).collect()
+            }
+            Node::If { cond, .. } => alloc::vec![cond],
+            Node::Switch { selector, .. } => alloc::vec![selector],
+            Node::Loop { inits, .. } => inits.iter_mut().collect(),
+        }
+    }
+
+    /// Whether the node changes state other than a variable or an output (memory, the pipeline): it stays where it is.
+    pub fn has_effect(&self) -> bool {
+        matches!(
+            self,
+            Node::StoreBuffer { .. } | Node::StoreTexel { .. } | Node::Barrier(_) | Node::Emit(_) | Node::Cut(_)
+        )
+    }
+
+    /// The regions of a construct, in order.
+    pub fn regions(&self) -> Vec<&Region> {
+        match self {
+            Node::If { accept, reject, .. } => alloc::vec![accept, reject],
+            Node::Block { body, .. } | Node::Loop { body, .. } => alloc::vec![body],
+            Node::Switch { cases, default, .. } => {
+                cases.iter().map(|c| &c.body).chain(core::iter::once(default)).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The regions of a construct, in order, to change.
+    pub fn regions_mut(&mut self) -> Vec<&mut Region> {
+        match self {
+            Node::If { accept, reject, .. } => alloc::vec![accept, reject],
+            Node::Block { body, .. } | Node::Loop { body, .. } => alloc::vec![body],
+            Node::Switch { cases, default, .. } => cases
+                .iter_mut()
+                .map(|c| &mut c.body)
+                .chain(core::iter::once(default))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A case of a `Switch`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Case {
+    /// The selector's values (as 32-bit words) that choose it; at least one, none chosen by two cases.
+    pub values: Vec<u32>,
+    /// The region run.
+    pub body: Region,
 }
 
 /// How a region ends.
@@ -144,12 +322,48 @@ pub enum Terminator {
         /// Where it does not.
         reject: Target,
     },
+    /// Multi-way branch on an integer (`u32` or `i32`, by its bits).
+    Switch {
+        /// The value chosen on.
+        selector: ValueId,
+        /// Each value and where it goes; none twice.
+        cases: Vec<(u32, Target)>,
+        /// Where every other value goes.
+        default: Target,
+    },
     /// Leaves the function.
     Return,
     /// Discards the invocation.
     Kill,
     /// Cannot be reached.
     Unreachable,
+}
+
+impl Terminator {
+    /// The targets, in order.
+    pub fn targets(&self) -> Vec<&Target> {
+        match self {
+            Terminator::Jump(t) => alloc::vec![t],
+            Terminator::Branch { accept, reject, .. } => alloc::vec![accept, reject],
+            Terminator::Switch { cases, default, .. } => {
+                cases.iter().map(|(_, t)| t).chain(core::iter::once(default)).collect()
+            }
+            Terminator::Return | Terminator::Kill | Terminator::Unreachable => Vec::new(),
+        }
+    }
+    /// The targets, in order, to change.
+    pub fn targets_mut(&mut self) -> Vec<&mut Target> {
+        match self {
+            Terminator::Jump(t) => alloc::vec![t],
+            Terminator::Branch { accept, reject, .. } => alloc::vec![accept, reject],
+            Terminator::Switch { cases, default, .. } => cases
+                .iter_mut()
+                .map(|(_, t)| t)
+                .chain(core::iter::once(default))
+                .collect(),
+            Terminator::Return | Terminator::Kill | Terminator::Unreachable => Vec::new(),
+        }
+    }
 }
 
 /// A basic block of the `Cfg` phase: parameters, plain nodes (no constructs) and a terminator.

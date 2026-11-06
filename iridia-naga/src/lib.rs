@@ -115,7 +115,16 @@ impl BindingPlan {
 pub fn validate(module: &naga::Module, profile: &Profile) -> Result<naga::valid::ModuleInfo, Error> {
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), profile.capabilities)
         .validate(module)
-        .map_err(|e| Error(format!("naga validation: {}", e.as_inner())))
+        .map_err(|e| {
+            // the validator's error is a chain (entry point, function, expression): every link names part of the fault
+            let mut message = format!("naga validation: {}", e.as_inner());
+            let mut cause = core::error::Error::source(e.as_inner());
+            while let Some(c) = cause {
+                message.push_str(&format!(": {c}"));
+                cause = c.source();
+            }
+            Error(message)
+        })
 }
 
 /// The WGSL of a program for `profile`, with the D3D binding plan: preflighted, lowered, validated and written. A

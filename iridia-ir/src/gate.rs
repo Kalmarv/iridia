@@ -25,6 +25,8 @@ pub fn lifted(program: &Program) -> String {
     let Program {
         stage,
         entry,
+        patch,
+        workgroup,
         interface,
         conventions,
         float,
@@ -34,6 +36,9 @@ pub fn lifted(program: &Program) -> String {
     #[derive(serde::Serialize)]
     struct Rest<'a> {
         stage: &'a Stage,
+        // left out where there is none, so the outcomes of stages without one are what they were before it
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workgroup: &'a Option<[u32; 3]>,
         interface: &'a Interface,
         conventions: &'a Conventions,
         float: &'a FloatEnv,
@@ -42,6 +47,7 @@ pub fn lifted(program: &Program) -> String {
     }
     let rest = Rest {
         stage,
+        workgroup,
         interface,
         conventions,
         float,
@@ -52,7 +58,8 @@ pub fn lifted(program: &Program) -> String {
         notes,
     };
     let json = serde_json::to_string(&rest).unwrap_or_else(|e| format!("not serialised: {e}"));
-    format!("{}\n{json}\n", crate::text::print(entry))
+    let patch = patch.as_ref().map(crate::text::print).unwrap_or_default();
+    format!("{}{patch}\n{json}\n", crate::text::print(entry))
 }
 
 /// The table of `outcomes` (fixture name, outcome) for `lifter` at these versions: a header of the versions, then a line

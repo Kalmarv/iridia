@@ -34,6 +34,8 @@ fn program(stage: Stage, text: &str, inputs: Vec<Varying>, outputs: Vec<Varying>
     let p = Program {
         stage,
         entry,
+        patch: None,
+        workgroup: None,
         interface: Interface {
             stage,
             inputs,

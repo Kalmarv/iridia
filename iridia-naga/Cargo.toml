@@ -24,6 +24,11 @@ naga = { version = "=30.0.1", default-features = false }
 [dev-dependencies]
 # the tests read written WGSL back, to check what a pipeline links
 naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }
+# tests/ops.rs runs each operation in iridia-exec-ir and, as WGSL read back by the fork's front end, in iridia-exec
+iridia.workspace = true
+iridia-exec.workspace = true
+iridia-exec-ir.workspace = true
+naga-fork = { package = "primase-naga", version = "30.0.1", default-features = false, features = ["wgsl-in"] }
 
 [lints]
 workspace = true

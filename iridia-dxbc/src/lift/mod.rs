@@ -24,7 +24,7 @@ mod compute;
 mod io;
 mod operands;
 mod resources;
-mod setup;
+pub(crate) mod setup;
 mod tessellation;
 
 use std::collections::{BTreeMap, BTreeSet};
