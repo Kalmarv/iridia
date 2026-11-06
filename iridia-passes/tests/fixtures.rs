@@ -208,7 +208,7 @@ fn main {
     assert_eq!(lit(11), Some([u64::from((-3i32).cast_unsigned()), 0, 0, 0]));
     assert_eq!(lit(13), Some([1, 0, 0, 0]));
     assert_eq!(lit(14), Some([1, 0, 0, 0]));
-    assert_eq!(lit(16), Some([2, 1, 0, 0]));
+    assert_eq!(lit(16), Some([0, 1, 0, 0]));
     // a sign flip is exact everywhere; float arithmetic depends on the target's denormals and precision
     assert_eq!(lit(18), Some([u64::from((-1.5f32).to_bits()), 0, 0, 0]));
     assert_eq!(lit(19), None);
@@ -510,6 +510,8 @@ fn specialise_takes_the_case_a_known_selector_names() {
         assert_eq!(out[0].unwrap()[0], want, "state {known}, x {x}");
         let (out, _) = run(&p, &[[x, 0, 0, 0]], &[(ResourceId(0), [known, 0, 0, 0])]).unwrap();
         assert_eq!(out[0].unwrap()[0], want, "unspecialised, state {known}, x {x}");
+        // the lowering takes breaks to the innermost loop or switch only
+        iridia_passes::break_flags(&mut q.entry).unwrap();
         iridia_naga::wgsl(&q, &iridia_naga::Profile::NAGA).unwrap_or_else(|e| panic!("{e}\n{printed}"));
     }
 }

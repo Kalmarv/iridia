@@ -117,7 +117,10 @@ impl iridia_exec::Backend for NoTextures {
 /// `break_flags` leaves it), as [`run`] gives it: an output slot that is never stored reads as zero there, so each
 /// slot is `Some`.
 pub fn run_flat(p: &Program, inputs: &[[u32; 4]]) -> Result<Outcome, String> {
-    let exe = iridia_exec::Executable::from_ir(p).map_err(|e| e.to_string())?;
+    // the flat form takes breaks to the innermost loop or switch only
+    let mut p = p.clone();
+    iridia_passes::break_flags(&mut p.entry)?;
+    let exe = iridia_exec::Executable::from_ir(&p).map_err(|e| e.to_string())?;
     let bound = exe.bind(|_| None, |_| None)?;
     let mut backend = NoTextures;
     let [out] = iridia_exec::Runner::<1>::new(&exe, &bound, &mut backend, None).run([inputs])?;
