@@ -768,6 +768,18 @@ pub enum Op {
     },
     /// An atomic change of a buffer's hidden counter (a `u32`), as [`CounterOp`] says.
     Counter(Res, CounterOp),
+    /// An intersection program reports a hit of the ray at a distance (Direct3D's `ReportHit`), with the attributes the
+    /// hit's programs read: whether the hit was accepted (a `bool`). A distance outside the ray's interval is not a hit;
+    /// the any-hit program of the hit's group decides the rest. The report is the instruction's own effect, kept even
+    /// where nothing reads its result.
+    ReportHit {
+        /// The distance along the ray (`f32`).
+        t: ValueId,
+        /// The hit kind the hit's programs read (`u32`, at most 127 for one the program states).
+        kind: ValueId,
+        /// The attributes: `u32` elements laid out as [`crate::Space::HitAttributes`] is.
+        attributes: VarId,
+    },
     /// An operation across the invocations of the invocation's wave (Direct3D's wave, a subgroup), as [`Wave`] says.
     /// Which invocations make a wave, and how many, is the device's. An invocation takes part where it is active:
     /// where its control flow reaches the operation with the others' (a demoted invocation, a helper, is not active);
@@ -889,6 +901,7 @@ impl Op {
                 v.extend(compare.as_mut());
             }
             Op::Counter(r, _) => r.operands_mut(&mut v),
+            Op::ReportHit { t, kind, .. } => v.extend([t, kind]),
             Op::Wave(w) => match w {
                 Wave::Ballot(a) | Wave::First(a) | Wave::QuadSwap(a, _) => v.push(a),
                 Wave::Lane(a, l) | Wave::QuadLane(a, l) => v.extend([a, l]),
@@ -923,7 +936,8 @@ impl Op {
             | Op::Atomic {
                 memory: Memory::Var(var, _),
                 ..
-            } => Some(var),
+            }
+            | Op::ReportHit { attributes: var, .. } => Some(var),
             _ => None,
         }
     }
@@ -973,7 +987,7 @@ impl Op {
     /// Whether the operation changes state (memory, a counter): it is kept where it is and as often as it runs, even
     /// where nothing reads its value.
     pub fn has_effect(&self) -> bool {
-        matches!(self, Op::Atomic { .. } | Op::Counter(..))
+        matches!(self, Op::Atomic { .. } | Op::Counter(..) | Op::ReportHit { .. })
     }
 }
 

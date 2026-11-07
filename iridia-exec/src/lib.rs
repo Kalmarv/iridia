@@ -247,7 +247,10 @@ impl Executable {
     }
 
     /// The words of pointer argument `k` (a ray tracing program's payload, attributes or parameter).
-    pub(crate) fn pointer_words(&self, k: usize) -> Option<u32> {
+    /// The words pointer argument `k` of a function takes (a ray tracing program's payload, then its attributes): the
+    /// registers it is passed in hold four each, and [`Output::pointees`] gives them back. `None` past its pointer
+    /// arguments.
+    pub fn pointer_words(&self, k: usize) -> Option<u32> {
         self.pointer_args.get(k).map(|a| a.2)
     }
 

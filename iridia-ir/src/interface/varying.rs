@@ -473,15 +473,30 @@ pub enum Subobject {
     HitGroup(HitGroup),
 }
 
-/// What a ray tracing program's library states: the program's own export name (as the subobjects name it) and every
-/// subobject of the library, in the order it stores them. A pipeline is built from a library's programs and these.
+/// What a ray tracing program's library states: the program's own export name (as the subobjects name it), the bytes
+/// of the payload and attributes it reads, and every subobject of the library, in the order it stores them. A pipeline
+/// is built from a library's programs and these.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct RayTracingFacts {
     /// The export name of this program, as the subobjects refer to it.
     pub export: String,
+    /// The bytes of the payload of the ray a hit or miss program runs for, or of a callable program's parameter
+    /// (`Interface::verify` accepts at most [`MAX_RAY_PAYLOAD`]); 0 for a program that has none.
+    pub payload: u32,
+    /// The bytes of the hit's attributes an any-hit or closest-hit program reads (at most
+    /// [`MAX_HIT_ATTRIBUTES`]); 0 for a program that has none.
+    pub attributes: u32,
     /// Every subobject of the library, in the order stored.
     pub subobjects: Vec<Subobject>,
 }
+
+/// The most bytes of a ray payload or callable parameter taken. Direct3D states no bound but the pipeline's own
+/// (`D3D12_RAYTRACING_SHADER_CONFIG`'s `MaxPayloadSizeInBytes`); a task payload's ([`MAX_TASK_PAYLOAD`]) keeps one's
+/// words in reach.
+pub const MAX_RAY_PAYLOAD: u32 = MAX_TASK_PAYLOAD;
+
+/// The most bytes of a hit's attributes, Direct3D's (`D3D12_RAYTRACING_MAX_ATTRIBUTE_SIZE_IN_BYTES`).
+pub const MAX_HIT_ATTRIBUTES: u32 = 32;
 
 /// Facts about a program a stage's varyings and resources do not carry.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize)]
@@ -601,6 +616,20 @@ impl Interface {
             (stage, StageFacts::RayTracing(r)) if stage.is_ray_tracing() => {
                 if r.export.is_empty() {
                     return Err(format!("a {stage:?} program that names no export"));
+                }
+                let carries_payload = matches!(
+                    stage,
+                    Stage::AnyHit | Stage::ClosestHit | Stage::Miss | Stage::Callable
+                );
+                let carries_attributes = matches!(stage, Stage::AnyHit | Stage::ClosestHit);
+                if r.payload > MAX_RAY_PAYLOAD || (r.payload != 0 && !carries_payload) {
+                    return Err(format!("a {stage:?} program of a payload of {} bytes", r.payload));
+                }
+                if r.attributes > MAX_HIT_ATTRIBUTES || (r.attributes != 0 && !carries_attributes) {
+                    return Err(format!(
+                        "a {stage:?} program of hit attributes of {} bytes",
+                        r.attributes
+                    ));
                 }
                 Ok(())
             }

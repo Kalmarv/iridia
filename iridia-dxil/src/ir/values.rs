@@ -428,6 +428,19 @@ impl Lift<'_> {
                 define(self, r)
             }
             LlvmOp::Load { pointer, .. } => {
+                // the value of a library's resource global is the resource's handle
+                if let Some(i) = self.setup.resource_of_variable(*pointer) {
+                    let id = self.resource_id(i)?;
+                    return define(self, Lv::Handle(iridia_ir::Res::of(id)));
+                }
+                if self
+                    .root_global(*pointer)
+                    .is_some_and(|g| self.setup.resource_of_variable(g).is_some())
+                {
+                    return self.refuse(
+                        "an element of a library's array of resources is not lifted onto the IR yet",
+                    );
+                }
                 let ty = result
                     .map(|r| r.1)
                     .ok_or_else(|| crate::error(self.at, "a load of no result"))?;
@@ -1040,7 +1053,8 @@ impl Lift<'_> {
                 continue;
             };
             let name = self.m.name(g).unwrap_or("global").to_owned();
-            if name.starts_with("dx.nothing") {
+            // dxc's no-op markers, and a library's resources, whose loads are their handles
+            if name.starts_with("dx.nothing") || self.setup.resource_of_variable(g).is_some() {
                 continue;
             }
             let (space, init) = match (address_space, initializer) {

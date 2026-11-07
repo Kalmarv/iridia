@@ -71,18 +71,23 @@ fn round_up(n: u32, align: u32) -> u32 {
 }
 
 impl Lift<'_> {
-    /// The allocas and module globals an amplification program hands to `DispatchMesh` as its payload: the variables
-    /// laid out in bytes.
+    /// The allocas and module globals an amplification program hands to `DispatchMesh` as its payload, and a ray tracing
+    /// program to `TraceRay` (its payload), `ReportHit` (the hit's attributes) and `CallShader` (the parameter): the
+    /// variables laid out in bytes.
     pub(crate) fn payload_roots(&self) -> BTreeSet<ValueId> {
         let mut roots = BTreeSet::new();
         for inst in &self.f.instructions {
             let LlvmOp::Call { function, args, .. } = &inst.op else {
                 continue;
             };
-            if dx_opcode(self.m, self.f, *function, args) != Some(173) {
-                continue;
-            }
-            let Some(mut v) = args.get(4).copied() else {
+            let operand = match dx_opcode(self.m, self.f, *function, args) {
+                Some(173) => 4,
+                Some(157) => 15,
+                Some(158) => 3,
+                Some(159) => 2,
+                _ => continue,
+            };
+            let Some(mut v) = args.get(operand).copied() else {
                 continue;
             };
             // through getelementptrs and casts to the alloca or the global
@@ -247,6 +252,28 @@ impl Lift<'_> {
                 }
                 return Ok(Lv::Agg(items));
             }
+            // a vector's lanes are consecutive elements
+            LlvmType::Vector(n, e) => {
+                let t = self
+                    .carried_type(ty)?
+                    .ok_or_else(|| crate::error(self.at, "a load of a vector that is no value"))?;
+                let (_, size) = self.byte_layout(e)?;
+                let mut lanes = Vec::new();
+                for k in 0..u32::try_from(n).unwrap_or(0) {
+                    let lane = self.load_bytes(
+                        Pointer {
+                            at: p.at.saturating_add(k.saturating_mul(size)),
+                            ..p
+                        },
+                        e,
+                    )?;
+                    let Lv::Value(lane) = lane else {
+                        return self.refuse("a vector lane that is no value");
+                    };
+                    lanes.push(lane);
+                }
+                return Ok(Lv::Value(self.g.value(t, Op::Compose(lanes))));
+            }
             _ => {}
         }
         let t = self
@@ -320,6 +347,24 @@ impl Lift<'_> {
                             ..p
                         },
                         item,
+                        e,
+                    )?;
+                }
+                Ok(())
+            }
+            (Lv::Value(x), LlvmType::Vector(n, e)) => {
+                let (_, size) = self.byte_layout(e)?;
+                let lane_type = self
+                    .carried_type(e)?
+                    .ok_or_else(|| crate::error(self.at, "a vector of lanes that are no values"))?;
+                for k in 0..u8::try_from(n).unwrap_or(0) {
+                    let lane = self.g.value(lane_type, Op::Swizzle(x, [k, 0, 0, 0]));
+                    self.store_bytes(
+                        Pointer {
+                            at: p.at.saturating_add(u32::from(k).saturating_mul(size)),
+                            ..p
+                        },
+                        Lv::Value(lane),
                         e,
                     )?;
                 }

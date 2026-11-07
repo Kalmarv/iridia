@@ -96,6 +96,11 @@ pub fn derived_type(op: &Op, ty: impl Fn(ValueId) -> Option<Type>) -> Result<Opt
         | Op::Query(..)
         | Op::Atomic { .. }
         | Op::Counter(..) => return Ok(None),
+        Op::ReportHit { t, kind, .. } => {
+            same(get(*t)?, Type::F32, "a reported hit's distance")?;
+            same(get(*kind)?, Type::U32, "a reported hit's kind")?;
+            Type::BOOL
+        }
         Op::Wave(w) => {
             // a value read from another invocation, or gathered over them, is a scalar or vector of numbers
             let numbers = |t: Type, what: &str| {
@@ -798,11 +803,20 @@ fn stated(op: &Op, t: Type, f: &Function, interface: &Interface) -> Result<(), S
                 }
                 Memory::Var(x, i) => {
                     let d = var(*x)?;
-                    if d.space == crate::Space::Payload {
-                        return Err(format!(
-                            "an atomic operation on task payload {}, which is read alone",
-                            d.name
-                        ));
+                    match d.space {
+                        crate::Space::Payload => {
+                            return Err(format!(
+                                "an atomic operation on task payload {}, which is read alone",
+                                d.name
+                            ));
+                        }
+                        crate::Space::RayPayload | crate::Space::HitAttributes => {
+                            return Err(format!(
+                                "an atomic operation on {}, a ray tracing program's own memory",
+                                d.name
+                            ));
+                        }
+                        crate::Space::Private | crate::Space::Workgroup => {}
                     }
                     if d.len.is_some() != i.is_some() {
                         return Err(format!("an atomic operation on {} without its element", d.name));
@@ -854,13 +868,31 @@ impl Checker<'_> {
     fn ty(&self, v: ValueId) -> Option<Type> {
         self.f.ty(v)
     }
-    /// A store into variable `var`: a task payload is read alone.
+    /// A store into variable `var`: a task payload and a hit's attributes are read alone.
     fn writable(&mut self, var: VarId, value: ValueId) {
-        if let Some(d) = self.f.vars.get(var.0 as usize)
-            && d.space == crate::Space::Payload
-        {
-            let m = format!("a store to task payload {}, which is read alone", d.name);
-            self.problem(Some(value), m);
+        let what = match self.f.vars.get(var.0 as usize) {
+            Some(d) if d.space == crate::Space::Payload => format!("task payload {}", d.name),
+            Some(d) if d.space == crate::Space::HitAttributes => format!("hit attributes {}", d.name),
+            _ => return,
+        };
+        self.problem(Some(value), format!("a store to {what}, which is read alone"));
+    }
+    /// The memory a ray tracing operation hands over (`what`): a private or ray payload array of `u32` words.
+    fn handed(&mut self, var: VarId, what: &str) {
+        match self.f.vars.get(var.0 as usize) {
+            None => self.problem(
+                None,
+                format!("{what} of variable {}, which does not exist", var.0),
+            ),
+            Some(d)
+                if !matches!(d.space, crate::Space::Private | crate::Space::RayPayload)
+                    || d.ty != Type::U32
+                    || d.len.is_none() =>
+            {
+                let m = format!("{what} of {}, which is not a private array of u32 words", d.name);
+                self.problem(None, m);
+            }
+            Some(_) => {}
         }
     }
     fn uses(&mut self, at: Option<ValueId>, v: ValueId) {
@@ -935,6 +967,12 @@ impl Checker<'_> {
         }
         if matches!(def.op, Op::Unary(Unary::Derivative(..), _)) && self.stage != Stage::Pixel {
             self.problem(Some(v), "a derivative outside a pixel program");
+        }
+        if let Op::ReportHit { attributes, .. } = def.op {
+            if self.stage != Stage::Intersection {
+                self.problem(Some(v), "a reported hit outside an intersection program");
+            }
+            self.handed(attributes, "a reported hit");
         }
         let (stage, patch) = (self.stage, self.patch);
         let wrong = match &def.op {
@@ -1180,6 +1218,65 @@ impl Checker<'_> {
                     Some(_) => {}
                 }
             }
+            Node::TraceRay { .. }
+                if !matches!(self.stage, Stage::RayGeneration | Stage::ClosestHit | Stage::Miss) =>
+            {
+                self.problem(
+                    None,
+                    "a traced ray outside a ray generation, closest-hit or miss program",
+                );
+            }
+            Node::TraceRay { scene, ray, payload } => {
+                for v in scene.index.into_iter().chain(ray.values()) {
+                    self.uses(None, v);
+                }
+                match self.interface.resource(scene.id).map(|r| &r.kind) {
+                    Some(ResourceKind::AccelerationStructure) => {}
+                    _ => self.problem(
+                        None,
+                        format!(
+                            "a ray traced into resource {}, not an acceleration structure",
+                            scene.id.0
+                        ),
+                    ),
+                }
+                let vec3 = Type::vector(Scalar::F32, 3);
+                let wanted = [
+                    (ray.flags, Type::U32, "flags"),
+                    (ray.mask, Type::U32, "instance mask"),
+                    (ray.hit_group_offset, Type::U32, "hit group offset"),
+                    (ray.hit_group_stride, Type::U32, "hit group stride"),
+                    (ray.miss_index, Type::U32, "miss index"),
+                    (ray.origin, vec3, "origin"),
+                    (ray.t_min, Type::F32, "least distance"),
+                    (ray.direction, vec3, "direction"),
+                    (ray.t_max, Type::F32, "greatest distance"),
+                ];
+                for (v, t, what) in wanted {
+                    if self.ty(v) != Some(t) {
+                        self.problem(Some(v), format!("a ray's {what} that is not a {t}"));
+                    }
+                }
+                self.handed(*payload, "a traced ray's payload");
+            }
+            Node::CallShader { .. }
+                if !matches!(
+                    self.stage,
+                    Stage::RayGeneration | Stage::ClosestHit | Stage::Miss | Stage::Callable
+                ) =>
+            {
+                self.problem(
+                    None,
+                    "a shader call outside a ray generation, closest-hit, miss or callable program",
+                );
+            }
+            Node::CallShader { index, parameter } => {
+                self.uses(None, *index);
+                if self.ty(*index) != Some(Type::U32) {
+                    self.problem(Some(*index), "a shader call of an index that is not a u32");
+                }
+                self.handed(*parameter, "a shader call's parameter");
+            }
             Node::SetMeshCounts { .. } | Node::StoreVertex { .. } | Node::StoreIndices { .. }
                 if self.stage != Stage::Mesh =>
             {
@@ -1409,7 +1506,12 @@ impl Checker<'_> {
             Some(End::Kill) if self.stage != Stage::Pixel => {
                 self.problem(None, "a kill outside a pixel program")
             }
-            Some(End::Return | End::Kill | End::Unreachable) => {}
+            Some(End::IgnoreHit | End::AcceptHitAndEndSearch) if self.stage != Stage::AnyHit => {
+                self.problem(None, "a hit decided outside an any-hit program")
+            }
+            Some(
+                End::Return | End::Kill | End::IgnoreHit | End::AcceptHitAndEndSearch | End::Unreachable,
+            ) => {}
         }
     }
     fn cfg(&mut self, blocks: &[Block]) {
@@ -1515,6 +1617,9 @@ impl Checker<'_> {
                 }
                 Terminator::Kill if self.stage != Stage::Pixel => {
                     self.problem(None, "a kill outside a pixel program");
+                }
+                Terminator::IgnoreHit | Terminator::AcceptHitAndEndSearch if self.stage != Stage::AnyHit => {
+                    self.problem(None, "a hit decided outside an any-hit program");
                 }
                 _ => {}
             }
@@ -1666,6 +1771,38 @@ fn check_function(p: &Program, f: &Function, patch: bool, problems: &mut Vec<Pro
                 Some(_) => {}
             }
         }
+        if matches!(v.space, crate::Space::RayPayload | crate::Space::HitAttributes) {
+            let (payload, attributes) = match &p.interface.facts {
+                StageFacts::RayTracing(r) => (r.payload, r.attributes),
+                _ => (0, 0),
+            };
+            let (what, bytes, stages): (&str, u32, &[Stage]) = if v.space == crate::Space::RayPayload {
+                (
+                    "ray payload",
+                    payload,
+                    &[Stage::AnyHit, Stage::ClosestHit, Stage::Miss, Stage::Callable],
+                )
+            } else {
+                ("hit attributes", attributes, &[Stage::AnyHit, Stage::ClosestHit])
+            };
+            let others = f.vars.iter().filter(|w| w.space == v.space).count();
+            if !stages.contains(&p.stage) {
+                c.problem(None, format!("{what} {} in a {:?} program", v.name, p.stage));
+            } else if others > 1 {
+                c.problem(None, format!("{others} variables of {what}"));
+            } else if v.ty != Type::U32 || v.len != Some(bytes.div_ceil(4)) || bytes == 0 {
+                c.problem(
+                    None,
+                    format!(
+                        "{what} {} is not the {} u32 words of the {bytes} bytes the facts state",
+                        v.name,
+                        bytes.div_ceil(4)
+                    ),
+                );
+            } else if !v.init.is_empty() {
+                c.problem(None, format!("{what} {} has a start of its own", v.name));
+            }
+        }
         if !v.init.is_empty() && v.init.len() != v.len.map_or(1, |n| n as usize) {
             c.problem(
                 None,
@@ -1681,7 +1818,14 @@ fn check_function(p: &Program, f: &Function, patch: bool, problems: &mut Vec<Pro
             c.region(r, None);
             if !matches!(
                 r.end,
-                Some(End::Return | End::Kill | End::Unreachable | End::Yield(_))
+                Some(
+                    End::Return
+                        | End::Kill
+                        | End::IgnoreHit
+                        | End::AcceptHitAndEndSearch
+                        | End::Unreachable
+                        | End::Yield(_)
+                )
             ) {
                 c.problem(None, "the body ends in an exit to a construct it is not in");
             }

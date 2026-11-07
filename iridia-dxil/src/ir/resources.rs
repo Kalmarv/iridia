@@ -91,6 +91,14 @@ impl Lift<'_> {
                     v = *args.get(1)?;
                     continue;
                 }
+                // a library's handle is made from the value of the resource's global
+                160 => self
+                    .setup
+                    .resource_of_variable(crate::lift::setup::variable_loaded(
+                        self.m,
+                        self.f,
+                        *args.get(1)?,
+                    )?),
                 218 => self.setup.heap.get(&v).copied(),
                 _ => None,
             };
@@ -183,7 +191,7 @@ impl Lift<'_> {
     }
 
     /// The id of interface resource `i`.
-    fn resource_id(&self, i: usize) -> Result<ResourceId> {
+    pub(crate) fn resource_id(&self, i: usize) -> Result<ResourceId> {
         match self.setup.interface.resources.get(i) {
             Some(r) => Ok(r.id),
             None => self.refuse(format!(
@@ -278,6 +286,14 @@ impl Lift<'_> {
                 let handle = self.get(self.arg(args, 1)?)?;
                 if !matches!(handle, Lv::Handle(_)) {
                     return self.refuse("an annotation of something that is not a handle");
+                }
+                handle
+            }
+            // CreateHandleForLib(the value of a library's resource global): the resource's handle
+            160 => {
+                let handle = self.get(self.arg(args, 1)?)?;
+                if !matches!(handle, Lv::Handle(_)) {
+                    return self.refuse("a handle made from something that is not a resource of the library");
                 }
                 handle
             }

@@ -199,7 +199,8 @@ fn barrier(b: &Barrier) -> String {
 }
 
 /// A variable's declaration after `var `: `name: T`, an array `name: [T; n]`, in workgroup memory `... workgroup`, a
-/// task payload `... payload`, with a start `... = {T(..), ...}`.
+/// task payload `... payload`, a ray's payload `... raypayload`, a hit's attributes `... attributes`, with a start
+/// `... = {T(..), ...}`.
 fn declaration(out: &mut String, v: &Var) {
     let _ = match v.len {
         None => write!(out, "{}: {}", v.name, v.ty),
@@ -209,6 +210,8 @@ fn declaration(out: &mut String, v: &Var) {
         Space::Private => {}
         Space::Workgroup => out.push_str(" workgroup"),
         Space::Payload => out.push_str(" payload"),
+        Space::RayPayload => out.push_str(" raypayload"),
+        Space::HitAttributes => out.push_str(" attributes"),
     }
     if !v.init.is_empty() {
         out.push_str(" = {");
@@ -254,6 +257,13 @@ fn op(out: &mut String, f: &Function, ty: Type, o: &Op) {
         ),
         Op::Bitcast(a) => write!(out, "bitcast %{}", a.0),
         Op::LoadInput(slot, mask) => write!(out, "input {slot}.{}", lanes(*mask)),
+        Op::ReportHit { t, kind, attributes } => write!(
+            out,
+            "reporthit %{} kind %{} attributes {}",
+            t.0,
+            kind.0,
+            var_name(f, *attributes)
+        ),
         Op::LoadVar(v) => match f.vars.get(v.0 as usize) {
             Some(var) => write!(out, "load {}", var.name),
             None => write!(out, "load ?{}", v.0),
@@ -453,6 +463,8 @@ impl Printer<'_> {
             }
             Some(End::Return) => o.push_str("return"),
             Some(End::Kill) => o.push_str("kill"),
+            Some(End::IgnoreHit) => o.push_str("ignorehit"),
+            Some(End::AcceptHitAndEndSearch) => o.push_str("accepthit"),
             Some(End::Unreachable) => o.push_str("unreachable"),
         }
         let trimmed = o.trim_end().len();
@@ -561,6 +573,38 @@ impl Printer<'_> {
                     .get(payload.0 as usize)
                     .map_or("?", |d| d.name.as_str());
                 let _ = writeln!(self.out, "dispatch mesh %{}, {name}", groups.0);
+            }
+            Node::TraceRay { scene, ray, payload } => {
+                self.indent();
+                let name = self
+                    .f
+                    .vars
+                    .get(payload.0 as usize)
+                    .map_or("?", |d| d.name.as_str());
+                let _ = writeln!(
+                    self.out,
+                    "trace ray {} flags %{} mask %{} offset %{} stride %{} miss %{} origin %{} tmin %{} \
+                     direction %{} tmax %{} payload {name}",
+                    res(scene),
+                    ray.flags.0,
+                    ray.mask.0,
+                    ray.hit_group_offset.0,
+                    ray.hit_group_stride.0,
+                    ray.miss_index.0,
+                    ray.origin.0,
+                    ray.t_min.0,
+                    ray.direction.0,
+                    ray.t_max.0
+                );
+            }
+            Node::CallShader { index, parameter } => {
+                self.indent();
+                let name = self
+                    .f
+                    .vars
+                    .get(parameter.0 as usize)
+                    .map_or("?", |d| d.name.as_str());
+                let _ = writeln!(self.out, "call shader %{} parameter {name}", index.0);
             }
             Node::Switch {
                 label,
@@ -682,6 +726,8 @@ pub fn print(f: &Function) -> String {
                     }
                     Terminator::Return => p.out.push_str("return"),
                     Terminator::Kill => p.out.push_str("kill"),
+                    Terminator::IgnoreHit => p.out.push_str("ignorehit"),
+                    Terminator::AcceptHitAndEndSearch => p.out.push_str("accepthit"),
                     Terminator::Unreachable => p.out.push_str("unreachable"),
                 }
                 p.out.push('\n');

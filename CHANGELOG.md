@@ -5,6 +5,24 @@
 - `iridia-coverage`: the table names the dx readers' versions as the build takes them (from `Cargo.lock`, where it
   named 0.5.0 after 0.11.0 came in), and every row has a format: a vkd3d run with no program (the compiler refused
   every shader) its runner's, an offload test with no program DXIL's (the suite is read for DirectX with DXC).
+- `iridia-ir`: the ray tracing pipeline's programs. `Space::RayPayload` (the payload of the ray a hit or miss program
+  runs for, or a callable program's parameter, read and written) and `Space::HitAttributes` (the hit's attributes, read
+  alone), each laid out as Direct3D lays out the structure and as many words as `RayTracingFacts::payload` and
+  `RayTracingFacts::attributes` state (at most `MAX_RAY_PAYLOAD` and `MAX_HIT_ATTRIBUTES`, 32 bytes);
+  `Node::TraceRay` (the acceleration structure, a `Ray` of the call's nine operands and the payload's variable),
+  `Node::CallShader`, `Op::ReportHit` (whether the hit was accepted), and `End::IgnoreHit` and
+  `End::AcceptHitAndEndSearch` (and `Terminator`'s), an any-hit program's ends. The text form is
+  `trace ray r0 flags %f ... payload name`, `call shader %i parameter name`, `reporthit %t kind %k attributes name`,
+  `ignorehit` and `accepthit`; the validator holds each operation to the stages Direct3D allows it in. Breaking:
+  `RayTracingFacts` has the fields `payload` and `attributes`, and `Space`, `Node`, `End`, `Terminator` and `Op` have
+  new variants. `iridia-exec` runs them on the IR (a function's pointer arguments fill the variables of those spaces;
+  `Executable::pointer_words` gives a pointer argument's words) and `Pipeline::from_ir` builds a pipeline of IR
+  programs. `iridia-naga` refuses them by name.
+- `iridia-dxil::ir` lifts the programs of a ray tracing library of one export: the payload and attributes parameters,
+  the ray's system values, `TraceRay`, `ReportHit`, `CallShader`, `IgnoreHit` and `AcceptHitAndEndSearch`, a library's
+  resources (`CreateHandleForLib` of a resource global), and vectors in memory laid out in bytes. Both lifts of
+  `ray_tracing.hlsl`'s pipeline draw what WARP draws, bit for bit alike, and the Elden Ring corpus's 4,281 ray tracing
+  programs, which the IR refused before, lift and agree with the naga lift.
 
 ## 0.6.0 (2026-11-07)
 

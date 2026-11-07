@@ -209,6 +209,7 @@ fn op_name(op: &Op) -> &'static str {
         Op::Query(..) => "a resource query",
         Op::Atomic { .. } => "an atomic",
         Op::Counter(..) => "a buffer counter",
+        Op::ReportHit { .. } => "a reported hit",
         Op::Wave(_) => "a wave operation",
         _ => "the operation",
     }
@@ -873,6 +874,7 @@ impl Machine<'_, '_> {
             | Op::Query(..)
             | Op::Atomic { .. }
             | Op::Counter(..)
+            | Op::ReportHit { .. }
             | Op::Wave(_) => {
                 return Err(format!("{} is not run here: iridia-exec runs it", op_name(op)).into());
             }
@@ -1026,6 +1028,9 @@ impl Machine<'_, '_> {
             | Node::DispatchMesh { .. } => {
                 return Err("a buffer, image or patch store, a barrier, a vertex emit, a meshlet store or a mesh launch is not run here: iridia-exec runs it".into());
             }
+            Node::TraceRay { .. } | Node::CallShader { .. } => {
+                return Err("a traced ray or a shader call is not run here: iridia-exec's ray tracing pipeline runs it".into());
+            }
             Node::Demote => self.demoted = true,
             Node::StoreOutput(..) if self.demoted => {}
             Node::StoreOutput(slot, mask, x) => {
@@ -1080,6 +1085,9 @@ impl Machine<'_, '_> {
                 }
                 Terminator::Return => return Ok(false),
                 Terminator::Kill => return Ok(true),
+                Terminator::IgnoreHit | Terminator::AcceptHitAndEndSearch => {
+                    return Err("an any-hit program's decision is not run here: iridia-exec runs it".into());
+                }
                 Terminator::Unreachable => {
                     return Err(format!("reached block {at}'s unreachable end").into());
                 }
@@ -1179,6 +1187,9 @@ impl Machine<'_, '_> {
             Some(End::Continue(l, vs)) => Exit::Continue(*l, vs.clone()),
             Some(End::Return) => Exit::Return,
             Some(End::Kill) => Exit::Kill,
+            Some(End::IgnoreHit | End::AcceptHitAndEndSearch) => {
+                return Err("an any-hit program's decision is not run here: iridia-exec runs it".into());
+            }
             Some(End::Unreachable) => return Err("reached an unreachable end".into()),
             None => return Err("a region with no end".into()),
         })

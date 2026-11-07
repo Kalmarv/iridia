@@ -848,7 +848,13 @@ pub fn reflection(chunks: &[Chunk<'_>], program: &Module, named: Option<&Module>
                 Some(data) => subobjects(data)?,
                 None => Vec::new(),
             };
-            StageFacts::RayTracing(iridia::RayTracingFacts { export, subobjects })
+            // the bytes of the payload and attributes the entry point states (`Interface::verify` bounds them)
+            StageFacts::RayTracing(iridia::RayTracingFacts {
+                export,
+                payload: records::ray_payload_size(program).map_err(read)?.unwrap_or(0),
+                attributes: records::ray_attribute_size(program).map_err(read)?.unwrap_or(0),
+                subobjects,
+            })
         }
         _ => StageFacts::None,
     };

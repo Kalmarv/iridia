@@ -45,8 +45,8 @@ pub const VERSION: u32 = 2;
 
 pub use builder::Builder;
 pub use func::{
-    Block, Body, Case, End, Function, Node, Origin, Precision, Region, Space, Target, Terminator, ValueDef,
-    Var,
+    Block, Body, Case, End, Function, Node, Origin, Precision, Ray, Region, Space, Target, Terminator,
+    ValueDef, Var,
 };
 pub use op::{
     Address, AtomicOp, Axis, Barrier, Binary, Builtin, Cmp, CounterOp, Fineness, FloatToInt, GatherOffset,

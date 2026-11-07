@@ -48,6 +48,13 @@ pub enum Space {
     /// laid out as Direct3D lays out the payload's structure (as C does: each field at its natural alignment, a bool
     /// four bytes). `u32` elements, read alone.
     Payload,
+    /// The payload of the ray a hit or miss program runs for, or a callable program's parameter: the words the caller
+    /// (`TraceRay`, `CallShader`) hands over, laid out as Direct3D lays out the structure (as [`Space::Payload`] is).
+    /// `u32` elements, read and written; what they hold when the program returns is the caller's.
+    RayPayload,
+    /// The attributes of the hit an any-hit or closest-hit program runs for (a triangle's barycentrics, what an
+    /// intersection program reported), laid out as [`Space::RayPayload`] is. `u32` elements, read alone.
+    HitAttributes,
 }
 
 /// A variable: a source register until `promote` turns its loads and stores into values, or an array (a source's
@@ -166,6 +173,25 @@ pub enum Node {
         /// The task payload: `u32` elements, as many as the facts' payload bytes fill.
         payload: VarId,
     },
+    /// A ray tracing program traces a ray into an acceleration structure (Direct3D's `TraceRay`): the pipeline runs the
+    /// programs the ray's hits and misses select, which read and write the payload; the variable holds what they left
+    /// when it returns.
+    TraceRay {
+        /// The acceleration structure.
+        scene: Res,
+        /// The ray.
+        ray: Ray,
+        /// The payload: `u32` elements laid out as [`Space::RayPayload`] is.
+        payload: VarId,
+    },
+    /// A ray tracing program runs the callable program the shader table's index selects (Direct3D's `CallShader`),
+    /// which reads and writes the parameter.
+    CallShader {
+        /// The shader table index (`u32`).
+        index: ValueId,
+        /// The parameter: `u32` elements laid out as [`Space::RayPayload`] is.
+        parameter: VarId,
+    },
     /// A multi-way choice on an integer (`u32` or `i32`, by its bits): the case whose values hold it, else the default.
     /// Each region ends in a yield of the results' values or an exit; none falls into the next.
     Switch {
@@ -215,6 +241,61 @@ pub enum Node {
     },
 }
 
+/// The ray a `TraceRay` traces: what Direct3D's call takes besides the acceleration structure and the payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct Ray {
+    /// The ray flags (`u32`, `RAY_FLAG_*`).
+    pub flags: ValueId,
+    /// The instance inclusion mask (`u32`, its low 8 bits).
+    pub mask: ValueId,
+    /// The offset of the ray's hit groups in the shader table (`u32`).
+    pub hit_group_offset: ValueId,
+    /// The stride between the hit groups of a bottom level's geometries (`u32`).
+    pub hit_group_stride: ValueId,
+    /// The miss program's index (`u32`).
+    pub miss_index: ValueId,
+    /// The origin (`vec3<f32>`).
+    pub origin: ValueId,
+    /// The least distance along the ray a hit counts at (`f32`).
+    pub t_min: ValueId,
+    /// The direction (`vec3<f32>`).
+    pub direction: ValueId,
+    /// The greatest distance (`f32`).
+    pub t_max: ValueId,
+}
+
+impl Ray {
+    /// The values, in Direct3D's order.
+    pub fn values(&self) -> [ValueId; 9] {
+        [
+            self.flags,
+            self.mask,
+            self.hit_group_offset,
+            self.hit_group_stride,
+            self.miss_index,
+            self.origin,
+            self.t_min,
+            self.direction,
+            self.t_max,
+        ]
+    }
+
+    /// The values, in Direct3D's order, to change.
+    pub fn values_mut(&mut self) -> [&mut ValueId; 9] {
+        [
+            &mut self.flags,
+            &mut self.mask,
+            &mut self.hit_group_offset,
+            &mut self.hit_group_stride,
+            &mut self.miss_index,
+            &mut self.origin,
+            &mut self.t_min,
+            &mut self.direction,
+            &mut self.t_max,
+        ]
+    }
+}
+
 impl Node {
     /// The values the node itself reads (a construct's condition, selector or initial values; not its regions').
     pub fn values(&self) -> Vec<ValueId> {
@@ -231,6 +312,8 @@ impl Node {
             Node::StoreVertex { vertex, value, .. } => alloc::vec![*vertex, *value],
             Node::StoreIndices { primitive, indices } => alloc::vec![*primitive, *indices],
             Node::DispatchMesh { groups, .. } => alloc::vec![*groups],
+            Node::TraceRay { scene, ray, .. } => scene.index.into_iter().chain(ray.values()).collect(),
+            Node::CallShader { index, .. } => alloc::vec![*index],
             Node::StoreBuffer {
                 resource,
                 address,
@@ -265,6 +348,10 @@ impl Node {
             Node::StoreVertex { vertex, value, .. } => alloc::vec![vertex, value],
             Node::StoreIndices { primitive, indices } => alloc::vec![primitive, indices],
             Node::DispatchMesh { groups, .. } => alloc::vec![groups],
+            Node::TraceRay { scene, ray, .. } => {
+                scene.index.as_mut().into_iter().chain(ray.values_mut()).collect()
+            }
+            Node::CallShader { index, .. } => alloc::vec![index],
             Node::StoreBuffer {
                 resource,
                 address,
@@ -291,9 +378,9 @@ impl Node {
         match self {
             Node::StoreVar(var, _)
             | Node::StoreElement(var, ..)
-            | Node::DispatchMesh { payload: var, .. } => {
-                alloc::vec![var]
-            }
+            | Node::DispatchMesh { payload: var, .. }
+            | Node::TraceRay { payload: var, .. }
+            | Node::CallShader { parameter: var, .. } => alloc::vec![var],
             _ => Vec::new(),
         }
     }
@@ -311,6 +398,8 @@ impl Node {
                 | Node::StoreVertex { .. }
                 | Node::StoreIndices { .. }
                 | Node::DispatchMesh { .. }
+                | Node::TraceRay { .. }
+                | Node::CallShader { .. }
         )
     }
 
@@ -365,6 +454,12 @@ pub enum End {
     Return,
     /// Discards the invocation and ends it: [`Node::Demote`] then `Return`.
     Kill,
+    /// An any-hit program ignores the candidate hit and ends (Direct3D's `IgnoreHit`): the ray goes on as though the
+    /// hit had not been met.
+    IgnoreHit,
+    /// An any-hit program accepts the candidate hit, ends, and ends the ray's search (Direct3D's
+    /// `AcceptHitAndEndSearch`): the closest hit so far is the ray's.
+    AcceptHitAndEndSearch,
     /// Cannot be reached.
     Unreachable,
 }
@@ -414,6 +509,10 @@ pub enum Terminator {
     Return,
     /// Discards the invocation.
     Kill,
+    /// Ignores the candidate hit, as [`End::IgnoreHit`].
+    IgnoreHit,
+    /// Accepts the candidate hit and ends the search, as [`End::AcceptHitAndEndSearch`].
+    AcceptHitAndEndSearch,
     /// Cannot be reached.
     Unreachable,
 }
@@ -429,7 +528,11 @@ impl Terminator {
                 .map(|(_, t)| t)
                 .chain(core::iter::once(default))
                 .collect(),
-            Terminator::Return | Terminator::Kill | Terminator::Unreachable => Vec::new(),
+            Terminator::Return
+            | Terminator::Kill
+            | Terminator::IgnoreHit
+            | Terminator::AcceptHitAndEndSearch
+            | Terminator::Unreachable => Vec::new(),
         }
     }
     /// The targets, in order, to change.
@@ -442,7 +545,11 @@ impl Terminator {
                 .map(|(_, t)| t)
                 .chain(core::iter::once(default))
                 .collect(),
-            Terminator::Return | Terminator::Kill | Terminator::Unreachable => Vec::new(),
+            Terminator::Return
+            | Terminator::Kill
+            | Terminator::IgnoreHit
+            | Terminator::AcceptHitAndEndSearch
+            | Terminator::Unreachable => Vec::new(),
         }
     }
 }

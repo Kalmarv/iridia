@@ -3,7 +3,9 @@
 //! `ray_tracing.hlsl` form a state object (a triangle hit group with any-hit and closest-hit programs, a procedural one
 //! with intersection, any-hit and closest-hit programs), the raygen program traces one ray per image pixel through the
 //! same scene on both, and the images are compared texel by texel (to a relative 1e-4: the arithmetic of the programs is
-//! the same, the traversal and its rounding are each implementation's own).
+//! the same, the traversal and its rounding are each implementation's own). The programs are lifted twice, by the
+//! naga-path lift and onto the IR ([`iridia_dxil::ir`], run by [`Pipeline::from_ir`]); the IR's images are the
+//! naga path's, bit for bit, as well as WARP's.
 //!
 //! Needs the WARP oracle program with the `d3d12rtp` case form (the configured `Tool::Warp`) and the scratch folder.
 mod inputs;
@@ -31,10 +33,25 @@ fn fixture(export: &str, variant: &str) -> PathBuf {
         .join(format!("ray_tracing.{export}{variant}.dxil"))
 }
 
-fn pipeline(variant: &str) -> Pipeline {
-    let programs = PROGRAMS
-        .map(|n| lift(&std::fs::read(fixture(n, variant)).unwrap()).unwrap())
-        .to_vec();
+/// Which lift a pipeline's programs come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Lifter {
+    /// The naga-path lift, [`iridia_dxil::lift`].
+    Naga,
+    /// The IR's, [`iridia_dxil::ir::lift`], structured as the executor takes it.
+    Ir,
+}
+
+/// A program lifted onto the IR and structured as the executor takes it.
+fn on_ir(bytes: &[u8]) -> iridia_ir::Program {
+    let mut p = iridia_dxil::ir::lift(bytes).unwrap();
+    iridia_passes::structurize(&mut p.entry).unwrap();
+    iridia_passes::break_flags(&mut p.entry).unwrap();
+    p
+}
+
+fn pipeline(variant: &str, lifter: Lifter) -> Pipeline {
+    let bytes = PROGRAMS.map(|n| std::fs::read(fixture(n, variant)).unwrap());
     let group = |name: &str, kind, intersection: Option<&str>| HitGroup {
         name: name.to_owned(),
         kind,
@@ -42,14 +59,15 @@ fn pipeline(variant: &str) -> Pipeline {
         closest_hit: Some("closest_hit".to_owned()),
         intersection: intersection.map(str::to_owned),
     };
-    Pipeline::new(
-        programs,
-        ShaderTable {
-            miss: vec!["miss".to_owned()],
-            hit_groups: vec!["triangles".to_owned(), "procedural".to_owned()],
-            callable: vec!["callable".to_owned()],
-        },
-    )
+    let table = ShaderTable {
+        miss: vec!["miss".to_owned()],
+        hit_groups: vec!["triangles".to_owned(), "procedural".to_owned()],
+        callable: vec!["callable".to_owned()],
+    };
+    match lifter {
+        Lifter::Naga => Pipeline::new(bytes.iter().map(|b| lift(b).unwrap()).collect(), table),
+        Lifter::Ir => Pipeline::from_ir(bytes.iter().map(|b| on_ir(b)).collect(), table),
+    }
     .unwrap()
     // the fixtures' libraries state no pipeline config; the oracle's state object declares 2
     .with_max_recursion(2)
@@ -296,7 +314,7 @@ fn pipelines_agree_with_warp() {
     let scratch = own_scratch("warp");
     let (mut compared, mut hits, mut mismatches) = (0, 0, Vec::new());
     for variant in ["", ".od"] {
-        let pipeline = pipeline(variant);
+        let pipelines = [Lifter::Naga, Lifter::Ir].map(|l| (l, pipeline(variant, l)));
         let mut text = String::new();
         let mut ours = BTreeMap::new();
         for (name, dims, scene) in scenes() {
@@ -306,11 +324,25 @@ fn pipelines_agree_with_warp() {
                 constants: BTreeMap::new(),
                 scene,
             };
-            let mut image = Image::default();
-            pipeline
-                .dispatch_rays("raygen", dims, &resources, &mut image)
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
-            ours.insert(name, (dims, image));
+            for (lifter, pipeline) in &pipelines {
+                let mut image = Image::default();
+                pipeline
+                    .dispatch_rays("raygen", dims, &resources, &mut image)
+                    .unwrap_or_else(|e| panic!("{name} ({lifter:?}): {e}"));
+                ours.insert((name.clone(), *lifter), (dims, image));
+            }
+            // the IR's image is the naga path's, bit for bit
+            let bits = |l: Lifter| -> Vec<((u32, u32), [u32; 4])> {
+                ours[&(name.clone(), l)]
+                    .1
+                    .texels
+                    .iter()
+                    .map(|(at, t)| (*at, t.map(f32::to_bits)))
+                    .collect()
+            };
+            if bits(Lifter::Naga) != bits(Lifter::Ir) {
+                mismatches.push(format!("{name}: the IR's image is not the naga path's"));
+            }
         }
         let cases = scratch.join(format!("pipeline{}.cases.txt", variant.replace('.', "_")));
         let out = scratch.join(format!("pipeline{}.warp.jsonl", variant.replace('.', "_")));
@@ -340,22 +372,24 @@ fn pipelines_agree_with_warp() {
                 .iter()
                 .map(|w| f32::from_bits(u32::from_str_radix(w.as_str().unwrap(), 16).unwrap()))
                 .collect();
-            let (dims, image) = &ours[&name];
-            for y in 0..dims[1] {
-                for x in 0..dims[0] {
-                    let mine = image.texels[&(x, y)];
-                    let their = &theirs[((y * dims[0] + x) * 4) as usize..][..4];
-                    compared += 1;
-                    if mine[3] >= 0.0 {
-                        hits += 1;
-                    }
-                    let same = (0..4).all(|k| {
-                        (mine[k] - their[k]).abs() <= 1e-4 * mine[k].abs().max(their[k].abs()).max(1.0)
-                    });
-                    if !same {
-                        mismatches.push(format!(
-                            "{name} pixel ({x}, {y}): executor {mine:?}, WARP {their:?}"
-                        ));
+            for lifter in [Lifter::Naga, Lifter::Ir] {
+                let (dims, image) = &ours[&(name.clone(), lifter)];
+                for y in 0..dims[1] {
+                    for x in 0..dims[0] {
+                        let mine = image.texels[&(x, y)];
+                        let their = &theirs[((y * dims[0] + x) * 4) as usize..][..4];
+                        compared += 1;
+                        if mine[3] >= 0.0 {
+                            hits += 1;
+                        }
+                        let same = (0..4).all(|k| {
+                            (mine[k] - their[k]).abs() <= 1e-4 * mine[k].abs().max(their[k].abs()).max(1.0)
+                        });
+                        if !same {
+                            mismatches.push(format!(
+                                "{name} pixel ({x}, {y}): executor ({lifter:?}) {mine:?}, WARP {their:?}"
+                            ));
+                        }
                     }
                 }
             }

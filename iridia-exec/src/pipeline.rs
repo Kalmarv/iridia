@@ -2,9 +2,10 @@
 //! traverses the acceleration structure the caller supplies, running the hit group's any-hit and intersection programs
 //! for the candidates the ray meets, the closest-hit program for the hit it keeps and the miss program when it has none;
 //! a callable program runs for `CallShader`. The programs are the function-form [`Program`]s of a ray tracing library
-//! (see [`iridia::stage_functions`]), run one invocation at a time with [`Executable::function`]; their payloads,
-//! attributes and parameters are passed by value in and out, which is what a pointer to a structure of function memory
-//! is when nothing else touches it.
+//! (see [`iridia::stage_functions`]), run one invocation at a time with [`Executable::function`], or the same programs
+//! on the IR ([`Pipeline::from_ir`], [`Executable::function_from_ir`]); their payloads, attributes and parameters are
+//! passed by value in and out, which is what a pointer to a structure of function memory is when nothing else touches
+//! it. The words they are passed as are the lift's: one lift's programs make a pipeline.
 //!
 //! What a library states (its hit groups: which programs make a group, of triangles or of procedural primitives) comes
 //! from its subobjects ([`iridia::Subobject`]). What the application states, the shader table, is the caller's: which
@@ -24,8 +25,8 @@ use super::{
 };
 use crate::Sampler;
 use iridia::{
-    BufferKind, D3dClass, FunctionSig, HitGroup, IoType, Program, ResourceId, ResourceKind, StageFacts,
-    StorageTarget, Subobject, SystemValue, stage_functions,
+    BufferKind, D3dClass, FunctionSig, HitGroup, Interface, IoType, Program, ResourceId, ResourceKind,
+    StageFacts, StorageTarget, Subobject, SystemValue, stage_functions,
 };
 
 /// The pipeline flags the pipeline runs: they are added to the flags of every `TraceRay`, as the specification says of
@@ -69,7 +70,7 @@ pub struct DispatchStats {
 /// A program ready to run, with the register view its resources have.
 #[derive(Debug)]
 struct Entry {
-    program: Program,
+    interface: Interface,
     executable: Executable,
     signature: FunctionSig,
     /// The bind slot of each resource (its register), the kind of each buffer.
@@ -90,6 +91,14 @@ pub struct Pipeline {
     config_flags: u32,
 }
 
+/// The export a ray tracing program's facts name, for an error about it.
+fn export_of(interface: &Interface) -> String {
+    match &interface.facts {
+        StageFacts::RayTracing(facts) => facts.export.clone(),
+        _ => format!("a {:?} program", interface.stage),
+    }
+}
+
 impl Pipeline {
     /// A pipeline of `programs` (each a ray tracing program, named by its export), the hit groups the programs'
     /// libraries state, and `table`. The pipeline's maximum recursion depth is the one a library's pipeline config
@@ -97,15 +106,41 @@ impl Pipeline {
     /// without one is refused (the DXR specification: "A raytracing pipeline needs one raytracing pipeline
     /// configuration", section "D3D12_RAYTRACING_PIPELINE_CONFIG").
     pub fn new(programs: Vec<Program>, table: ShaderTable) -> Result<Self, String> {
+        let compiled = programs
+            .into_iter()
+            .map(|program| {
+                let executable = Executable::function(&program, "main")
+                    .map_err(|e| format!("{}: {e}", export_of(&program.interface)))?;
+                Ok((program.interface, executable))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Self::assemble(compiled, table)
+    }
+
+    /// [`Pipeline::new`] of the same programs on the IR: each run as [`Executable::function_from_ir`] compiles it.
+    pub fn from_ir(programs: Vec<iridia_ir::Program>, table: ShaderTable) -> Result<Self, String> {
+        let compiled = programs
+            .into_iter()
+            .map(|program| {
+                let executable = Executable::function_from_ir(&program, "main")
+                    .map_err(|e| format!("{}: {e}", export_of(&program.interface)))?;
+                Ok((program.interface, executable))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Self::assemble(compiled, table)
+    }
+
+    /// The pipeline of programs of these interfaces, compiled as these executables.
+    fn assemble(programs: Vec<(Interface, Executable)>, table: ShaderTable) -> Result<Self, String> {
         let mut entries = BTreeMap::new();
         let mut groups = BTreeMap::new();
         let mut max_recursion = None;
         let mut config_flags = None;
-        for program in programs {
-            let StageFacts::RayTracing(facts) = program.interface.facts.clone() else {
+        for (interface, executable) in programs {
+            let StageFacts::RayTracing(facts) = interface.facts.clone() else {
                 return Err(format!(
                     "a {:?} program is not a ray tracing program",
-                    program.stage
+                    interface.stage
                 ));
             };
             for sub in &facts.subobjects {
@@ -139,14 +174,12 @@ impl Pipeline {
                     _ => {}
                 }
             }
-            let signature = stage_functions(&program.interface)?
+            let signature = stage_functions(&interface)?
                 .and_then(|mut f| f.pop())
                 .ok_or("a ray tracing program without its function")?;
-            let executable =
-                Executable::function(&program, "main").map_err(|e| format!("{}: {e}", facts.export))?;
             let mut slots = BTreeMap::new();
             let mut buffers = BTreeMap::new();
-            for r in &program.interface.resources {
+            for r in &interface.resources {
                 let Some(binding) = r.provenance.d3d else {
                     return Err(format!("resource {} has no D3D bind slot", r.provenance.name));
                 };
@@ -163,7 +196,7 @@ impl Pipeline {
             entries.insert(
                 facts.export.clone(),
                 Entry {
-                    program,
+                    interface,
                     executable,
                     signature,
                     slots,
@@ -244,17 +277,17 @@ impl Pipeline {
             .programs
             .get(raygen)
             .ok_or_else(|| format!("no program {raygen}"))?;
-        if entry.program.stage != iridia::Stage::RayGeneration {
+        if entry.interface.stage != iridia::Stage::RayGeneration {
             return Err(format!(
                 "{raygen} is a {:?} program, not a ray generation program",
-                entry.program.stage
+                entry.interface.stage
             ));
         }
         let built = Arc::new(Built::new(&resources.scene)?);
         let mut bound = BTreeMap::new();
         for (name, entry) in &self.programs {
             let mut r = Resources::default();
-            for res in &entry.program.interface.resources {
+            for res in &entry.interface.resources {
                 let Some(binding) = res.provenance.d3d else {
                     continue;
                 };
@@ -390,7 +423,7 @@ impl<'p> Host<'p, '_> {
         {
             return Err("the programs call each other too deeply".into());
         }
-        let interface = &entry.program.interface;
+        let interface = &entry.interface;
         let mut registers: Vec<[u32; 4]> = Vec::new();
         let mut taken = 0;
         for item in &entry.signature.arguments {

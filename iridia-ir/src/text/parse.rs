@@ -14,7 +14,7 @@ use super::{SCHEMA, binary, builtin, ternary, unary};
 use crate::{
     Address, AtomicOp, Axis, Barrier, Binary, Block, Body, Builtin, Case, Cmp, CounterOp, End, Fineness,
     FloatToInt, Function, GatherOffset, LabelId, Level, Memory, MinMaxNan, MulZero, Node, OnZero, Op,
-    OutOfBounds, Precision, QuadSwap, Query, Region, Res, Rounding, SaturateNan, Scalar, Scope, Space,
+    OutOfBounds, Precision, QuadSwap, Query, Ray, Region, Res, Rounding, SaturateNan, Scalar, Scope, Space,
     Target, Terminator, Ternary, Type, Unary, ValueDef, ValueId, Var, VarId, Wave, WaveOp, WaveScan,
     interface::ResourceId,
 };
@@ -595,6 +595,18 @@ impl<'a> Parser<'a> {
             name if name.starts_with("query.") => self.query(name.trim_start_matches("query."), rest)?,
             name if name.starts_with("atomic.") => self.atomic(name.trim_start_matches("atomic."), rest)?,
             name if name.starts_with("wave.") => self.wave(name, rest)?,
+            "reporthit" => {
+                let (t, keys) = keywords(rest, &["kind", "attributes"]);
+                let found = |name: &str| keys.iter().find(|(k, _)| *k == name).map(|(_, x)| *x);
+                let (Some(kind), Some(attributes)) = (found("kind"), found("attributes")) else {
+                    return self.fail("a reported hit without its kind and attributes");
+                };
+                Op::ReportHit {
+                    t: self.value_id(t)?,
+                    kind: self.value_id(kind)?,
+                    attributes: self.var(attributes)?,
+                }
+            }
             "counter.increment" => Op::Counter(self.res(rest)?, CounterOp::Increment),
             "counter.decrement" => Op::Counter(self.res(rest)?, CounterOp::Decrement),
             "state" => Op::LoadState(self.resource(rest)?),
@@ -936,6 +948,53 @@ impl<'a> Parser<'a> {
                 payload: self.var(payload)?,
             }));
         }
+        if let Some(rest) = line.strip_prefix("trace ray ") {
+            let names = [
+                "flags",
+                "mask",
+                "offset",
+                "stride",
+                "miss",
+                "origin",
+                "tmin",
+                "direction",
+                "tmax",
+                "payload",
+            ];
+            let (scene, keys) = keywords(rest, &names);
+            let found = |name: &str| keys.iter().find(|(k, _)| *k == name).map(|(_, x)| *x);
+            let value = |name: &str| match found(name) {
+                Some(x) => self.value_id(x),
+                None => self.fail(format!("a ray without its {name}")),
+            };
+            let Some(payload) = found("payload") else {
+                return self.fail("a ray without its payload");
+            };
+            return Ok(Some(Node::TraceRay {
+                scene: self.res(scene)?,
+                ray: Ray {
+                    flags: value("flags")?,
+                    mask: value("mask")?,
+                    hit_group_offset: value("offset")?,
+                    hit_group_stride: value("stride")?,
+                    miss_index: value("miss")?,
+                    origin: value("origin")?,
+                    t_min: value("tmin")?,
+                    direction: value("direction")?,
+                    t_max: value("tmax")?,
+                },
+                payload: self.var(payload)?,
+            }));
+        }
+        if let Some(rest) = line.strip_prefix("call shader ") {
+            let Some((index, parameter)) = rest.split_once(" parameter ") else {
+                return self.fail("a shader call without its parameter");
+            };
+            return Ok(Some(Node::CallShader {
+                index: self.value_id(index)?,
+                parameter: self.var(parameter)?,
+            }));
+        }
         if let Some(rest) = line.strip_prefix("mesh counts ") {
             let Some((vertices, primitives)) = rest.split_once(", ") else {
                 return self.fail("mesh counts without both counts");
@@ -1017,6 +1076,8 @@ impl<'a> Parser<'a> {
             }
             "return" if rest.is_empty() => End::Return,
             "kill" if rest.is_empty() => End::Kill,
+            "ignorehit" if rest.is_empty() => End::IgnoreHit,
+            "accepthit" if rest.is_empty() => End::AcceptHitAndEndSearch,
             "unreachable" if rest.is_empty() => End::Unreachable,
             _ => return Ok(None),
         }))
@@ -1202,6 +1263,8 @@ impl<'a> Parser<'a> {
                 match line {
                     "return" => break Terminator::Return,
                     "kill" => break Terminator::Kill,
+                    "ignorehit" => break Terminator::IgnoreHit,
+                    "accepthit" => break Terminator::AcceptHitAndEndSearch,
                     "unreachable" => break Terminator::Unreachable,
                     _ => {}
                 }
@@ -1248,11 +1311,16 @@ pub fn parse(text: &str) -> core::result::Result<Function, TextError> {
             Some((t, init)) => (t, init.strip_suffix('}')),
             None => (t, None),
         };
-        let (t, space) = match (t.strip_suffix(" workgroup"), t.strip_suffix(" payload")) {
-            (Some(t), _) => (t, Space::Workgroup),
-            (_, Some(t)) => (t, Space::Payload),
-            _ => (t, Space::Private),
-        };
+        let suffixes = [
+            (" workgroup", Space::Workgroup),
+            (" payload", Space::Payload),
+            (" raypayload", Space::RayPayload),
+            (" attributes", Space::HitAttributes),
+        ];
+        let (t, space) = suffixes
+            .into_iter()
+            .find_map(|(suffix, space)| Some((t.strip_suffix(suffix)?, space)))
+            .unwrap_or((t, Space::Private));
         let (ty, len) = match t.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
             Some(inner) => {
                 let Some((t, n)) = inner.split_once("; ") else {

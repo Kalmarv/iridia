@@ -81,7 +81,7 @@ pub use state::{
 };
 pub use varying::{
     AmplificationFacts, D3dSignature, DomainFacts, GeometryFacts, GsInput, GsOutput, HitGroup, HitGroupKind,
-    HullFacts, Interface, InterpMode, InterpSampling, Interpolation, Label, MAX_TASK_PAYLOAD, MeshFacts,
-    MeshTopology, Partitioning, RayTracingFacts, ScalarType, StageFacts, Subobject, SystemValue, TessDomain,
-    TessTopology, Value, Varying, VaryingProvenance,
+    HullFacts, Interface, InterpMode, InterpSampling, Interpolation, Label, MAX_HIT_ATTRIBUTES,
+    MAX_RAY_PAYLOAD, MAX_TASK_PAYLOAD, MeshFacts, MeshTopology, Partitioning, RayTracingFacts, ScalarType,
+    StageFacts, Subobject, SystemValue, TessDomain, TessTopology, Value, Varying, VaryingProvenance,
 };

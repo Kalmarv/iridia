@@ -382,6 +382,8 @@ impl Build {
                 r.end = Some(match self.terms.get(*n) {
                     Some(Terminator::Return) => End::Return,
                     Some(Terminator::Kill) => End::Kill,
+                    Some(Terminator::IgnoreHit) => End::IgnoreHit,
+                    Some(Terminator::AcceptHitAndEndSearch) => End::AcceptHitAndEndSearch,
                     Some(Terminator::Unreachable) => End::Unreachable,
                     _ => return Err(format!("block {n} exits, and does not end the program")),
                 });
@@ -410,7 +412,11 @@ pub fn structurize(f: &mut Function) -> Result<(), String> {
                     Term::If(accept.block as usize, reject.block as usize)
                 }
                 t @ Terminator::Switch { .. } => Term::Switch(distinct(t)),
-                Terminator::Return | Terminator::Kill | Terminator::Unreachable => Term::Exit,
+                Terminator::Return
+                | Terminator::Kill
+                | Terminator::IgnoreHit
+                | Terminator::AcceptHitAndEndSearch
+                | Terminator::Unreachable => Term::Exit,
             })
             .collect(),
     };

@@ -184,6 +184,8 @@ impl Flat {
             }),
             Some(End::Return) => Terminator::Return,
             Some(End::Kill) => Terminator::Kill,
+            Some(End::IgnoreHit) => Terminator::IgnoreHit,
+            Some(End::AcceptHitAndEndSearch) => Terminator::AcceptHitAndEndSearch,
             Some(End::Unreachable) => Terminator::Unreachable,
             None => return Err("a region with no end".into()),
         };

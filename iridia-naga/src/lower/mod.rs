@@ -1601,6 +1601,9 @@ impl Lower<'_> {
                 compare,
             } => self.atomic(memory, op, value, compare, t)?,
             Op::Wave(w) => self.wave(w, t)?,
+            Op::ReportHit { .. } => {
+                return Err(err("an intersection program's reported hit is not lowered yet"));
+            }
             Op::Counter(r, op) => {
                 if r.index.is_some() {
                     return Err(err(
@@ -1914,6 +1917,9 @@ impl Lower<'_> {
                 self.statement(Statement::Kill)?;
                 self.ret()?;
             }
+            Some(End::IgnoreHit | End::AcceptHitAndEndSearch) => {
+                return Err(err("an any-hit program's decision is not lowered yet"));
+            }
             // naga takes the end of a function that returns a value as a return of none: the function's unreachable
             // end returns its outputs, which no invocation reaches
             Some(End::Unreachable) if matches!(yields, Yield::Top) => self.ret()?,
@@ -2071,6 +2077,9 @@ impl Lower<'_> {
             }
             Node::DispatchMesh { .. } => {
                 return Err(err("an amplification program's mesh launch is not lowered yet"));
+            }
+            Node::TraceRay { .. } | Node::CallShader { .. } => {
+                return Err(err("a traced ray or a shader call is not lowered yet"));
             }
             Node::If {
                 cond,

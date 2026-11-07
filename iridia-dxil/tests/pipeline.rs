@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 //! The ray tracing pipeline on the CPU, run on the lifted programs of `ray_tracing.hlsl` (raygen, miss, closest_hit,
-//! any_hit, intersection, callable) over scenes built here. The values are the arithmetic of the HLSL.
+//! any_hit, intersection, callable) over scenes built here, lifted by the naga-path lift and onto the IR
+//! ([`iridia_dxil::ir`], run by [`Pipeline::from_ir`]). The values are the arithmetic of the HLSL.
 use iridia::{HitGroup, HitGroupKind, Program};
 use iridia_dxil::lift;
 use iridia_exec::{Geometry, Instance, InstanceFlags, Pipeline, PipelineResources, Scene, ShaderTable};
@@ -8,29 +9,65 @@ use iridia_exec::{Sampler, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-fn program(export: &str, variant: &str) -> Program {
-    let bytes = std::fs::read(
+fn bytes(export: &str, variant: &str) -> Vec<u8> {
+    std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(format!("ray_tracing.{export}{variant}.dxil")),
     )
-    .unwrap();
-    lift(&bytes).unwrap_or_else(|e| panic!("{export}{variant}: {e}"))
+    .unwrap()
+}
+
+fn program(export: &str, variant: &str) -> Program {
+    lift(&bytes(export, variant)).unwrap_or_else(|e| panic!("{export}{variant}: {e}"))
+}
+
+/// A program lifted onto the IR and structured as the executor takes it.
+fn on_ir(export: &str, variant: &str) -> iridia_ir::Program {
+    let mut p =
+        iridia_dxil::ir::lift(&bytes(export, variant)).unwrap_or_else(|e| panic!("{export}{variant}: {e}"));
+    iridia_passes::structurize(&mut p.entry).unwrap();
+    iridia_passes::break_flags(&mut p.entry).unwrap();
+    p
+}
+
+/// Which lift a pipeline's programs come from.
+#[derive(Clone, Copy, Debug)]
+enum Lifter {
+    Naga,
+    Ir,
+}
+
+/// Each variant (the optimized programs and the `-Od` ones) of each lift.
+const CASES: [(&str, Lifter); 4] = [
+    ("", Lifter::Naga),
+    (".od", Lifter::Naga),
+    ("", Lifter::Ir),
+    (".od", Lifter::Ir),
+];
+
+const EXPORTS: [&str; 6] = [
+    "raygen",
+    "miss",
+    "closest_hit",
+    "any_hit",
+    "intersection",
+    "callable",
+];
+
+/// The pipeline of the six programs of `variant` lifted by `lifter`, without the hit groups and recursion depth a
+/// state object adds.
+fn bare(variant: &str, lifter: Lifter, table: ShaderTable) -> Pipeline {
+    match lifter {
+        Lifter::Naga => Pipeline::new(EXPORTS.map(|n| program(n, variant)).to_vec(), table),
+        Lifter::Ir => Pipeline::from_ir(EXPORTS.map(|n| on_ir(n, variant)).to_vec(), table),
+    }
+    .unwrap()
 }
 
 /// The pipeline of the six programs, two hit groups (triangles: any-hit and closest-hit; procedural primitives:
 /// intersection, any-hit and closest-hit) and a shader table that selects them.
-fn pipeline(variant: &str) -> Pipeline {
-    let programs = [
-        "raygen",
-        "miss",
-        "closest_hit",
-        "any_hit",
-        "intersection",
-        "callable",
-    ]
-    .map(|n| program(n, variant))
-    .to_vec();
+fn pipeline(variant: &str, lifter: Lifter) -> Pipeline {
     let group = |name: &str, kind, intersection: Option<&str>| HitGroup {
         name: name.to_owned(),
         kind,
@@ -38,8 +75,9 @@ fn pipeline(variant: &str) -> Pipeline {
         closest_hit: Some("closest_hit".to_owned()),
         intersection: intersection.map(str::to_owned),
     };
-    Pipeline::new(
-        programs,
+    bare(
+        variant,
+        lifter,
         ShaderTable {
             miss: vec!["miss".to_owned()],
             // the ray's offset 0 and stride 1 give a hit the group of its instance's contribution
@@ -47,7 +85,6 @@ fn pipeline(variant: &str) -> Pipeline {
             callable: vec!["callable".to_owned()],
         },
     )
-    .unwrap()
     // the fixtures' libraries state no pipeline config; the oracle's state object declares 2
     .with_max_recursion(2)
     .with_hit_groups([
@@ -117,8 +154,9 @@ fn instance(transform: [[f32; 4]; 3], contribution: u32) -> Instance {
 /// ray direction = (0, 0, 0.3), distance -1, doubled to -2, written (0, 0, -0.6, -1).
 #[test]
 fn rays_that_hit_run_the_closest_hit_and_rays_that_miss_the_miss_program() {
-    for v in ["", ".od"] {
-        let pipeline = pipeline(v);
+    for (variant, lifter) in CASES {
+        let v = format!("{variant} {lifter:?}");
+        let pipeline = pipeline(variant, lifter);
         let resources = PipelineResources {
             constants: BTreeMap::new(),
             scene: Scene {
@@ -161,8 +199,9 @@ fn rays_that_hit_run_the_closest_hit_and_rays_that_miss_the_miss_program() {
 /// closest-hit's distance and the barycentrics show in the image.
 #[test]
 fn an_any_hit_program_ignores_or_accepts_the_candidates_of_non_opaque_geometry() {
-    for v in ["", ".od"] {
-        let pipeline = pipeline(v);
+    for (variant, lifter) in CASES {
+        let v = format!("{variant} {lifter:?}");
+        let pipeline = pipeline(variant, lifter);
         let resources = PipelineResources {
             constants: BTreeMap::new(),
             scene: Scene {
@@ -206,8 +245,9 @@ fn an_any_hit_program_ignores_or_accepts_the_candidates_of_non_opaque_geometry()
 #[test]
 fn an_intersection_program_reports_a_procedural_hit_that_is_offered_to_the_any_hit_and_closest_hit_programs()
 {
-    for v in ["", ".od"] {
-        let pipeline = pipeline(v);
+    for (variant, lifter) in CASES {
+        let v = format!("{variant} {lifter:?}");
+        let pipeline = pipeline(variant, lifter);
         let box_geometry = Geometry {
             positions: Vec::new(),
             boxes: vec![[[-1.0, -1.0, 2.0], [1.0, 1.0, 3.0]]],
@@ -235,7 +275,7 @@ fn an_intersection_program_reports_a_procedural_hit_that_is_offered_to_the_any_h
         close(
             image.texels[&(0, 0)],
             [color[0] * 2.0 * t, color[1] * 2.0 * t, color[2] * 2.0 * t, t],
-            v,
+            &v,
         );
     }
 }
@@ -254,35 +294,23 @@ fn a_pipeline_without_a_declared_recursion_depth_is_refused() {
             instances: vec![instance(IDENTITY, 0)],
         },
     };
-    let programs = || {
-        [
-            "raygen",
-            "miss",
-            "closest_hit",
-            "any_hit",
-            "intersection",
-            "callable",
-        ]
-        .map(|n| program(n, ""))
-        .to_vec()
-    };
     let table = || ShaderTable {
         miss: vec!["miss".to_owned()],
         hit_groups: Vec::new(),
         callable: vec!["callable".to_owned()],
     };
-    let mut image = Image::default();
-    let e = Pipeline::new(programs(), table())
-        .unwrap()
-        .dispatch_rays("raygen", [1, 1, 1], &resources, &mut image)
-        .unwrap_err();
-    assert!(e.contains("no maximum recursion depth"), "{e}");
-    let e = Pipeline::new(programs(), table())
-        .unwrap()
-        .with_max_recursion(32)
-        .dispatch_rays("raygen", [1, 1, 1], &resources, &mut image)
-        .unwrap_err();
-    assert!(e.contains("past the 31"), "{e}");
+    for lifter in [Lifter::Naga, Lifter::Ir] {
+        let mut image = Image::default();
+        let e = bare("", lifter, table())
+            .dispatch_rays("raygen", [1, 1, 1], &resources, &mut image)
+            .unwrap_err();
+        assert!(e.contains("no maximum recursion depth"), "{lifter:?}: {e}");
+        let e = bare("", lifter, table())
+            .with_max_recursion(32)
+            .dispatch_rays("raygen", [1, 1, 1], &resources, &mut image)
+            .unwrap_err();
+        assert!(e.contains("past the 31"), "{lifter:?}: {e}");
+    }
 }
 
 /// The pipeline flags are added to the flags of every `TraceRay` (the specification: "add in the RAY_FLAG_SKIP_TRIANGLES
@@ -303,40 +331,41 @@ fn the_pipeline_flags_are_added_to_every_ray() {
     const SKIP_TRIANGLES: u32 = 0x100;
     const SKIP_PROCEDURAL: u32 = 0x200;
     let missed = [0.0, 0.0, -0.6, -1.0];
+    for lifter in [Lifter::Naga, Lifter::Ir] {
+        let mut image = Image::default();
+        pipeline("", lifter)
+            .with_pipeline_flags(SKIP_TRIANGLES)
+            .dispatch_rays("raygen", [2, 2, 1], &resources(), &mut image)
+            .unwrap();
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            close(
+                image.texels[&(x, y)],
+                missed,
+                &format!("{lifter:?} skip triangles ({x}, {y})"),
+            );
+        }
 
-    let mut image = Image::default();
-    pipeline("")
-        .with_pipeline_flags(SKIP_TRIANGLES)
-        .dispatch_rays("raygen", [2, 2, 1], &resources(), &mut image)
-        .unwrap();
-    for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let mut image = Image::default();
+        pipeline("", lifter)
+            .with_pipeline_flags(SKIP_PROCEDURAL)
+            .dispatch_rays("raygen", [2, 2, 1], &resources(), &mut image)
+            .unwrap();
+        let t = 5.0f32 + 0.001;
+        // pixel (0, 0): the ray from (0.25, 0.25, 0): b = (0.2, 0.2), as in the first test
+        let (ox, oy, b1, b2) = (0.25f32, 0.25f32, 0.2f32, 0.2f32);
+        let color = [b1 + 2.0 * ox, b2 + 2.0 * oy + 1.0, 3.0 - b1 - b2];
         close(
-            image.texels[&(x, y)],
-            missed,
-            &format!("skip triangles ({x}, {y})"),
+            image.texels[&(0, 0)],
+            [color[0] * 2.0 * t, color[1] * 2.0 * t, color[2] * 2.0 * t, t],
+            &format!("{lifter:?} skip procedural primitives (0, 0)"),
         );
-    }
 
-    let mut image = Image::default();
-    pipeline("")
-        .with_pipeline_flags(SKIP_PROCEDURAL)
-        .dispatch_rays("raygen", [2, 2, 1], &resources(), &mut image)
-        .unwrap();
-    let t = 5.0f32 + 0.001;
-    // pixel (0, 0): the ray from (0.25, 0.25, 0): b = (0.2, 0.2), as in the first test
-    let (ox, oy, b1, b2) = (0.25f32, 0.25f32, 0.2f32, 0.2f32);
-    let color = [b1 + 2.0 * ox, b2 + 2.0 * oy + 1.0, 3.0 - b1 - b2];
-    close(
-        image.texels[&(0, 0)],
-        [color[0] * 2.0 * t, color[1] * 2.0 * t, color[2] * 2.0 * t, t],
-        "skip procedural primitives (0, 0)",
-    );
-
-    for (flags, what) in [(0x400, "only"), (SKIP_TRIANGLES | SKIP_PROCEDURAL, "forbid")] {
-        let e = pipeline("")
-            .with_pipeline_flags(flags)
-            .dispatch_rays("raygen", [1, 1, 1], &resources(), &mut Image::default())
-            .unwrap_err();
-        assert!(e.contains(what), "{flags:#x}: {e}");
+        for (flags, what) in [(0x400, "only"), (SKIP_TRIANGLES | SKIP_PROCEDURAL, "forbid")] {
+            let e = pipeline("", lifter)
+                .with_pipeline_flags(flags)
+                .dispatch_rays("raygen", [1, 1, 1], &resources(), &mut Image::default())
+                .unwrap_err();
+            assert!(e.contains(what), "{lifter:?} {flags:#x}: {e}");
+        }
     }
 }

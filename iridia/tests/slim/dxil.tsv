@@ -46,8 +46,7 @@
 01c6cd45b988fd584b57253d1c4261a5ce76a3034edc13aaa55f183296a6f9e0	IR	lift: dx.op.checkAccessFullyMapped.iN: dx.op N is not lifted onto the IR yet
 01c6cd45b988fd584b57253d1c4261a5ce76a3034edc13aaa55f183296a6f9e0	IR WGSL	not reached
 01cd46180605d6267be4f2c9de0caf45471561c06253a18b640f65282ad89e3e	A	WGSL: wgsl cannot write this program: a ClosestHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-01cd46180605d6267be4f2c9de0caf45471561c06253a18b640f65282ad89e3e	IR	lift: a ClosestHit program is not lifted onto the IR yet
-01cd46180605d6267be4f2c9de0caf45471561c06253a18b640f65282ad89e3e	IR WGSL	not reached
+01cd46180605d6267be4f2c9de0caf45471561c06253a18b640f65282ad89e3e	IR WGSL	lower: a ClosestHit program is not lowered yet
 01fbee043409302192c5934f9bdd606137373b0a40a27a711252390039af79eb	A	lift: memory of type Half
 01fbee043409302192c5934f9bdd606137373b0a40a27a711252390039af79eb	IR WGSL	lower: an atomic of an image is not lowered yet
 02154d77a6ed309b982b48c15ebc6166222e01cd8ca490c6fe97e8f0f996b3cf	A	lift: N-bit lanes of a raw or structured buffer are not lifted
@@ -287,8 +286,7 @@
 0dcd8c426deeebdebeaece3cc152e2bb92506c6738feef10aa50d1e13d8a4b51	IR WGSL	not reached
 0dd6b615391d716bbaa80f05724d51ac0c5cd9a583512ac390acebaa14229363	IR WGSL	lower: a read of an element of an array of buffers is not lowered yet
 0e0a8aece80229cc2cbf5e1dc48d46f9b39af74effeee6f4945e98526990d72a	A	WGSL: wgsl cannot write this program: a Callable program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-0e0a8aece80229cc2cbf5e1dc48d46f9b39af74effeee6f4945e98526990d72a	IR	lift: a Callable program is not lifted onto the IR yet
-0e0a8aece80229cc2cbf5e1dc48d46f9b39af74effeee6f4945e98526990d72a	IR WGSL	not reached
+0e0a8aece80229cc2cbf5e1dc48d46f9b39af74effeee6f4945e98526990d72a	IR WGSL	lower: a Callable program is not lowered yet
 0e0cc07dfbe8a745d2e352cbfff626f43444ec810148bcce142f228b9c4f4d87	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 0e10583613ae3fb7068acc151ae924d66aa5fbc24afca329e1e9528a0f51a56a	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 0e1ee0ae4a4e0a34afabeccd4d35f75112849bbe06e23d7828dd2522789a8455	A	lift: N-bit lanes of a raw or structured buffer are not lifted
@@ -321,8 +319,7 @@
 101104cf038e38030b05855204b3eca465148de3b7f16c00c3c1072410a439aa	IR	lift: dx.entryPoints: expected exactly one entry point with a function, found N
 101104cf038e38030b05855204b3eca465148de3b7f16c00c3c1072410a439aa	IR WGSL	not reached
 1027f21146e233cd62a1052d480595fae629a0f81b73297d8f16b3be921814b8	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-1027f21146e233cd62a1052d480595fae629a0f81b73297d8f16b3be921814b8	IR	lift: a RayGeneration program is not lifted onto the IR yet
-1027f21146e233cd62a1052d480595fae629a0f81b73297d8f16b3be921814b8	IR WGSL	not reached
+1027f21146e233cd62a1052d480595fae629a0f81b73297d8f16b3be921814b8	IR WGSL	lower: a RayGeneration program is not lowered yet
 103c108ab51749595d75dd1714a7c03f83576df7ecc26b6a94bb8bb573fc9675	A	lift: double-precision floats are not lifted
 105b08223e38c9486b934dd78cd11dba1176b19fd14af459f29431df7b11cb16	A	WGSL read back, validation: error: Function [N] 'main' is invalid    ┌─ wgsl:N:N    │   N │ ╭ fn main(SV_PositionN_: array<vecN<fN>, N>, SV_ClipDistanceN_: array<vecN<fN>, N>, SV_CullDistanceN_: array<vecN<fN>, N>, SV_ClipDistanceN_: array<vecN<fN>, N>, SV_CullDistanceN_: array<fN, N>, SV_PrimitiveID: uN, SV_GSInstanceID: uN) -> Out { N │ │     var oN_: vecN<uN>; N │ │     var oN_: vecN<uN>; N │ │     var oN_: vecN<uN>;    · │ N │ │     } N │ │ }    │ ╰─^ naga::ir::Function [N]    │      = The `return` expression None does not match the declared return type Some([N])  
 105b08223e38c9486b934dd78cd11dba1176b19fd14af459f29431df7b11cb16	IR WGSL	lower: a Geometry program is not lowered yet
@@ -447,7 +444,7 @@
 16535cbb9267bac1a24ef8a5894fa19bcd09bf1e754ca2a7a6c3b46b7dd23b58	IR	lift: a N-bit atomic operation is not lifted onto the IR yet
 16535cbb9267bac1a24ef8a5894fa19bcd09bf1e754ca2a7a6c3b46b7dd23b58	IR WGSL	not reached
 1660d01f4aa455528be44c839b6a79702921d0371f6bc9dad6fd117982e3c185	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
-1660d01f4aa455528be44c839b6a79702921d0371f6bc9dad6fd117982e3c185	IR	lift: a Intersection program is not lifted onto the IR yet
+1660d01f4aa455528be44c839b6a79702921d0371f6bc9dad6fd117982e3c185	IR	lift: dx.op.waveMatch.iN: dx.op N is not lifted onto the IR yet
 1660d01f4aa455528be44c839b6a79702921d0371f6bc9dad6fd117982e3c185	IR WGSL	not reached
 1686f87f4d8137f02edf985ceddb628b771cf10d672bca3fc270c68d8afb3d42	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 16e9a7cdc27f11c6fca5d990a6815c622b92dbe17634693b406e992d3a3175bd	A	lift: N-bit lanes of a raw or structured buffer are not lifted
@@ -875,7 +872,7 @@
 28ab0c1a49c7c9278edef83968e6303c41cba67a1acf181f1a21e4084d368586	IR	lift: feedbackMinMip: DxilResourceKind N is not mapped
 28ab0c1a49c7c9278edef83968e6303c41cba67a1acf181f1a21e4084d368586	IR WGSL	not reached
 28af1ace3c4cd992be92ff4ead361d7ebc3cfb076d606b96b3940d6dc57d4dba	A	lift: a call of ?IndexInHelper@@YAXI@Z
-28af1ace3c4cd992be92ff4ead361d7ebc3cfb076d606b96b3940d6dc57d4dba	IR	lift: a RayGeneration program is not lifted onto the IR yet
+28af1ace3c4cd992be92ff4ead361d7ebc3cfb076d606b96b3940d6dc57d4dba	IR	lift: a call of ?IndexInHelper@@YAXI@Z
 28af1ace3c4cd992be92ff4ead361d7ebc3cfb076d606b96b3940d6dc57d4dba	IR WGSL	not reached
 28b258089864006adb4c543f082665db0837871d0d045e49c676b3477cc71fa0	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 28b258089864006adb4c543f082665db0837871d0d045e49c676b3477cc71fa0	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
@@ -895,7 +892,7 @@
 29064854ccd3b050e707a0f82234f07210ac4b250cb75c216acc60cdcc8e0168	IR WGSL	not reached
 29594bebb1525da31ce7158b5b01a504bc51fda20efbe706f449d09a496b7661	A	lift: double-precision floats are not lifted
 298e379142bcc38f7ccecbdd6efdf4b20a848e04a3b572bbaa14dae52e7f5a40	A	lift: dx.op.hitObject_FromRayQuery: dx.op N is not lifted
-298e379142bcc38f7ccecbdd6efdf4b20a848e04a3b572bbaa14dae52e7f5a40	IR	lift: a RayGeneration program is not lifted onto the IR yet
+298e379142bcc38f7ccecbdd6efdf4b20a848e04a3b572bbaa14dae52e7f5a40	IR	lift: dx.op.allocateRayQuery: dx.op N is not lifted onto the IR yet
 298e379142bcc38f7ccecbdd6efdf4b20a848e04a3b572bbaa14dae52e7f5a40	IR WGSL	not reached
 299a330d673382501d72ed207a68531d8bef756db92b5864fa16356327e2ac5a	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 299a330d673382501d72ed207a68531d8bef756db92b5864fa16356327e2ac5a	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
@@ -1078,8 +1075,7 @@
 329895be41e04ac83cb482f0c1db24f225a579f6eabbc35747e0f7c7dd632a2f	IR	lift: a constant of N bits is not mapped
 329895be41e04ac83cb482f0c1db24f225a579f6eabbc35747e0f7c7dd632a2f	IR WGSL	not reached
 329ec573cf6ba85774a260e92b53f8734b85ede64fbd6382ae12273b3695364c	A	WGSL: wgsl cannot write this program: a Miss program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-329ec573cf6ba85774a260e92b53f8734b85ede64fbd6382ae12273b3695364c	IR	lift: a Miss program is not lifted onto the IR yet
-329ec573cf6ba85774a260e92b53f8734b85ede64fbd6382ae12273b3695364c	IR WGSL	not reached
+329ec573cf6ba85774a260e92b53f8734b85ede64fbd6382ae12273b3695364c	IR WGSL	lower: a Miss program is not lowered yet
 32a8d6da6dd352d9dcd601262e39080432b1408a5cee19168a14711aca5019be	A	lift: memory of type Half
 32ea325e5045a785f1cf4d0f3555bf0f172106167c251d0d8c234c52d4da5099	IR WGSL	lower: a write of an element of an array of buffers is not lowered yet
 32ec85e1f8916f3c574358dff54b80c21f557f81163ef54b760caf25b66fa157	A	lift: a constant of N bits is not mapped
@@ -1109,8 +1105,7 @@
 33bd277da922fc34237592ac79d17fb1da0e0ee009c9e7980acc0944373d709e	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 33bd277da922fc34237592ac79d17fb1da0e0ee009c9e7980acc0944373d709e	IR WGSL	not reached
 33e5dfd2483f1ae6b8459dd46aaa23231d26626b646927dc66570ec876c3326b	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
-33e5dfd2483f1ae6b8459dd46aaa23231d26626b646927dc66570ec876c3326b	IR	lift: a RayGeneration program is not lifted onto the IR yet
-33e5dfd2483f1ae6b8459dd46aaa23231d26626b646927dc66570ec876c3326b	IR WGSL	not reached
+33e5dfd2483f1ae6b8459dd46aaa23231d26626b646927dc66570ec876c3326b	IR WGSL	lower: a RayGeneration program is not lowered yet
 33ebd8f9c87661773ba6c420cd5d96735143d6c3ccc31becba420dd7800e20d6	A	lift: the unplaced output SV_StencilRef
 33ebd8f9c87661773ba6c420cd5d96735143d6c3ccc31becba420dd7800e20d6	IR	lift: the unplaced output SV_StencilRef
 33ebd8f9c87661773ba6c420cd5d96735143d6c3ccc31becba420dd7800e20d6	IR WGSL	not reached
@@ -1118,8 +1113,7 @@
 3400268720617d96176ff24203646ad7b85706f42e5184e569caf7cd5e0d8d96	IR	lift: dx.op.renderTargetGetSampleCount: dx.op N is not lifted onto the IR yet
 3400268720617d96176ff24203646ad7b85706f42e5184e569caf7cd5e0d8d96	IR WGSL	not reached
 340225849a0f5a079dac6a07ab01531c4ae180af9e6db967ce5a6136b4b8ec4f	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-340225849a0f5a079dac6a07ab01531c4ae180af9e6db967ce5a6136b4b8ec4f	IR	lift: a RayGeneration program is not lifted onto the IR yet
-340225849a0f5a079dac6a07ab01531c4ae180af9e6db967ce5a6136b4b8ec4f	IR WGSL	not reached
+340225849a0f5a079dac6a07ab01531c4ae180af9e6db967ce5a6136b4b8ec4f	IR WGSL	lower: a RayGeneration program is not lowered yet
 340b2f07c98da7fd4badc4a4329ab575358ea130eeb9bb6f60e5135a23403d99	A	lift: memory of type Half
 3412c625dd400ed9e40d6cfc7080a57dfad5f134ac9c39b8d6e0c0713e244934	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
 342158bea2933b24ece0bb1b8326deaf42e295c9edacb9074fd85661b3ed1ded	A	lift: N-bit lanes of a raw or structured buffer are not lifted
@@ -1634,8 +1628,7 @@
 4f0b86f520920983b1766267249c3d7988a9cbc6915de3d13d6a70893b4c431e	IR WGSL	lower: an element of an array of resources is not lowered yet
 4f2e15fdcb742887f333c1c2b6e6446884405aef9f0525980b1db1c4a124614d	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 4f3b3731d0c14219ef3d69815fbc4c99280d0868159c9f0e80c5dc0677c5da44	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-4f3b3731d0c14219ef3d69815fbc4c99280d0868159c9f0e80c5dc0677c5da44	IR	lift: a RayGeneration program is not lifted onto the IR yet
-4f3b3731d0c14219ef3d69815fbc4c99280d0868159c9f0e80c5dc0677c5da44	IR WGSL	not reached
+4f3b3731d0c14219ef3d69815fbc4c99280d0868159c9f0e80c5dc0677c5da44	IR WGSL	lower: a RayGeneration program is not lowered yet
 4f5ab39a48430c3e7c587142403631a5875e1feccce0be99b67573f56c16fed8	A	lift: memory of type Half
 4f5d6b4c9823336ae314078d42ebe3f55c73d33fc282c1c9e9a6a77b74dc883a	A	lift: memory of type Half
 4f691f8f0204fe7240bccb24dc0979b96eef1029c1aa0f9562c232530998ae0b	A	lift: a Vertex program without its ISGN part
@@ -1711,8 +1704,7 @@
 52fa240b5393e6ccf77dd4f8a98f51b4cdb06546388b0d048817ede1fed51292	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 52fb63db945ff73315c2624e5aa106fc233b1ccab7f30213fa1648d1531a9e62	IR WGSL	lower: a Geometry program is not lowered yet
 53333f2f3806fb51fb63c2976fe79efe550ec52c921e98451154ef3e7c87f14a	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-53333f2f3806fb51fb63c2976fe79efe550ec52c921e98451154ef3e7c87f14a	IR	lift: a RayGeneration program is not lifted onto the IR yet
-53333f2f3806fb51fb63c2976fe79efe550ec52c921e98451154ef3e7c87f14a	IR WGSL	not reached
+53333f2f3806fb51fb63c2976fe79efe550ec52c921e98451154ef3e7c87f14a	IR WGSL	lower: a RayGeneration program is not lowered yet
 533960229aafdd998ff00e5d581bbf9a78b63e728539cdc4690ffe024235597b	A	lift: dx.entryPoints: expected exactly one entry point with a function, found N
 533960229aafdd998ff00e5d581bbf9a78b63e728539cdc4690ffe024235597b	IR	lift: dx.entryPoints: expected exactly one entry point with a function, found N
 533960229aafdd998ff00e5d581bbf9a78b63e728539cdc4690ffe024235597b	IR WGSL	not reached
@@ -1984,7 +1976,7 @@
 606e60a000b48ce94edeaa6e4e36bac681d3563af4419bb09dde3af3c84eca03	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 60729df92845daa73c0342ead4074f1cd7d99f44be983a837802b3457b3dda79	IR WGSL	lower: resource N (ResourceDescriptorHeap) has no DND register
 60b6e3c36c47eb427ebc55f7b3308fb3f0333168d5f3d92f6b09d45fdf04cef9	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
-60b6e3c36c47eb427ebc55f7b3308fb3f0333168d5f3d92f6b09d45fdf04cef9	IR	lift: a RayGeneration program is not lifted onto the IR yet
+60b6e3c36c47eb427ebc55f7b3308fb3f0333168d5f3d92f6b09d45fdf04cef9	IR	lift: a N-bit atomic operation is not lifted onto the IR yet
 60b6e3c36c47eb427ebc55f7b3308fb3f0333168d5f3d92f6b09d45fdf04cef9	IR WGSL	not reached
 60eafb09ff4012cb34f126ec229b4ed2cb6be3eeaa6788e8f3481a902fba21d8	IR WGSL	lower: an element of an array of resources is not lowered yet
 60ec2df7ab7e1a0290c492527eaeab99af9fe12f7f50a5d068848e9c72a78080	A	lift: TEXCOORDN: signature component type N is not a known value
@@ -2024,8 +2016,7 @@
 61dd81197ca9e9c56019fc08dacb19ce9729e3b7c8a719a8207ad9f6f9511f2f	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 61dd81197ca9e9c56019fc08dacb19ce9729e3b7c8a719a8207ad9f6f9511f2f	IR WGSL	not reached
 61e90c12e67fb4348484e4eb3ff9a9f6f0c585d19c4d192b0eaafc95e387a4af	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-61e90c12e67fb4348484e4eb3ff9a9f6f0c585d19c4d192b0eaafc95e387a4af	IR	lift: a RayGeneration program is not lifted onto the IR yet
-61e90c12e67fb4348484e4eb3ff9a9f6f0c585d19c4d192b0eaafc95e387a4af	IR WGSL	not reached
+61e90c12e67fb4348484e4eb3ff9a9f6f0c585d19c4d192b0eaafc95e387a4af	IR WGSL	lower: a RayGeneration program is not lowered yet
 61f94af420b9ce4c6e1e262f38c41d95e26237e6d1c5bbd38fa441f873d61cbc	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 61f950ec399cfaed1acb1afd42f630215037f683b45ce75ef506f2d6db4d635f	A	lift: a constant of N bits is not mapped
 61f950ec399cfaed1acb1afd42f630215037f683b45ce75ef506f2d6db4d635f	IR	lift: a constant of N bits is not mapped
@@ -2281,8 +2272,7 @@
 6e86e9dba0008a59ca03117c68479bb211deb21e7dddf2c38f9818e9b94876ed	IR WGSL	lower: a read of an element of an array of buffers is not lowered yet
 6ec3aef0f916afc77651cbd32ef783e5fc77731ee6d9913ade4a0025b19f6f93	IR WGSL	lower: a read of an element of an array of buffers is not lowered yet
 6ee7a538c5d2927debc4ffb31cdaa32d4ca26c47d9296ba18a0e8ef13765b210	A	validate: module: Global variable [N] 'tN' is invalid: Capability Capabilities(ACCELERATION_STRUCTURE_BINDING_ARRAY) is not supported
-6ee7a538c5d2927debc4ffb31cdaa32d4ca26c47d9296ba18a0e8ef13765b210	IR	lift: a RayGeneration program is not lifted onto the IR yet
-6ee7a538c5d2927debc4ffb31cdaa32d4ca26c47d9296ba18a0e8ef13765b210	IR WGSL	not reached
+6ee7a538c5d2927debc4ffb31cdaa32d4ca26c47d9296ba18a0e8ef13765b210	IR WGSL	lower: resource N (ResourceDescriptorHeap) has no DND register
 6f19626f4cd6318b1a3f2a1f2696ad16739f1f09798df110acf5f5b087f7ce98	A	lift: per-primitive outputs of a mesh program are not lifted
 6f19626f4cd6318b1a3f2a1f2696ad16739f1f09798df110acf5f5b087f7ce98	IR	lift: a mesh program's per-primitive outputs are not lifted onto the IR yet
 6f19626f4cd6318b1a3f2a1f2696ad16739f1f09798df110acf5f5b087f7ce98	IR WGSL	not reached
@@ -2348,16 +2338,13 @@
 71cb4615201a2ac7e5d516e566ceaa5bfe5c4204afd5e6359aa99a5acd9fdb0b	IR	lift: a constant of N bits is not mapped
 71cb4615201a2ac7e5d516e566ceaa5bfe5c4204afd5e6359aa99a5acd9fdb0b	IR WGSL	not reached
 71e0b32b40adff686e83773d5df6ae37e51c3a45b16219a887999085a9048ad6	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-71e0b32b40adff686e83773d5df6ae37e51c3a45b16219a887999085a9048ad6	IR	lift: a RayGeneration program is not lifted onto the IR yet
-71e0b32b40adff686e83773d5df6ae37e51c3a45b16219a887999085a9048ad6	IR WGSL	not reached
+71e0b32b40adff686e83773d5df6ae37e51c3a45b16219a887999085a9048ad6	IR WGSL	lower: a RayGeneration program is not lowered yet
 71f52df7d6aee9ba112ecc2ea8329bf83ac14277bd46a9f0d60d7ab958475424	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 71fa398dbed3749cb52f8a80f626d89ef7dacb104dbf06db403a155fa3287a7d	IR WGSL	lower: an element of an array of resources is not lowered yet
 7208bb99ae210778f4f10e98a8256c03763ccecaa374c6c533381b2949adeb1d	A	WGSL: wgsl cannot write this program: a ClosestHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-7208bb99ae210778f4f10e98a8256c03763ccecaa374c6c533381b2949adeb1d	IR	lift: a ClosestHit program is not lifted onto the IR yet
-7208bb99ae210778f4f10e98a8256c03763ccecaa374c6c533381b2949adeb1d	IR WGSL	not reached
+7208bb99ae210778f4f10e98a8256c03763ccecaa374c6c533381b2949adeb1d	IR WGSL	lower: a ClosestHit program is not lowered yet
 7221041e7c672096b89315dcb29d6e9fdfb73d464e37f3bf4a99a9b2586def70	A	WGSL: wgsl cannot write this program: a Intersection program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-7221041e7c672096b89315dcb29d6e9fdfb73d464e37f3bf4a99a9b2586def70	IR	lift: a Intersection program is not lifted onto the IR yet
-7221041e7c672096b89315dcb29d6e9fdfb73d464e37f3bf4a99a9b2586def70	IR WGSL	not reached
+7221041e7c672096b89315dcb29d6e9fdfb73d464e37f3bf4a99a9b2586def70	IR WGSL	lower: a Intersection program is not lowered yet
 7246b968aa4be8b79098ac97291590c0997934f85a37d8bd2cface7023d5e122	A	WGSL read back, validation: error: Entry point main at Fragment is invalid  = The `return` expression None does not match the declared return type Some([N])  
 7247b6104481871c19ac0ebe3b856c00839b0dd44c872c5074a1c11640e33a1a	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 7274b60bbda2e84dab34215a13be1446ac965eae5aa7c86788c63ff1634025c1	IR WGSL	lower: an element of an array of resources is not lowered yet
@@ -2456,8 +2443,7 @@
 77f3d4cbc979ce3804b2b0eaa905fb371729dd4d9eb6fcfda9a3a521871b70f0	IR WGSL	not reached
 784c46a33163bf99060262cd6c3ab927005b8ef6b96e2482f03de549ca8d6dbc	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 788ebfcd0a049d6a375703f5d9f23a5e8469071004d37c4adfa044d81b00c040	A	WGSL: wgsl cannot write this program: a AnyHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-788ebfcd0a049d6a375703f5d9f23a5e8469071004d37c4adfa044d81b00c040	IR	lift: a AnyHit program is not lifted onto the IR yet
-788ebfcd0a049d6a375703f5d9f23a5e8469071004d37c4adfa044d81b00c040	IR WGSL	not reached
+788ebfcd0a049d6a375703f5d9f23a5e8469071004d37c4adfa044d81b00c040	IR WGSL	lower: a AnyHit program is not lowered yet
 78ba412ba54c10a223616bac2e650f726c3691664f9c23937bccd5d9913d219b	A	lift: OUTN: signature component type N is not a known value
 78ba412ba54c10a223616bac2e650f726c3691664f9c23937bccd5d9913d219b	IR	lift: OUTN: signature component type N is not a known value
 78ba412ba54c10a223616bac2e650f726c3691664f9c23937bccd5d9913d219b	IR WGSL	not reached
@@ -2489,7 +2475,7 @@
 7a55b4856f6e5636b62d70a2367bd1bbcccf7338937a3791970cd98cd750832b	IR WGSL	lower: resource N (ResourceDescriptorHeap) has no DND register
 7a5f9dad3c8bcacfed2ec36439e0471c1986332f2e24d8dba3bfd2a6280616d3	IR WGSL	lower: a vertex program that writes no position feeds a tessellator: it is a function, not a WGSL entry point
 7ac49cdf972acc34988973ce850a9087e7184917d9f173b74b5b28fd6548ce7a	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
-7ac49cdf972acc34988973ce850a9087e7184917d9f173b74b5b28fd6548ce7a	IR	lift: a Miss program is not lifted onto the IR yet
+7ac49cdf972acc34988973ce850a9087e7184917d9f173b74b5b28fd6548ce7a	IR	lift: dx.op.waveMatch.iN: dx.op N is not lifted onto the IR yet
 7ac49cdf972acc34988973ce850a9087e7184917d9f173b74b5b28fd6548ce7a	IR WGSL	not reached
 7af70fc23cbd431a35d083f03fd2de88b3c83688925aab5ffc607a8ac054312c	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
 7afd00ecab9108720852c6eb8803abc859dfb77463c1b063c08f4444ed65ba1c	A	lift: memory of type Half
@@ -2792,8 +2778,7 @@
 8a7be794151e46bad4b3017a62dc0b75d33cedc82962a2063cf0797418206a7e	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 8a7be794151e46bad4b3017a62dc0b75d33cedc82962a2063cf0797418206a7e	IR WGSL	not reached
 8a80a272f06e36a6afd9ae4e441d7d3722b8ea3dd6d64a5bd90555d79ad15364	A	WGSL: wgsl cannot write this program: a AnyHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-8a80a272f06e36a6afd9ae4e441d7d3722b8ea3dd6d64a5bd90555d79ad15364	IR	lift: a AnyHit program is not lifted onto the IR yet
-8a80a272f06e36a6afd9ae4e441d7d3722b8ea3dd6d64a5bd90555d79ad15364	IR WGSL	not reached
+8a80a272f06e36a6afd9ae4e441d7d3722b8ea3dd6d64a5bd90555d79ad15364	IR WGSL	lower: a AnyHit program is not lowered yet
 8a9506c73c2bfe6819f18ca92a89dce2f124db627de78feaa78fe45718bcd960	A	WGSL read back, validation: error: Entry point main at Fragment is invalid  = The `return` expression None does not match the declared return type Some([N])  
 8aa5154c99f86f76ca1ab0609f4ab10b605f656c492247ce7bafc824a7815f69	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 8ac4c12dfd3406b7f6a538c42cf8582afedc41dd532a6592fda624bbe4cc8385	A	lift: dx.op.isHelperLane.iN: dx.op N is not lifted
@@ -2886,8 +2871,7 @@
 8eda5541b6e2ee17fec2cb2502a510c5b22ebc54a863068f25b0f449bc106639	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 8eddf63047f1225802f16805cc115914ec06e0a3b3f7a10d3f17a185f31059ec	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 8ede797f5971aa1d88ec41fe04c659b7c205b34017ae1365551a311a254fe7e1	A	lift: memory of type Half
-8ede797f5971aa1d88ec41fe04c659b7c205b34017ae1365551a311a254fe7e1	IR	lift: a ClosestHit program is not lifted onto the IR yet
-8ede797f5971aa1d88ec41fe04c659b7c205b34017ae1365551a311a254fe7e1	IR WGSL	not reached
+8ede797f5971aa1d88ec41fe04c659b7c205b34017ae1365551a311a254fe7e1	IR WGSL	lower: a ClosestHit program is not lowered yet
 8ee66914bd27c5ca89b5bea057f81e07f051e53796e908aa21ef886ee4ce7e3a	IR WGSL	lower: a Geometry program is not lowered yet
 8f2fbf6be5e85b36242fbe3b2dc323e5b2913f12dd56966f24460ee7d16aeaf0	A	lift: dx.op.dotNAddPacked.iN: dx.op N is not lifted
 8f2fbf6be5e85b36242fbe3b2dc323e5b2913f12dd56966f24460ee7d16aeaf0	IR	lift: dx.op.dotNAddPacked.iN: dx.op N is not lifted onto the IR yet
@@ -3253,8 +3237,7 @@
 9d67b59d80136f67824bc0e16923b294c9a6381edaca5e8b2c1d6153612b6a15	IR	lift: a uN where a uN is read
 9d67b59d80136f67824bc0e16923b294c9a6381edaca5e8b2c1d6153612b6a15	IR WGSL	not reached
 9da2d8c4a9d327972305b1a226bbf2fb8a1a6fa5aa16e812026ff292d58ee235	A	WGSL: wgsl cannot write this program: a ClosestHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-9da2d8c4a9d327972305b1a226bbf2fb8a1a6fa5aa16e812026ff292d58ee235	IR	lift: a ClosestHit program is not lifted onto the IR yet
-9da2d8c4a9d327972305b1a226bbf2fb8a1a6fa5aa16e812026ff292d58ee235	IR WGSL	not reached
+9da2d8c4a9d327972305b1a226bbf2fb8a1a6fa5aa16e812026ff292d58ee235	IR WGSL	lower: a ClosestHit program is not lowered yet
 9db518427b310e3b7d347eca167d0a75ab7081de4b120c15c7f4a4ca3989d2dd	A	lift: OUTN: signature component type N is not a known value
 9db518427b310e3b7d347eca167d0a75ab7081de4b120c15c7f4a4ca3989d2dd	IR	lift: OUTN: signature component type N is not a known value
 9db518427b310e3b7d347eca167d0a75ab7081de4b120c15c7f4a4ca3989d2dd	IR WGSL	not reached
@@ -3393,8 +3376,7 @@ a46eb52d0b76e250f311bb67f7778754ffd6907d5aab130a30f1951b21b3f43c	IR	lift: a cons
 a46eb52d0b76e250f311bb67f7778754ffd6907d5aab130a30f1951b21b3f43c	IR WGSL	not reached
 a47953fa6f54a6c07efebbae044ebdf621a9d13df381bc6a842f287d44cfc512	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
 a47eeb89ea05b07a26431968d54ea878d38e294e00117bc8ef6d91d8cf212238	A	lift: a value of type Some(Vector(N, N))
-a47eeb89ea05b07a26431968d54ea878d38e294e00117bc8ef6d91d8cf212238	IR	lift: a AnyHit program is not lifted onto the IR yet
-a47eeb89ea05b07a26431968d54ea878d38e294e00117bc8ef6d91d8cf212238	IR WGSL	not reached
+a47eeb89ea05b07a26431968d54ea878d38e294e00117bc8ef6d91d8cf212238	IR WGSL	lower: a AnyHit program is not lowered yet
 a49024dee0cd348186624aaf221c3997e91f58308400b20c4ea5f973db1ec99b	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 a4b34aa66518611d330696e040ba052146c6b18e36354135ce0437bf9dadf1db	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 a4b34aa66518611d330696e040ba052146c6b18e36354135ce0437bf9dadf1db	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
@@ -3850,8 +3832,7 @@ bd3cece8d004216aaf8e527c6d23708431c3b896aaea6697b5decff7b6d048e8	IR	lift: TEXCOO
 bd3cece8d004216aaf8e527c6d23708431c3b896aaea6697b5decff7b6d048e8	IR WGSL	not reached
 bd4fbc923730545135aaccf2f9875cfd96744bad71ee00db85225657878fe60e	IR WGSL	lower: a Hull program is not lowered yet
 bd50ee3ec83229e608834c15e4715a978928c8e8b25b6f28c6d24d8f7814d0b0	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-bd50ee3ec83229e608834c15e4715a978928c8e8b25b6f28c6d24d8f7814d0b0	IR	lift: a RayGeneration program is not lifted onto the IR yet
-bd50ee3ec83229e608834c15e4715a978928c8e8b25b6f28c6d24d8f7814d0b0	IR WGSL	not reached
+bd50ee3ec83229e608834c15e4715a978928c8e8b25b6f28c6d24d8f7814d0b0	IR WGSL	lower: resource N (ResourceDescriptorHeap) has no DND register
 bd97a463aa80688aa5d6edf173f2fb398ccbb587a231368f8034f1f9f69f1f46	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 bd97a463aa80688aa5d6edf173f2fb398ccbb587a231368f8034f1f9f69f1f46	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 bd97a463aa80688aa5d6edf173f2fb398ccbb587a231368f8034f1f9f69f1f46	IR WGSL	not reached
@@ -3938,7 +3919,7 @@ c13538cd5cf564478b4b9f1637c0e20b29cc7f6902d7526b9b99c420be4238cb	IR WGSL	lower: 
 c14fc1cd39b96539adb4718cd08ae49afea4257ccd643790032decddaf333e7b	A	lift: memory of type Half
 c14fc1cd39b96539adb4718cd08ae49afea4257ccd643790032decddaf333e7b	IR WGSL	lower: an element of an array of resources is not lowered yet
 c158ea3a405f078cd0ac729929330b6b2bfd023fa1afbd3f7032e06e72f3cd43	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
-c158ea3a405f078cd0ac729929330b6b2bfd023fa1afbd3f7032e06e72f3cd43	IR	lift: a Miss program is not lifted onto the IR yet
+c158ea3a405f078cd0ac729929330b6b2bfd023fa1afbd3f7032e06e72f3cd43	IR	lift: dx.op.waveMatch.iN: dx.op N is not lifted onto the IR yet
 c158ea3a405f078cd0ac729929330b6b2bfd023fa1afbd3f7032e06e72f3cd43	IR WGSL	not reached
 c171129891aba9d739c1bef813b15917639fa991c09b619d5a0d0d7d80f03b9b	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 c171129891aba9d739c1bef813b15917639fa991c09b619d5a0d0d7d80f03b9b	IR WGSL	lower: a vertex program that writes no position feeds a tessellator: it is a function, not a WGSL entry point
@@ -4423,8 +4404,7 @@ db95b19e000934d779fe4b3d5a18a76a170150ad035eee371effaeaaa28a8510	A	lift: double-
 db9aec2fe6deecb755d64b61ca0157cd4ffd6d18343cfb231f0bccc4de3f8f05	A	lift: a scalar was expected, found Agg([Scalar(Val { expr: [N], kind: U, width: One }), Scalar(Val { expr: [N], kind: U, width: One })])
 dba35cb1899d941348c78bf738cdad0d0f0faf40d02b5280182e0b5359de8271	IR WGSL	lower: an element of an array of resources is not lowered yet
 dbb144d760b491d77476a7a541bea5522e9d11c9688eac65cd6209081c8c0f1b	A	WGSL: wgsl cannot write this program: a Intersection program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-dbb144d760b491d77476a7a541bea5522e9d11c9688eac65cd6209081c8c0f1b	IR	lift: a Intersection program is not lifted onto the IR yet
-dbb144d760b491d77476a7a541bea5522e9d11c9688eac65cd6209081c8c0f1b	IR WGSL	not reached
+dbb144d760b491d77476a7a541bea5522e9d11c9688eac65cd6209081c8c0f1b	IR WGSL	lower: a Intersection program is not lowered yet
 dbfab4dc179ddc4b2bff53b78add38bd2ff8c09dda123a11dd5dc7bb9f74fa15	IR WGSL	lower: resource N (ResourceDescriptorHeap) has no DND register
 dc26ed163e0b9e754fb6e57b0d3a3727c8012cbe94c9b22e756e468a875b1c7c	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 dc26ed163e0b9e754fb6e57b0d3a3727c8012cbe94c9b22e756e468a875b1c7c	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
@@ -4470,8 +4450,7 @@ de5f41a79966b27d17683db181e6149cf5721340ff5f9a4dfe11347b84ae9a6f	A	lift: a const
 de5f41a79966b27d17683db181e6149cf5721340ff5f9a4dfe11347b84ae9a6f	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 de5f41a79966b27d17683db181e6149cf5721340ff5f9a4dfe11347b84ae9a6f	IR WGSL	not reached
 de6a48fab57c864f6fe1fe35e01e0202c4a914741ccd1fdfcecafc927098bc9b	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-de6a48fab57c864f6fe1fe35e01e0202c4a914741ccd1fdfcecafc927098bc9b	IR	lift: a RayGeneration program is not lifted onto the IR yet
-de6a48fab57c864f6fe1fe35e01e0202c4a914741ccd1fdfcecafc927098bc9b	IR WGSL	not reached
+de6a48fab57c864f6fe1fe35e01e0202c4a914741ccd1fdfcecafc927098bc9b	IR WGSL	lower: a RayGeneration program is not lowered yet
 de7b46a6dd20a7bd13c4efcc1ba30736c6b2b666241e8080c93ddc6bf3424bc4	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 de7b46a6dd20a7bd13c4efcc1ba30736c6b2b666241e8080c93ddc6bf3424bc4	IR	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
 de7b46a6dd20a7bd13c4efcc1ba30736c6b2b666241e8080c93ddc6bf3424bc4	IR WGSL	not reached
@@ -4525,8 +4504,7 @@ e11ff1562e307a76667a886c4fc402adededdc20dc23bd19c3510e855c875c6a	A	lift: N-bit l
 e12524438cf9ff2dbc3d7698509a2bd56d3d235f3aac5e45f96c5ab0b7c3c669	A	lift: memory of type Half
 e12d3e016e884095c088a6cf2e7f06fb50efc7dca833c020a1b5036333167305	IR WGSL	lower: an element of an array of resources is not lowered yet
 e1732834ce7d20a3c0111e9cead305f15b60cea10a665a91b2d0faaa2ea9ccd0	A	WGSL: wgsl cannot write this program: a ClosestHit program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-e1732834ce7d20a3c0111e9cead305f15b60cea10a665a91b2d0faaa2ea9ccd0	IR	lift: a ClosestHit program is not lifted onto the IR yet
-e1732834ce7d20a3c0111e9cead305f15b60cea10a665a91b2d0faaa2ea9ccd0	IR WGSL	not reached
+e1732834ce7d20a3c0111e9cead305f15b60cea10a665a91b2d0faaa2ea9ccd0	IR WGSL	lower: a ClosestHit program is not lowered yet
 e190fdd4a35e426e5659dbedfc42e31f5b8d380ffa08f6e3f4614f472fb1af8a	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 e1b7ee94a0f7ea8ecefea2398dab73c99f50e4953c5f78d30e7746ff868fa0e6	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 e1c3d7e4fd2adf9e7cd17f310cdd1a736631408cf51d100bde7df5c8be16c2a2	A	lift: a constant load of other than four N-bit lanes (N-bit and N-bit rows are not lifted)
@@ -4644,8 +4622,7 @@ e8e74f8b640ef755c998ad5f2d1ba6e747925a7aa24311cd4f05998a564a681c	IR WGSL	not rea
 e90154c2eb12320d26906246b4dbc304c138d8ae10d4e944915b9657227d1b68	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 e915810e5aeed0ab25589faec14156e23c5b49c8a443b5434bda7ec00a6c1212	IR WGSL	lower: a vertex program that writes no position feeds a tessellator: it is a function, not a WGSL entry point
 e9268ff47136ab7f8f054b6d3ec9e0dd085ddd0d8fafc425db6804c553de80fa	A	WGSL: wgsl cannot write this program: a RayGeneration program has no WGSL form: WebGPU has no ray tracing pipeline, and the program's operations (trace_ray, report_hit, call_shader, ignore_hit, accept_hit_and_end_search) are the pipeline's
-e9268ff47136ab7f8f054b6d3ec9e0dd085ddd0d8fafc425db6804c553de80fa	IR	lift: a RayGeneration program is not lifted onto the IR yet
-e9268ff47136ab7f8f054b6d3ec9e0dd085ddd0d8fafc425db6804c553de80fa	IR WGSL	not reached
+e9268ff47136ab7f8f054b6d3ec9e0dd085ddd0d8fafc425db6804c553de80fa	IR WGSL	lower: a RayGeneration program is not lowered yet
 e92ba16c9c7e836416194f4f1dc72994cadc9060f2a6de4230047696b5f7d394	A	lift: N-bit lanes of a raw or structured buffer are not lifted
 e93daf3b3fb57203a9077a8501115da411c3442ca11f945d0cf6b853ff31d719	IR WGSL	lower: a read of an element of an array of buffers is not lowered yet
 e9647fbcb386e2684ee0584fb5886d52d3cf8aa734eaa0eec572d4614d552ee2	A	lift: SV_TargetN: signature component type N is not a known value

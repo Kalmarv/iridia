@@ -17,6 +17,7 @@
 mod dxop;
 mod mesh;
 mod payload;
+mod raytracing;
 mod resources;
 mod stages;
 mod values;
@@ -43,8 +44,9 @@ pub const LIFTER: &str = "iridia-dxil-ir";
 /// Increment when the same bytecode lifts differently.
 pub const LIFTER_VERSION: u32 = 1;
 
-/// Lift a DXIL container's entry function onto the IR: a vertex, pixel, compute, hull, domain or geometry program. What
-/// the lift does not carry is an `Err` naming the bit offset and why.
+/// Lift a DXIL container's entry function onto the IR: a vertex, pixel, compute, hull, domain, geometry, mesh,
+/// amplification or ray tracing program (a library of one export). What the lift does not carry is an `Err` naming the
+/// bit offset and why.
 pub fn lift(container: &[u8]) -> Result<Program> {
     lift_with(container, &iridia::BoundSizes::new())
 }
@@ -87,6 +89,12 @@ pub fn lift_with(container: &[u8], bound: &iridia::BoundSizes) -> Result<Program
             | Stage::Geometry
             | Stage::Mesh
             | Stage::Amplification
+            | Stage::RayGeneration
+            | Stage::Intersection
+            | Stage::AnyHit
+            | Stage::ClosestHit
+            | Stage::Miss
+            | Stage::Callable
     ) {
         return Err(error(
             0,
@@ -260,6 +268,9 @@ pub(crate) struct Lift<'m> {
     pub(crate) at: usize,
     /// The lane's number where it is the invocation's rank among its wave's, made at the start of the entry block.
     lane: Option<IrValue>,
+    /// The block being lifted has ended in an any-hit program's decision (`IgnoreHit`, `AcceptHitAndEndSearch`): what
+    /// follows it in the block is not reached.
+    decided: bool,
 }
 
 impl<'m> Lift<'m> {
@@ -289,6 +300,7 @@ impl<'m> Lift<'m> {
             notes: BTreeSet::new(),
             at: 0,
             lane: None,
+            decided: false,
         };
         lift.begin(f)?;
         Ok(lift)
@@ -382,6 +394,7 @@ impl<'m> Lift<'m> {
             return self.refuse("a function of no blocks");
         }
         self.declare_memory()?;
+        self.ray_parameters()?;
         Ok(())
     }
 
@@ -440,6 +453,7 @@ impl<'m> Lift<'m> {
     fn blocks(&mut self) -> Result<()> {
         for b in self.order() {
             self.g.current = b;
+            self.decided = false;
             let insts = self.llvm_blocks.get(b).cloned().unwrap_or_default();
             for i in insts {
                 let Some(inst) = self.f.instructions.get(i) else {
@@ -493,6 +507,12 @@ impl<'m> Lift<'m> {
 
     fn instruction(&mut self, inst: &Instruction) -> Result<()> {
         let from = inst.block;
+        if self.decided {
+            return match &inst.op {
+                LlvmOp::Unreachable | LlvmOp::Return(_) => Ok(()),
+                _ => self.refuse("an instruction after an any-hit program's decision"),
+            };
+        }
         match &inst.op {
             LlvmOp::Phi { .. } => Ok(()),
             LlvmOp::Return(_) => {

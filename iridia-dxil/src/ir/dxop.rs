@@ -235,7 +235,8 @@ impl Lift<'_> {
                 let r = self.g.value(f, Op::Dot(va, vb));
                 value(self, r)
             }
-            57 | 216..=218 => self.create_handle(inst, code, args),
+            57 | 160 | 216..=218 => self.create_handle(inst, code, args),
+            141..=159 | 161 | 213 => self.ray_op(inst, code, args),
             59 => self.cbuffer_load(inst, args),
             60..=65 | 73 | 74 => self.sample(inst, code, args),
             66 => self.texture_load(inst, args),

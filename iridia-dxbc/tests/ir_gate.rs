@@ -20,9 +20,9 @@ use iridia::{
     BufferKind, FunctionSig, IoType, ItemList, ResourceId, ResourceKind, Stage, StageFacts, StorageTarget,
 };
 use iridia_exec::{
-    Atomic, Backend, BufferAtomic, Dim, Element, Executable, ImageAtomic, ImageLoad, ImageLod, ImageQuery,
-    ImageSample, ImageStore, Load, PixelShader, ProgramShader, QueryKind, Resources, Runner, Sample, Sampler,
-    Store,
+    Atomic, Backend, BufferAtomic, CallShader, Dim, Element, Executable, ImageAtomic, ImageLoad, ImageLod,
+    ImageQuery, ImageSample, ImageStore, Load, PixelShader, ProgramShader, QueryKind, ReportHit, Resources,
+    Runner, Sample, Sampler, Store, TraceRay,
 };
 
 mod common;
@@ -1421,6 +1421,9 @@ struct Memory {
     counters: BTreeMap<(u32, u32), u32>,
     /// A mesh program's: the words of the meshlet each thread group wrote, in the order of the dispatch.
     meshlets: Vec<Vec<u32>>,
+    /// A ray tracing program's: each `TraceRay`, `ReportHit` and `CallShader` it made, in order, as the words it was
+    /// given (see [`Group`]).
+    rays: Vec<Vec<u32>>,
 }
 
 impl Memory {
@@ -1432,6 +1435,7 @@ impl Memory {
             .values_mut()
             .chain(self.elements.values_mut())
             .chain(&mut self.meshlets)
+            .chain(&mut self.rays)
         {
             for w in words.iter_mut() {
                 *w = canonical(*w);
@@ -1445,11 +1449,14 @@ impl Memory {
 }
 
 /// A compute run's backend: textures answered by the hash, unordered-access texels kept as the program leaves them
-/// (a texel never written reads as its hash), counters starting from a hash of their view.
+/// (a texel never written reads as its hash), counters starting from a hash of their view. A ray tracing program's
+/// operations are answered as a pipeline whose rays hit nothing and whose programs change nothing would answer them,
+/// a reported hit accepted by its distance and kind; each is kept with what it was given.
 struct Group {
     hashed: Hashed,
     texels: Texels,
     counters: BTreeMap<(u32, u32), u32>,
+    rays: Vec<Vec<u32>>,
 }
 
 impl Group {
@@ -1459,6 +1466,7 @@ impl Group {
             hashed: Hashed::for_case(c),
             texels: BTreeMap::new(),
             counters: BTreeMap::new(),
+            rays: Vec::new(),
         }
     }
 }
@@ -1469,6 +1477,36 @@ fn element_word(e: Element) -> u32 {
 }
 
 impl Backend for Group {
+    fn trace_ray(&mut self, r: TraceRay<'_>) -> Result<(), String> {
+        let f = f32::to_bits;
+        self.rays.push(vec![
+            157,
+            r.scene.0,
+            r.flags,
+            r.mask,
+            r.hit_group_offset,
+            r.hit_group_stride,
+            r.miss_index,
+            f(r.origin[0]),
+            f(r.origin[1]),
+            f(r.origin[2]),
+            f(r.t_min),
+            f(r.direction[0]),
+            f(r.direction[1]),
+            f(r.direction[2]),
+            f(r.t_max),
+        ]);
+        Ok(())
+    }
+    fn report_hit(&mut self, r: ReportHit<'_>) -> Result<bool, String> {
+        let t = canonical(r.t.to_bits());
+        self.rays.push(vec![158, t, r.hit_kind]);
+        Ok((t ^ r.hit_kind.rotate_left(16)).count_ones().is_multiple_of(2))
+    }
+    fn call_shader(&mut self, r: CallShader<'_>) -> Result<(), String> {
+        self.rays.push(vec![159, r.index]);
+        Ok(())
+    }
     fn sample(&mut self, r: ImageSample<Element>) -> Result<[f32; 4], String> {
         self.hashed.sample_image(ImageSample {
             texture: element_word(r.texture),
@@ -1731,6 +1769,7 @@ fn dispatch(exe: &Executable, program: &iridia::Program, c: u32) -> Result<Memor
         texels: backend.texels,
         counters,
         meshlets,
+        rays: backend.rays,
     }
     .canonical())
 }
@@ -1832,7 +1871,7 @@ fn seeded_lane(scalar: iridia::ScalarType, h: u32) -> u32 {
 /// The registers stage function `sig` of `program` takes on case `c`: each point of an array argument and each
 /// varying seeded by its scalar type, and the values the pipeline gives within what the stage's facts allow (an
 /// output point the hull program has, a domain location inside the patch, an instance the geometry program runs).
-fn arguments(program: &iridia::Program, sig: &FunctionSig, c: u32) -> Vec<[u32; 4]> {
+fn arguments(program: &iridia::Program, sig: &FunctionSig, c: u32, pointers: &[Vec<u32>]) -> Vec<[u32; 4]> {
     let interface = &program.interface;
     let patch: &[iridia::Varying] = match &interface.facts {
         StageFacts::Hull(h) => &h.patch_constants,
@@ -1855,9 +1894,19 @@ fn arguments(program: &iridia::Program, sig: &FunctionSig, c: u32) -> Vec<[u32; 
         })
     };
     let mut registers = Vec::new();
+    let mut pointer = pointers.iter();
     for (k, item) in sig.arguments.iter().enumerate() {
         let h = common::mix(hash_words(&[10, c, k as u32]));
         match (item.ty, item.name.as_str()) {
+            // a pointer argument's words, four to a register
+            (IoType::Memory, _) => {
+                let words = pointer.next().map_or(&[][..], Vec::as_slice);
+                registers.extend(
+                    words
+                        .chunks(4)
+                        .map(|w| std::array::from_fn(|i| w.get(i).copied().unwrap_or(0))),
+                );
+            }
             (IoType::Array(_, n), _) => {
                 let s = scalar(item.list, item.varying);
                 registers.extend((0..n).map(|point| seeded(k, point, s)));
@@ -1894,29 +1943,118 @@ fn arguments(program: &iridia::Program, sig: &FunctionSig, c: u32) -> Vec<[u32; 
 
 /// One run of stage function `exe` (of `program`'s interface, as `sig`) on case `c`'s arguments and memory: its
 /// result's members (NaNs alike) and the memory it leaves.
+/// The scalar type of each 32-bit leaf of the structure each pointer argument of function `name` of A's module points
+/// to (a ray tracing program's payload, then its attributes), in order. Both columns pass the structure as a word per
+/// leaf, in order: the executor lays A's naga structure out so, and the IR lays it out as Direct3D does, which for
+/// leaves of 32 bits (the naga-path lift refuses memory of other widths) is one word after another.
+fn pointer_leaves(old: &iridia::Program, name: &str) -> Result<Vec<Vec<iridia::ScalarType>>, String> {
+    let module = &old.module;
+    let f = module
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_deref() == Some(name))
+        .map(|(_, f)| f)
+        .ok_or_else(|| format!("A has no function {name}"))?;
+    fn leaves(
+        module: &naga::Module,
+        ty: naga::Handle<naga::Type>,
+        out: &mut Vec<iridia::ScalarType>,
+    ) -> Result<(), String> {
+        let scalar = |s: naga::Scalar| -> Result<iridia::ScalarType, String> {
+            match (s.kind, s.width) {
+                (naga::ScalarKind::Float, 4) => Ok(iridia::ScalarType::Float),
+                (naga::ScalarKind::Uint, 4) => Ok(iridia::ScalarType::Uint),
+                (naga::ScalarKind::Sint, 4) => Ok(iridia::ScalarType::Sint),
+                (naga::ScalarKind::Bool, _) => Ok(iridia::ScalarType::Bool),
+                _ => Err(format!("a pointer argument's leaf of {s:?}")),
+            }
+        };
+        match &module.types[ty].inner {
+            naga::TypeInner::Scalar(s) => out.push(scalar(*s)?),
+            naga::TypeInner::Vector { size, scalar: s } => {
+                out.extend(std::iter::repeat_n(scalar(*s)?, *size as usize));
+            }
+            naga::TypeInner::Array {
+                base,
+                size: naga::ArraySize::Constant(n),
+                ..
+            } => {
+                for _ in 0..n.get() {
+                    leaves(module, *base, out)?;
+                }
+            }
+            naga::TypeInner::Struct { members, .. } => {
+                for m in members {
+                    leaves(module, m.ty, out)?;
+                }
+            }
+            other => return Err(format!("a pointer argument of {other:?}")),
+        }
+        Ok(())
+    }
+    let mut all = Vec::new();
+    for a in &f.arguments {
+        if let naga::TypeInner::Pointer { base, .. } = module.types[a.ty].inner {
+            let mut out = Vec::new();
+            leaves(module, base, &mut out)?;
+            all.push(out);
+        }
+    }
+    Ok(all)
+}
+
+/// One run of a stage function's result members, its pointer arguments' words after it (see [`pointer_leaves`]) and
+/// the memory it leaves.
+type Call = (Vec<[u32; 4]>, Vec<Vec<u32>>, Memory);
+
 fn call(
     exe: &Executable,
     program: &iridia::Program,
     sig: &FunctionSig,
     c: u32,
-) -> Result<(Vec<[u32; 4]>, Memory), String> {
+    leaves: &[Vec<iridia::ScalarType>],
+) -> Result<Call, String> {
     let s = seeded(program, c);
     let bound = exe.bind_resources(&s.resources)?;
     let mut backend = Group::for_case(c);
-    let registers = arguments(program, sig, c);
-    let values = {
+    // each leaf of each pointer argument seeded by its scalar type, a word each
+    let mut pointers = Vec::with_capacity(leaves.len());
+    for (m, of) in leaves.iter().enumerate() {
+        let n = exe
+            .pointer_words(m)
+            .ok_or_else(|| format!("no pointer argument {m}"))? as usize;
+        if n != of.len() {
+            return Err(format!(
+                "pointer argument {m} of {n} words, A's structure of {} leaves",
+                of.len()
+            ));
+        }
+        let words = (0u32..)
+            .zip(of)
+            .map(|(i, &scalar)| seeded_lane(scalar, common::mix(hash_words(&[12, c, m as u32, i]))))
+            .collect();
+        pointers.push(words);
+    }
+    let registers = arguments(program, sig, c, &pointers);
+    let (values, pointees) = {
         let mut runner = Runner::<1>::new(exe, &bound, &mut backend, None);
         let [out] = runner.run([&registers])?;
-        out.values
+        (out.values, out.pointees)
     };
+    let after = pointees
+        .into_iter()
+        .map(|words| words.into_iter().map(canonical).collect())
+        .collect();
     Ok((
         values.into_iter().map(|v| v.map(canonical)).collect(),
+        after,
         Memory {
             buffers: s.buffers,
             elements: s.elements,
             texels: backend.texels,
             counters: backend.counters,
             meshlets: Vec::new(),
+            rays: backend.rays,
         }
         .canonical(),
     ))
@@ -1944,10 +2082,15 @@ fn functions(
         );
     }
     let mut a = Vec::with_capacity(sigs.len());
+    let mut leaves = Vec::with_capacity(sigs.len());
     for sig in sigs {
         match Executable::function(old, sig.name) {
             Ok(e) => a.push(e),
             Err(e) => return tally(&mut g.a_fails, &format!("A not built: {e}"), at),
+        }
+        match pointer_leaves(old, sig.name) {
+            Ok(l) => leaves.push(l),
+            Err(e) => return tally(&mut g.a_fails, &format!("A's pointer arguments: {e}"), at),
         }
     }
     g.a += 1;
@@ -1957,7 +2100,8 @@ fn functions(
     let older: Vec<Vec<_>> = sigs
         .iter()
         .zip(&a)
-        .map(|(sig, a)| (0..CASES).map(|c| call(a, old, sig, c)).collect())
+        .zip(&leaves)
+        .map(|((sig, a), leaves)| (0..CASES).map(|c| call(a, old, sig, c, leaves)).collect())
         .collect();
     took.a = lap(&mut mark);
     for column in ["B", "P"] {
@@ -1972,7 +2116,7 @@ fn functions(
         };
         // each function is compared on a vector at least, or A fails the program
         let mut skipped = Vec::new();
-        for (sig, runs) in sigs.iter().zip(&older) {
+        for ((sig, runs), leaves) in sigs.iter().zip(&older).zip(&leaves) {
             let b = match Executable::function_from_ir(&ir, sig.name) {
                 Ok(b) => b,
                 Err(e) => return tally(&mut g.unrun, &format!("{column} {}: {e}", sig.name), at),
@@ -1983,7 +2127,7 @@ fn functions(
                     skipped.push(format!("{}: {e}", sig.name));
                     continue;
                 }
-                let y = call(&b, old, sig, c);
+                let y = call(&b, old, sig, c, leaves);
                 if *x != y {
                     let d = format!("{} case {c}: A {x:x?}\n  but {y:x?}", sig.name);
                     let d: String = d.chars().take(4000).collect();
@@ -2514,6 +2658,7 @@ mod properties {
                 texels: Texels::new(),
                 counters: BTreeMap::new(),
                 meshlets: Vec::new(),
+                rays: Vec::new(),
             }
             .canonical();
             let j = pick.index(words.len());

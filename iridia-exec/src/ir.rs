@@ -22,6 +22,7 @@ use crate::flat::{
     WaveKind, WaveOp, WaveScan, WordAt,
 };
 use crate::request::{Dim, ImageAtomicOp, QueryKind};
+use crate::run::Decision;
 
 /// Where a variable's words are.
 #[derive(Clone, Copy)]
@@ -928,6 +929,15 @@ impl Cx<'_> {
         self.ret(out)
     }
 
+    /// The local words of the variable a ray tracing operation hands over: where they start and how many there are.
+    fn handed(&self, var: VarId) -> Result<(u32, u32), String> {
+        let p = self.var(var)?;
+        match p.loc {
+            Loc::Local(at) => Ok((at, p.stride.saturating_mul(p.len))),
+            _ => Err("ray tracing memory outside the invocation's own".into()),
+        }
+    }
+
     /// Leave the function with the outputs stored so far.
     fn ret(&mut self, out: &mut Vec<St>) -> Result<(), String> {
         let mut members = Vec::with_capacity(self.returned.len());
@@ -1037,6 +1047,18 @@ impl Cx<'_> {
         let d = self.value(v)?.clone();
         match &d.op {
             ir::Op::Wave(w) => self.wave(v, *w, out),
+            ir::Op::ReportHit { t, kind, attributes } => {
+                let attributes = self.handed(*attributes)?;
+                self.statement(
+                    out,
+                    St::RtReport {
+                        t: t.0,
+                        kind: kind.0,
+                        attributes,
+                        result: Some(v.0),
+                    },
+                )
+            }
             ir::Op::Counter(r, op) => {
                 let tex = self.res(r)?;
                 self.statement(
@@ -1186,6 +1208,30 @@ impl Cx<'_> {
             }
             Node::StoreOutput(slot, mask, v) => self.store_output(out, *slot, *mask, v.0),
             Node::DispatchMesh { groups, payload } => self.dispatch_mesh(out, *groups, *payload),
+            Node::TraceRay { scene, ray, payload } => {
+                if scene.index.is_some() {
+                    return Err("a ray traced into an element of an array of acceleration structures".into());
+                }
+                let payload = self.handed(*payload)?;
+                self.statement(
+                    out,
+                    St::RtTrace {
+                        scene: scene.id,
+                        operands: ray.values().map(|v| v.0),
+                        payload,
+                    },
+                )
+            }
+            Node::CallShader { index, parameter } => {
+                let parameter = self.handed(*parameter)?;
+                self.statement(
+                    out,
+                    St::RtCall {
+                        index: index.0,
+                        parameter,
+                    },
+                )
+            }
             Node::SetMeshCounts { .. } | Node::StoreVertex { .. } | Node::StoreIndices { .. } => {
                 self.meshlet(out, n)
             }
@@ -1461,6 +1507,14 @@ impl Cx<'_> {
                 self.statement(out, St::Kill)?;
                 self.ret(out)
             }
+            End::IgnoreHit => {
+                self.statement(out, St::RtDecide(Decision::Ignore))?;
+                self.ret(out)
+            }
+            End::AcceptHitAndEndSearch => {
+                self.statement(out, St::RtDecide(Decision::AcceptAndEnd))?;
+                self.ret(out)
+            }
             End::Unreachable => self.flush(out),
         }
     }
@@ -1590,6 +1644,9 @@ struct Arguments {
     arg_at: Vec<usize>,
     arg_len: usize,
     array_args: Vec<(usize, u32, u32, u8)>,
+    /// The pointer arguments (a ray tracing program's payload and attributes): where their words start among the
+    /// passed registers, the space of the variable they fill and its words.
+    pointers: Vec<(usize, ir::Space, u32)>,
     builtins: Vec<Option<naga::BuiltIn>>,
 }
 
@@ -1719,6 +1776,7 @@ pub(crate) fn compile(p: &ir::Program) -> Result<Executable, String> {
         arg_at: (0..n_args).collect(),
         arg_len: n_args,
         array_args: Vec::new(),
+        pointers: Vec::new(),
         builtins,
     };
     finish(p, cx, outputs, arguments)
@@ -1747,6 +1805,7 @@ pub(crate) fn compile_function(
     let mut args = Vec::with_capacity(sig.arguments.len());
     let mut arg_at = Vec::with_capacity(sig.arguments.len());
     let mut array_args = Vec::new();
+    let mut pointers = Vec::new();
     let mut at = 0usize;
     for (k, item) in sig.arguments.iter().enumerate() {
         arg_at.push(at);
@@ -1805,6 +1864,24 @@ pub(crate) fn compile_function(
                     }
                 }
                 at = at.saturating_add(1);
+            }
+            IoType::Memory => {
+                // a ray tracing program's payload (or callable parameter) and the hit's attributes: the words of the
+                // program's variable of that space, four to a register (none where the program has no such variable)
+                let space = match item.name.as_str() {
+                    "payload" => ir::Space::RayPayload,
+                    "attributes" => ir::Space::HitAttributes,
+                    other => return Err(format!("the pointer argument {other} is no ray tracing memory")),
+                };
+                let words = match f.vars.iter().find(|v| v.space == space) {
+                    Some(v) => u32::from(v.ty.lanes)
+                        .checked_mul(v.len.unwrap_or(1))
+                        .ok_or("a variable past the words of memory")?,
+                    None => 0,
+                };
+                args.push((0, 0));
+                pointers.push((at, space, words));
+                at = at.saturating_add(words.div_ceil(4) as usize);
             }
             ref t => return Err(format!("an argument of {t:?}")),
         }
@@ -1888,6 +1965,7 @@ pub(crate) fn compile_function(
         arg_at,
         arg_len: at,
         array_args,
+        pointers,
         builtins: vec![None; sig.arguments.len()],
     };
     finish(p, cx, outputs, arguments)
@@ -1943,7 +2021,10 @@ fn finish(
             .checked_mul(len)
             .ok_or("a variable past the words of memory")?;
         let loc = match var.space {
-            ir::Space::Private => Loc::Local(cx.grow(words)?),
+            // the memory the caller hands over is filled from the passed registers, not started here
+            ir::Space::Private | ir::Space::RayPayload | ir::Space::HitAttributes => {
+                Loc::Local(cx.grow(words)?)
+            }
             ir::Space::Workgroup | ir::Space::Payload => {
                 let g = number(cx.globals.len())?;
                 cx.globals.push(GlobalDesc {
@@ -2026,6 +2107,22 @@ fn finish(
         (Stage::Amplification, _) => return Err("an amplification program without its facts".into()),
         _ => None,
     };
+    // the pointer arguments' words, in the variables of their spaces
+    let mut pointer_args = Vec::with_capacity(arguments.pointers.len());
+    for &(at, space, words) in &arguments.pointers {
+        let base = match f.vars.iter().zip(&cx.vars).find(|(v, _)| v.space == space) {
+            Some((
+                _,
+                Place {
+                    loc: Loc::Local(base),
+                    ..
+                },
+            )) => *base,
+            Some(_) => return Err("ray tracing memory outside local memory".into()),
+            None => 0,
+        };
+        pointer_args.push((at, base, words));
+    }
     let mut out = prologue;
     cx.region(body, Yield::Return, &mut out)?;
     cx.flush(&mut out)?;
@@ -2037,7 +2134,7 @@ fn finish(
         args: arguments.args,
         arg_at: arguments.arg_at,
         arg_len: arguments.arg_len,
-        pointer_args: Vec::new(),
+        pointer_args,
         array_args: arguments.array_args,
         local_words: cx.local_words as usize,
         globals: cx.globals,
