@@ -543,11 +543,22 @@ impl Lift<'_> {
         }
         let (gather, depth_ref, level) = match name {
             "sample" => (None, None, SampleLevel::Auto),
-            "sample_l" => (
-                None,
-                None,
-                SampleLevel::Exact(self.read(ins.operand(4)?, 1, Kind::F)?.expr),
-            ),
+            "sample_l" => {
+                let lod = self.read(ins.operand(4)?, 1, Kind::F)?.expr;
+                let level = if t.depth {
+                    // Preserve the proved zero mip without truncating a fractional LOD.
+                    match self.b.function.expressions[lod] {
+                        E::Literal(naga::Literal::F32(value)) if value.to_bits() == 0 => SampleLevel::Zero,
+                        _ => {
+                            return self
+                                .refuse("sample_l on a depth texture without a literal positive-zero LOD");
+                        }
+                    }
+                } else {
+                    SampleLevel::Exact(lod)
+                };
+                (None, None, level)
+            }
             "sample_b" => (
                 None,
                 None,
