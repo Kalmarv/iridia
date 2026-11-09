@@ -342,6 +342,7 @@ pub fn varying(stage: Stage, output: bool, e: &Element<'_>) -> Result<Varying, E
                 mask: e.mask,
                 read_write_mask: e.read_write_mask,
             }),
+            ..Default::default()
         },
     })
 }

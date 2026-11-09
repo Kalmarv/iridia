@@ -35,6 +35,7 @@ fn program(body: &str) -> Program {
                 mask: 0b1111,
                 read_write_mask: 0,
             }),
+            ..Default::default()
         },
     };
     let p = Program {

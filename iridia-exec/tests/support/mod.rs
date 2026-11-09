@@ -37,6 +37,7 @@ pub fn varying(
                 mask,
                 read_write_mask: 0,
             }),
+            ..Default::default()
         },
     }
 }

@@ -117,6 +117,7 @@ pub fn varying(name: &str, index: u32, mask: u8, register: u32, system: Option<S
                 mask,
                 read_write_mask: 0,
             }),
+            ..Default::default()
         },
     }
 }

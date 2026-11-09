@@ -1,5 +1,5 @@
 # lifted fixtures of iridia-dxbc-ir
-# versions lifter=4 ir=3
+# versions lifter=5 ir=3
 bindings_sm51.cs.dxbc	lifted	b9ae33a56bbc73a43cf04d685d748653673a11b4391a1e8861830f93851d80cf
 bound_palette_vs.dxbc	lifted	c03b1264a50959ef22d2e642617c7e45898473995d4c70ff2c0531fa374deac1
 compute_basic.dxbc	lifted	16bcd9e2fffbe32f0e6d97c57df65c98c2a1cb1d196baa46b56b45dcf32636d1

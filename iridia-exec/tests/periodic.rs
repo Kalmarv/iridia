@@ -67,6 +67,7 @@ fn shader(f: fn(f32, f32) -> f32) -> Uv {
                         mask: 3,
                         read_write_mask: 3,
                     }),
+                    ..Default::default()
                 },
             }],
             outputs: Vec::new(),

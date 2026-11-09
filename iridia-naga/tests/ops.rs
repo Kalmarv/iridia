@@ -46,6 +46,7 @@ fn program_with(body: &str, resources: Vec<Resource>) -> Program {
                 mask: 0b1111,
                 read_write_mask: 0,
             }),
+            ..Default::default()
         },
     };
     let p = Program {

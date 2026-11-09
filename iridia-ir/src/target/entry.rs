@@ -1,6 +1,6 @@
 //! How an entry point carries a program's interface: an argument per input varying, a member of the result structure
 //! per output varying, each named `<NAME><index>` after its label, at a location (numbered in interface order) or a
-//! built-in.
+//! built-in. Proven undeclared generic vertex inputs reserve their locations but have no argument.
 //!
 //! A system value the pipeline supplies or consumes is its stage's built-in; every other varying has a location, 0,
 //! 1, ... in interface order (built-ins use none), and a pixel input carries the interpolation the interface states. A
@@ -308,6 +308,15 @@ pub fn entry_io(interface: &Interface) -> Result<EntryIo, String> {
                 },
                 None => plain(v),
             };
+            // Allocate the original location before omitting an input, and keep source varying indices.
+            if stage == Stage::Vertex
+                && !output
+                && v.system.is_none()
+                && !v.used
+                && v.provenance.input_undeclared
+            {
+                continue;
+            }
             items.push(IoItem {
                 name,
                 ty: IoType::Value(carried(stage, output, v)),

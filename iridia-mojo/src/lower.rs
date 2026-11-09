@@ -354,7 +354,10 @@ impl Lower<'_> {
             value: float_value(4),
             interp: None,
             used: true,
-            provenance: VaryingProvenance { d3d: register },
+            provenance: VaryingProvenance {
+                d3d: register,
+                ..Default::default()
+            },
         });
         self.declare_symbol(name, Sym::Argument(index))
     }

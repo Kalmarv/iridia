@@ -193,6 +193,11 @@ pub struct D3dSignature {
 /// The source's own address of a varying; one field per API that has a notion of it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct VaryingProvenance {
+    /// The reader proved this input has no overlapping declaration and cannot be reached by input indexing.
+    /// This is stronger than a zero signature read mask. Unknown evidence is false; only an unused
+    /// generic vertex input with this proof may be omitted from the emitted entry interface.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub input_undeclared: bool,
     /// The D3D signature address of the varying; `None` for a source that has none.
     pub d3d: Option<D3dSignature>,
 }
@@ -1142,6 +1147,7 @@ mod tests {
                     mask: 0b1100,
                     read_write_mask: 0b1100,
                 }),
+                ..Default::default()
             },
         };
         assert_eq!(

@@ -481,7 +481,10 @@ impl Lower<'_> {
             index: hint.index,
         };
         self.inputs.push(Varying {
-            provenance: VaryingProvenance { d3d: register },
+            provenance: VaryingProvenance {
+                d3d: register,
+                ..Default::default()
+            },
             ..varying(label, None, None, 4)
         });
         self.declare_symbol(name, Sym::Input(slot, F32X4))

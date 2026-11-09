@@ -888,6 +888,13 @@ impl Setup {
             let special = (e.system_value == 7 && primitive_id) || (e.system_value == 66 && input_coverage);
             let mut v = varying(e, stage, false)?;
             v.used &= declared || special;
+            v.provenance.input_undeclared = stage == Stage::Vertex
+                && v.system.is_none()
+                && e.read_write_mask == 0
+                && !declared
+                && !setup.index_ranges.iter().any(|&(output, first, count)| {
+                    !output && e.register >= first && e.register - first < count
+                });
             interface.inputs.push(v);
         }
         for e in &output_elements {
