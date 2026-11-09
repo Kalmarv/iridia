@@ -141,8 +141,7 @@ impl Lift<'_> {
                 let a = self.read(ins.operand(1)?, mask, Kind::F)?;
                 let b = self.read(ins.operand(2)?, mask, Kind::F)?;
                 let c = self.read(ins.operand(3)?, mask, Kind::F)?;
-                let p = self.b.binary(Multiply, a, b);
-                let r = self.b.binary(Add, p, c);
+                let r = self.b.math(Mf::Fma, &[a, b, c]);
                 self.write(ins.operand(0)?, r, ins.saturate)?;
             }
             "dp2" | "dp3" | "dp4" => {
