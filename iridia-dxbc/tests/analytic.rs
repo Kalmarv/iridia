@@ -770,3 +770,77 @@ fn signature_elements_the_program_does_not_declare_are_listed_unused() {
         e.output_masks
     );
 }
+
+#[test]
+fn naga_integer_multiply_destinations_use_original_lanes() {
+    // Exercise the Naga lifter directly: the IR lifter has a separate multiply implementation.
+    let a = [0x80000000u32, 0xffffffff, 0x7fffffff, 0x12345678];
+    let b = [0xffffffffu32, 7, 0x80000000, 0xfedcba98];
+    let masked = |index: u32, mask: u32| {
+        if mask == 0 {
+            vec![13 << 12] // NULL
+        } else {
+            vec![2 | mask << 4 | 1 << 20, index]
+        }
+    };
+    for code in [38, 81] {
+        // IMUL, UMUL
+        for (hi, lo) in [
+            (10, 3),
+            (9, 12),
+            (8, 1),
+            (5, 14),
+            (15, 15),
+            (0, 10),
+            (5, 0),
+            (0, 0),
+        ] {
+            for swizzled in [false, true] {
+                let mut src = [whole(0, 0), whole(0, 1)];
+                let selections = if swizzled { [0x1b, 0x4e] } else { [0xe4; 2] };
+                for (s, selection) in src.iter_mut().zip(selections) {
+                    s[0] = (s[0] & !(0xff << 4)) | selection << 4;
+                }
+                // Both destinations alias sources; the low result must still read pre-instruction values.
+                let words = shader(
+                    2,
+                    0,
+                    &[
+                        op(54, &[&temp(0), &lit(a)]),
+                        op(54, &[&temp(1), &lit(b)]),
+                        op(code, &[&masked(0, hi), &masked(1, lo), &src[0], &src[1]]),
+                        op(54, &[&dest(2, 0), &whole(0, 0)]),
+                        op(54, &[&dest(2, 1), &whole(0, 1)]),
+                    ],
+                );
+                let program = iridia_dxbc::lift(&container(&words)).unwrap();
+                program.validate().unwrap();
+                let actual = ProgramShader::new(program)
+                    .unwrap()
+                    .execute(&[], &[], &mut no_sample)
+                    .unwrap()
+                    .outputs;
+                let mut expected = vec![a, b];
+                for lane in 0..4 {
+                    let x = a[((selections[0] >> (2 * lane)) & 3) as usize];
+                    let y = b[((selections[1] >> (2 * lane)) & 3) as usize];
+                    let product = if code == 38 {
+                        ((x as i32 as i64) * (y as i32 as i64)) as u64
+                    } else {
+                        u64::from(x) * u64::from(y)
+                    };
+                    if hi >> lane & 1 != 0 {
+                        expected[0][lane] = (product >> 32) as u32;
+                    }
+                    if lo >> lane & 1 != 0 {
+                        expected[1][lane] = product as u32;
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "opcode={code} hi={hi} lo={lo} swizzled={swizzled}"
+                );
+            }
+        }
+    }
+}

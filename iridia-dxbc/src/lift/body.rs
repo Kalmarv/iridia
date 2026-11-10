@@ -261,12 +261,15 @@ impl Lift<'_> {
             }
             "imul" | "umul" => {
                 let signed = name == "imul";
-                let (a, b) = (
+                let (whole_a, whole_b) = (
                     self.read_whole(ins.operand(2)?, Kind::U)?,
                     self.read_whole(ins.operand(3)?, Kind::U)?,
                 );
                 if ins.operand(0)?.register != Register::Null {
-                    let (a, b) = (self.lanes(a, ins.operand(0)?), self.lanes(b, ins.operand(0)?));
+                    let (a, b) = (
+                        self.lanes(whole_a, ins.operand(0)?),
+                        self.lanes(whole_b, ins.operand(0)?),
+                    );
                     let mut high = self.b.mul_high_unsigned(a, b);
                     if signed {
                         // the signed high word is the unsigned one less each operand where the other is negative
@@ -282,7 +285,10 @@ impl Lift<'_> {
                         high = self.b.binary(Subtract, high, from_b);
                     }
                     if ins.operand(1)?.register != Register::Null {
-                        let (la, lb) = (self.lanes(a, ins.operand(1)?), self.lanes(b, ins.operand(1)?));
+                        let (la, lb) = (
+                            self.lanes(whole_a, ins.operand(1)?),
+                            self.lanes(whole_b, ins.operand(1)?),
+                        );
                         let low = self.b.binary(Multiply, la, lb);
                         self.write(ins.operand(0)?, high, false)?;
                         self.write(ins.operand(1)?, low, false)?;
@@ -290,7 +296,10 @@ impl Lift<'_> {
                         self.write(ins.operand(0)?, high, false)?;
                     }
                 } else if ins.operand(1)?.register != Register::Null {
-                    let (la, lb) = (self.lanes(a, ins.operand(1)?), self.lanes(b, ins.operand(1)?));
+                    let (la, lb) = (
+                        self.lanes(whole_a, ins.operand(1)?),
+                        self.lanes(whole_b, ins.operand(1)?),
+                    );
                     let low = self.b.binary(Multiply, la, lb);
                     self.write(ins.operand(1)?, low, false)?;
                 }
