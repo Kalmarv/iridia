@@ -99,6 +99,7 @@ iridia-dxbc/reflection_sm4.dxbc	afcecdfd03b5306c	agree	steps completed=1, max=0,
 iridia-dxbc/reflection_sm4.swapped.dxbc	9c73fd588b28a9e0	agree	steps completed=1, max=0, exhausted=0
 iridia-dxbc/reflection_sm51.ps51.dxbc	a0450b7999974ce9	execution not compared: lane 0: a sample of an element of an array of resources is not run here	agree	steps completed=0, max=0, exhausted=0
 iridia-dxbc/sample_count.dxbc	not lifted	not lifted: IR lift: DXBC at word N: sample_info: the sample count of the rasterizer is the pipeline's, not the program's	steps completed=0, max=0, exhausted=0
+iridia-dxbc/self_compare.dxbc	0f11287d2852297b	agree	steps completed=1, max=0, exhausted=0
 iridia-dxbc/structured_layout.dxbc	ce05c6c029e76d94	execution not compared: resource 2 is not a constant buffer	agree	steps completed=0, max=0, exhausted=0
 iridia-dxbc/structured_tail.dxbc	ce05c6c029e76d94	execution not compared: resource 1 is not a constant buffer	not lifted: older lift: DXBC at word N: double precision is enabled (global flag): doubles are not lifted	steps completed=0, max=0, exhausted=0
 iridia-dxbc/tessellation.ds.dxbc	e67a53e59152adfe	execution not compared: a stage builtin is not run here: iridia-exec runs it	differ: output: IR drops an input; dropped sources not run (a stage builtin is not run here: iridia-exec runs it)	steps completed=0, max=0, exhausted=0

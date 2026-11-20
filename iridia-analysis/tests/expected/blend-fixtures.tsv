@@ -61,6 +61,7 @@ iridia-dxbc/modes.dxbc	a7218ecc890320ba	same
 iridia-dxbc/reflection_sm4.dxbc	3ce5222c1b05fad3	same
 iridia-dxbc/reflection_sm4.swapped.dxbc	78ca7fb81274e989	same
 iridia-dxbc/reflection_sm51.ps51.dxbc	569b5a2f2f05c917	same
+iridia-dxbc/self_compare.dxbc	b2dc2f0fc5511b4b	same
 iridia-dxbc/structured_layout.dxbc	729a24753c4b59f1	same
 iridia-dxbc/structured_tail.dxbc	3dcc83bbe854e761
 iridia-dxil/arrays.66.dxil	c731a05c295c4bb8	gain	lane (0, 0): op -> ((op * op) + op)

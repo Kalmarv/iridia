@@ -770,3 +770,205 @@ fn signature_elements_the_program_does_not_declare_are_listed_unused() {
         e.output_masks
     );
 }
+
+/// The older lift's executor of the same words (`iridia_dxbc::lift`), for a control both lifts are held to.
+fn older_executor(words: &[u32]) -> ProgramShader {
+    let program = iridia_dxbc::lift(&container(words)).unwrap_or_else(|e| panic!("{e}"));
+    ProgramShader::new(program).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// A float compared with itself is the test for NaN (`ne x, x` is what fxc writes for `isnan(x)`). By Direct3D's
+/// floating-point rules a comparison with a NaN operand fails, except `ne`, which holds: so `ne x, x` holds for a NaN
+/// and for nothing else, `eq x, x` and `ge x, x` fail for a NaN and for nothing else, and `lt x, x` never holds. Both
+/// lifts make the test on the bits where an instruction's two sources are one value, lane by lane, and the comparison
+/// where they are not; the value is the comparison's either way, worked out here by hand.
+#[test]
+fn a_float_compared_with_itself_tells_a_nan() {
+    const T: u32 = u32::MAX;
+    let (ne, eq, ge, lt) = (57, 24, 29, 49);
+    // r0: 1, a quiet NaN, an infinity, a NaN with the sign set and the quiet bit clear; r1: 1, 2, 3, 4
+    let x = [1f32.to_bits(), 0x7fc0_0000, f32::INFINITY.to_bits(), 0xff80_0001];
+    let y = [1f32, 2., 3., 4.].map(f32::to_bits);
+    // a register's lanes `lanes` as a source, and a source under a modifier (1 negates)
+    let lanes = |index: u32, l: [u32; 4]| {
+        vec![
+            2 | 1 << 2 | (l[0] | l[1] << 2 | l[2] << 4 | l[3] << 6) << 4 | 1 << 20,
+            index,
+        ]
+    };
+    let modified = |source: Vec<u32>, modifier: u32| vec![source[0] | 1 << 31, 1 | modifier << 6, source[1]];
+    let xyzw = [0, 1, 2, 3];
+    // the comparison, o0's write mask, its two sources, and o0 by hand (a lane the mask leaves out stays 0)
+    let cases = vec![
+        ("ne r0, r0", ne, 15, lanes(0, xyzw), lanes(0, xyzw), [0, T, 0, T]),
+        ("eq r0, r0", eq, 15, lanes(0, xyzw), lanes(0, xyzw), [T, 0, T, 0]),
+        ("ge r0, r0", ge, 15, lanes(0, xyzw), lanes(0, xyzw), [T, 0, T, 0]),
+        ("lt r0, r0", lt, 15, lanes(0, xyzw), lanes(0, xyzw), [0; 4]),
+        // one lane, selected as a scalar
+        (
+            "ne r0.y, r0.y",
+            ne,
+            1,
+            scalar(0, 0, 1).to_vec(),
+            scalar(0, 0, 1).to_vec(),
+            [T, 0, 0, 0],
+        ),
+        (
+            "eq r0.y, r0.y",
+            eq,
+            1,
+            scalar(0, 0, 1).to_vec(),
+            scalar(0, 0, 1).to_vec(),
+            [0; 4],
+        ),
+        // the swizzles differ in the lane the destination does not write: one value in the lanes it does
+        (
+            "ne r0.xyzx, r0.xyzw",
+            ne,
+            7,
+            lanes(0, [0, 1, 2, 0]),
+            lanes(0, xyzw),
+            [0, T, 0, 0],
+        ),
+        // a lane against itself beside a lane against another, as fxc packs them: y != y, y != x, x != x, x != z
+        (
+            "ne r0.yyxx, r0.yxxz",
+            ne,
+            15,
+            lanes(0, [1, 1, 0, 0]),
+            lanes(0, [1, 0, 0, 2]),
+            [T, T, 0, T],
+        ),
+        // x == x, x == z, z == z, z == x
+        (
+            "eq r0.xxzz, r0.xzzx",
+            eq,
+            15,
+            lanes(0, [0, 0, 2, 2]),
+            lanes(0, [0, 2, 2, 0]),
+            [T, 0, T, 0],
+        ),
+        // z >= z, z >= x, y >= y, x >= z
+        (
+            "ge r0.zzyx, r0.zxyz",
+            ge,
+            15,
+            lanes(0, [2, 2, 1, 0]),
+            lanes(0, [2, 0, 1, 2]),
+            [T, T, 0, 0],
+        ),
+        // no lane against itself: x != y, y != x
+        (
+            "ne r0.xyxx, r0.yxxx",
+            ne,
+            3,
+            lanes(0, [0, 1, 0, 0]),
+            lanes(0, [1, 0, 0, 0]),
+            [T, T, 0, 0],
+        ),
+        // the same modifier on both is one value still; on one it is another value: -x == x fails for every lane here
+        (
+            "ne -r0, -r0",
+            ne,
+            15,
+            modified(lanes(0, xyzw), 1),
+            modified(lanes(0, xyzw), 1),
+            [0, T, 0, T],
+        ),
+        (
+            "eq -r0, r0",
+            eq,
+            15,
+            modified(lanes(0, xyzw), 1),
+            lanes(0, xyzw),
+            [0; 4],
+        ),
+        (
+            "ne r0, -r0",
+            ne,
+            15,
+            lanes(0, xyzw),
+            modified(lanes(0, xyzw), 1),
+            [T; 4],
+        ),
+        // two registers: 1 == 1 and nothing else
+        ("eq r0, r1", eq, 15, lanes(0, xyzw), lanes(1, xyzw), [T, 0, 0, 0]),
+        ("ne r0, r1", ne, 15, lanes(0, xyzw), lanes(1, xyzw), [0, T, T, T]),
+        // a literal against the same literal
+        ("ne l(x), l(x)", ne, 15, lit(x), lit(x), [0, T, 0, T]),
+    ];
+    for (name, opcode, mask, first, second, expected) in cases {
+        let masked = [2 | mask << 4 | 2 << 12 | 1 << 20, 0];
+        let words = shader(
+            2,
+            0,
+            &[
+                op(54, &[&temp(0), &lit(x)]),
+                op(54, &[&temp(1), &lit(y)]),
+                op(opcode, &[&masked, &first, &second]),
+            ],
+        );
+        let ir = run_words(&words);
+        assert_eq!(ir.outputs[0], expected, "{name}: the IR lift");
+        let older = older_executor(&words).execute(&[], &[], &mut no_sample).unwrap();
+        assert_eq!(older.outputs[0], expected, "{name}: the older lift");
+    }
+}
+
+/// A double compared with itself is the same test (`dne`, `deq`, `dge`; `dlt` never holds): a register holds two
+/// doubles, and a double is one value where both of its words are. One result per double, in the lanes of the mask.
+#[test]
+fn a_double_compared_with_itself_tells_a_nan() {
+    const T: u32 = u32::MAX;
+    let (deq, dge, dlt, dne) = (195, 196, 197, 198);
+    // r0: a NaN in .xy, 1.0 in .zw (the low word first)
+    let x = [0, 0x7ff8_0000, 0, 0x3ff0_0000];
+    let lanes = |l: [u32; 4]| {
+        [
+            2 | 1 << 2 | (l[0] | l[1] << 2 | l[2] << 4 | l[3] << 6) << 4 | 1 << 20,
+            0,
+        ]
+    };
+    let xyzw = [0, 1, 2, 3];
+    let cases = [
+        ("dne r0, r0", dne, lanes(xyzw), lanes(xyzw), [T, 0]),
+        ("deq r0, r0", deq, lanes(xyzw), lanes(xyzw), [0, T]),
+        ("dge r0, r0", dge, lanes(xyzw), lanes(xyzw), [0, T]),
+        ("dlt r0, r0", dlt, lanes(xyzw), lanes(xyzw), [0, 0]),
+        // 1.0 against itself, then 1.0 against the NaN
+        (
+            "deq r0.zwzw, r0.zwxy",
+            deq,
+            lanes([2, 3, 2, 3]),
+            lanes([2, 3, 0, 1]),
+            [T, 0],
+        ),
+        (
+            "dne r0.zwzw, r0.zwxy",
+            dne,
+            lanes([2, 3, 2, 3]),
+            lanes([2, 3, 0, 1]),
+            [0, T],
+        ),
+        // the second double's high word is another's: 1.0 against the NaN its low word and .y make
+        (
+            "deq r0.zwzw, r0.zwzy",
+            deq,
+            lanes([2, 3, 2, 3]),
+            lanes([2, 3, 2, 1]),
+            [T, 0],
+        ),
+    ];
+    for (name, opcode, first, second, expected) in cases {
+        let words = shader(
+            1,
+            0,
+            &[
+                op(54, &[&temp(0), &lit(x)]),
+                op(opcode, &[&[2 | 3 << 4 | 2 << 12 | 1 << 20, 0], &first, &second]),
+            ],
+        );
+        let out = run_words(&words).outputs[0];
+        assert_eq!(out[..2], expected, "{name}");
+    }
+}

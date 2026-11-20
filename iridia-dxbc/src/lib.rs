@@ -56,6 +56,7 @@ struct ReadmeExamples;
 
 pub mod ir;
 mod lift;
+mod operand;
 mod reflection;
 mod setup;
 pub use lift::{LIFTER_VERSION, lift, lift_with};

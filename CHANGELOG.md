@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- `iridia-dxbc` (IR lift, `LIFTER_VERSION` 5, and the older lift, `LIFTER_VERSION` 13): a float compared with itself is
+  lifted as the test for NaN on its bits. `ne x, x` is what fxc writes for `isnan(x)` and for `x != x`, and both lifts
+  wrote it as `x != x`: a compiler that assumes no NaN (DXC without `-Gis`, and WGSL allows it of any implementation)
+  writes `false` for it, so a program's guard against a NaN was gone from what it ran. A lane of `ne`, `eq` or `ge`
+  whose two sources are one value (the same component of the same register at the same indices, the same modifier and
+  minimum precision; the components a swizzle names for lanes the destination does not write do not count) is `IsNan`
+  for `ne` and its negation for `eq` and `ge`; fxc packs such a lane beside lanes that compare two values, so it is
+  decided lane by lane, and the other lanes are compared as before. `dne`, `deq` and `dge` are the same for a double
+  (IR lift). `lt x, x` never holds and stays a comparison, as does every comparison of two values, which still relies
+  on the compiler keeping Direct3D's rule for a NaN. Fixture: `self_compare` (our own HLSL); no other fixture's lift
+  changes.
 - `iridia-exec` (breaking): the executor names the compute invocation of every write and atomic it hands a backend.
   `ComputeInvocation` (a thread group and the linear index in it, scoped to one dispatch) is new; `Backend::store_buffer`
   and `Backend::atomic_add` take it as their first argument, and `Store`, `AtomicAdd`, `Atomic`, `ImageStore`, `ImageAtomic`

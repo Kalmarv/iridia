@@ -9,6 +9,7 @@ use naga::{
 use super::operands::OperandAt;
 use super::{Frame, FrameKind, Lift};
 use crate::Result;
+use crate::operand::same_source;
 use dxbc_reader::decode::{Instruction, Register};
 
 impl Lift<'_> {
@@ -72,9 +73,42 @@ impl Lift<'_> {
     /// A comparison whose result is D3D's mask: all ones where it holds.
     fn compare(&mut self, ins: &Instruction, kind: Kind, op: Bo) -> Result<()> {
         let mask = self.dest_mask(ins.operand(0)?);
-        let a = self.read(ins.operand(1)?, mask, kind)?;
-        let b = self.read(ins.operand(2)?, mask, kind)?;
-        let c = self.b.binary(op, a, b);
+        let (first, second) = (ins.operand(1)?, ins.operand(2)?);
+        let a = self.read(first, mask, kind)?;
+        // A float compared with itself is how a program tests it for NaN (`ne x, x` is what fxc writes for
+        // `isnan(x)`): `ne` holds for a NaN and for nothing else, `eq` and `ge` fail for a NaN and for nothing else.
+        // Such a lane is lifted as that test on the bits. Left a comparison of two reads of `x`, a compiler that
+        // assumes no NaN writes its constant result in its place, and the program's guard against a NaN is gone.
+        // `lt x, x` never holds, NaN or not, and is lifted as it stands, like every comparison of two values.
+        let tests_nan = kind == Kind::F && matches!(op, Bo::Equal | Bo::NotEqual | Bo::GreaterEqual);
+        let itself: Vec<bool> = super::resources::lanes_of(mask)
+            .iter()
+            .map(|&lane| tests_nan && same_source(first, second, &[lane]))
+            .collect();
+        let c = if itself.contains(&true) {
+            let nan = self.b.is_nan(a);
+            let test = if op == Bo::NotEqual {
+                nan
+            } else {
+                self.b.unary(Uo::LogicalNot, nan)
+            };
+            if itself.contains(&false) {
+                // fxc packs the comparisons of different pairs into one instruction, so only some lanes may be of
+                // one value: each lane from the test or from the comparison
+                let b = self.read(second, mask, kind)?;
+                let compared = self.b.binary(op, a, b);
+                let parts: Vec<Val> = (0u8..)
+                    .zip(&itself)
+                    .map(|(k, &same)| self.b.swizzle(if same { test } else { compared }, &[k]))
+                    .collect();
+                self.b.compose(&parts)
+            } else {
+                test
+            }
+        } else {
+            let b = self.read(second, mask, kind)?;
+            self.b.binary(op, a, b)
+        };
         let r = self.b.mask_of(c);
         self.write(ins.operand(0)?, r, false)
     }

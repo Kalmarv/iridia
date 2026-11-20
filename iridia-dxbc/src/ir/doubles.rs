@@ -9,7 +9,16 @@ use iridia_ir::{Binary, Cmp, FloatToInt, MinMaxNan, MulZero, Op, Scalar, Ternary
 use super::Lift;
 use super::operands::{OperandAt, lane_u8, of_four};
 use crate::Result;
+use crate::operand::same_source;
 use dxbc_reader::decode::{Instruction, Operand, Register};
+
+/// The 32-bit lanes of doubles `which`: double k is lanes 2k and 2k + 1, the low word first.
+fn words_of(which: &[u8]) -> Vec<u8> {
+    which
+        .iter()
+        .flat_map(|&k| [k.saturating_mul(2), k.saturating_mul(2).saturating_add(1)])
+        .collect()
+}
 
 impl Lift<'_> {
     /// The doubles a double destination's mask names: `.xy` the first, `.zw` the second.
@@ -39,10 +48,7 @@ impl Lift<'_> {
     /// Doubles `which` of a source (double k its lanes 2k and 2k + 1 after the swizzle), an `f64` or a `vec2<f64>`,
     /// its modifier applied as a double's.
     fn read_doubles(&mut self, op: &Operand, which: &[u8]) -> Result<ValueId> {
-        let lanes: Vec<u8> = which
-            .iter()
-            .flat_map(|&k| [k.saturating_mul(2), k.saturating_mul(2).saturating_add(1)])
-            .collect();
+        let lanes = words_of(which);
         let words = if op.register == Register::Immediate64 {
             // a 64-bit immediate's words, the low then the high of each of its two doubles
             let mut bits = [0u64; 4];
@@ -151,15 +157,23 @@ impl Lift<'_> {
             }
             "deq" | "dge" | "dlt" | "dne" => {
                 let which = self.doubles_into_lanes(dest)?;
-                let a = self.read_doubles(ins.operand(1)?, &which)?;
-                let b = self.read_doubles(ins.operand(2)?, &which)?;
+                let (first, second) = (ins.operand(1)?, ins.operand(2)?);
+                let a = self.read_doubles(first, &which)?;
                 let cmp = match name {
                     "deq" => Cmp::Eq,
                     "dge" => Cmp::Ge,
                     "dlt" => Cmp::Lt,
                     _ => Cmp::Ne,
                 };
-                let c = self.binary(Binary::FCmp(cmp), a, b)?;
+                // a double compared with itself is the NaN test, as a float is (`compared`): one value where both
+                // of its words are
+                let itself: Vec<bool> = which
+                    .iter()
+                    .map(|&k| same_source(first, second, &words_of(&[k])))
+                    .collect();
+                let c = self.compared(Binary::FCmp(cmp), a, &itself, |lift| {
+                    lift.read_doubles(second, &which)
+                })?;
                 let r = self.mask_of(c)?;
                 self.write(dest, r, false)
             }

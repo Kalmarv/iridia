@@ -1,5 +1,5 @@
 # lifted fixtures of iridia-dxbc-ir
-# versions lifter=4 ir=3
+# versions lifter=5 ir=3
 bindings_sm51.cs.dxbc	lifted	b9ae33a56bbc73a43cf04d685d748653673a11b4391a1e8861830f93851d80cf
 bound_palette_vs.dxbc	lifted	c03b1264a50959ef22d2e642617c7e45898473995d4c70ff2c0531fa374deac1
 compute_basic.dxbc	lifted	16bcd9e2fffbe32f0e6d97c57df65c98c2a1cb1d196baa46b56b45dcf32636d1
@@ -28,6 +28,7 @@ reflection_sm4.dxbc	lifted	2aae3438bb60fa6b3b456af3c10526c4d38e66bb2bb9706797b2c
 reflection_sm4.swapped.dxbc	lifted	320ff0b9a94c7282db0479c5132f3f68026e6540d32b29cf9c3e4edf3f5029c5
 reflection_sm51.ps51.dxbc	lifted	6ada3682e3841c0a3940dd305bb2d521a191412e59d55f94183d2bbb1042f59d
 sample_count.dxbc	refused	DXBC at word 6: sample_info: the sample count of the rasterizer is the pipeline's, not the program's
+self_compare.dxbc	lifted	e72f4135e4659f138d867518e4e369fd591e7893df07348ceb208bd7e7266616
 sm51/constants.51.dxbc	lifted	449c76f05e500212563fd6b7299c2c0c24433880abb6dc317ca6ac0fed94d2d0
 sm51/images.51.dxbc	lifted	d3e28d6c0bcb68d8f3d234dd3cb3ee068a69b37c0896ed343afce821979179bc
 sm51/nonuniform.51.dxbc	lifted	3413e63c13c8b33c95f7995397dabc2d64fdd9046c4759cc8249e8d217aa3d6b

@@ -7,6 +7,7 @@ use iridia_ir::{
 use super::operands::OperandAt;
 use super::{Exit, Frame, Lift, SwitchState};
 use crate::Result;
+use crate::operand::same_source;
 use dxbc_reader::decode::{Instruction, Operand, Register};
 
 /// The opcodes that open a construct, close one, or start another region of the open one.
@@ -163,11 +164,54 @@ impl Lift<'_> {
     /// A comparison whose result is D3D's mask: all ones where it holds.
     fn compare(&mut self, ins: &Instruction, scalar: Scalar, op: Binary) -> Result<()> {
         let mask = self.dest_mask(ins.operand(0)?);
-        let a = self.read(ins.operand(1)?, mask, scalar)?;
-        let b = self.read(ins.operand(2)?, mask, scalar)?;
-        let c = self.binary(op, a, b)?;
+        let (first, second) = (ins.operand(1)?, ins.operand(2)?);
+        let a = self.read(first, mask, scalar)?;
+        let itself: Vec<bool> = super::lanes_of(mask)
+            .iter()
+            .map(|&lane| same_source(first, second, &[lane]))
+            .collect();
+        let c = self.compared(op, a, &itself, |lift| lift.read(second, mask, scalar))?;
         let r = self.mask_of(c)?;
         self.write(ins.operand(0)?, r, false)
+    }
+    /// `a` compared with what `b` reads, a bool for each lane; `itself` says of each lane whether the instruction's two
+    /// sources are one value there (`same_source`).
+    ///
+    /// A float compared with itself is how a program tests it for NaN (`ne x, x` is what fxc writes for `isnan(x)`):
+    /// `ne` holds for a NaN and for nothing else, `eq` and `ge` fail for a NaN and for nothing else. Such a lane is
+    /// lifted as that test on the bits, `Unary::IsNan`. Left a comparison of two reads of `x`, a compiler that assumes
+    /// no NaN writes its constant result in its place, and the program's guard against a NaN is gone. `lt x, x` never
+    /// holds, NaN or not, and is lifted as it stands, like every comparison of two values.
+    pub(super) fn compared(
+        &mut self,
+        op: Binary,
+        a: ValueId,
+        itself: &[bool],
+        b: impl FnOnce(&mut Self) -> Result<ValueId>,
+    ) -> Result<ValueId> {
+        let tests_nan = matches!(op, Binary::FCmp(Cmp::Eq | Cmp::Ne | Cmp::Ge));
+        if !tests_nan || !itself.contains(&true) {
+            let b = b(self)?;
+            return self.binary(op, a, b);
+        }
+        let nan = self.unary(Unary::IsNan, a)?;
+        let test = if op == Binary::FCmp(Cmp::Ne) {
+            nan
+        } else {
+            self.unary(Unary::Not, nan)?
+        };
+        if !itself.contains(&false) {
+            return Ok(test);
+        }
+        // fxc packs the comparisons of different pairs into one instruction, so only some lanes may be of one value:
+        // each lane from the test or from the comparison
+        let b = b(self)?;
+        let compared = self.binary(op, a, b)?;
+        let mut parts = Vec::with_capacity(itself.len());
+        for (k, &same) in (0u8..).zip(itself) {
+            parts.push(self.lane(if same { test } else { compared }, k)?);
+        }
+        self.op(Op::Compose(parts))
     }
     /// A bool's lanes as D3D's mask: all ones or zero.
     pub(super) fn mask_of(&mut self, c: ValueId) -> Result<ValueId> {

@@ -423,3 +423,180 @@ fn a_patch_constant_signature_in_a_psg1_part_lifts_as_the_pcsg_one_does() {
         );
     }
 }
+
+/// A float compared with itself is the test for NaN (`ne x, x` is what fxc writes for `isnan(x)`), and a compiler that
+/// assumes no NaN writes a constant for a comparison of two reads of one value: where an instruction's two sources
+/// are one value both lifts make the test on the bits (`Unary::IsNan`; the older lift's `Builder::is_nan`, whose
+/// last operation is the only `>` here), and no comparison. A lane is one value where both sources read the same
+/// component of the same register at the same index under the same modifier; an instruction of both kinds of lane
+/// (fxc packs them) has the test and the comparison; `lt x, x` and every comparison of two values stay comparisons.
+#[test]
+fn a_float_compared_with_itself_lifts_as_the_test_for_nan_lane_by_lane() {
+    use iridia_ir::Binary;
+    use naga::{BinaryOperator as Bo, Expression};
+    let (ne, eq, ge, lt, ieq) = (57, 24, 29, 49, 32);
+    let lanes = |kind: u32, index: u32, l: [u32; 4]| {
+        vec![
+            2 | 1 << 2 | (l[0] | l[1] << 2 | l[2] << 4 | l[3] << 6) << 4 | kind << 12 | 1 << 20,
+            index,
+        ]
+    };
+    let scalar = |index: u32, lane: u32| vec![2 | 2 << 2 | lane << 4 | 1 << 20, index];
+    let modified = |source: Vec<u32>, modifier: u32| vec![source[0] | 1 << 31, 1 | modifier << 6, source[1]];
+    let literal = |words: [u32; 4]| [&[2 | 4 << 12][..], &words].concat();
+    // cb0[row], and cb0[r0.<lane>]: a row named by a register
+    let row = |row: u32| vec![2 | 1 << 2 | 0xe4 << 4 | 8 << 12 | 2 << 20, 0, row];
+    let row_at = |lane: u32| {
+        vec![
+            2 | 1 << 2 | 0xe4 << 4 | 8 << 12 | 2 << 20 | 3 << 25,
+            0,
+            0,
+            2 | 2 << 2 | lane << 4 | 1 << 20,
+            0,
+        ]
+    };
+    let xyzw = [0, 1, 2, 3];
+    let r0 = || lanes(0, 0, xyzw);
+    // the comparison, r1's write mask, its two sources, and how many tests for NaN and how many comparisons it lifts to
+    let cases = vec![
+        ("ne r0, r0", ne, 15, r0(), r0(), (1, 0)),
+        ("eq r0, r0", eq, 15, r0(), r0(), (1, 0)),
+        ("ge r0, r0", ge, 15, r0(), r0(), (1, 0)),
+        ("lt r0, r0", lt, 15, r0(), r0(), (0, 1)),
+        ("ne r0.y, r0.y", ne, 1, scalar(0, 1), scalar(0, 1), (1, 0)),
+        ("ne r0.y, r0.z", ne, 1, scalar(0, 1), scalar(0, 2), (0, 1)),
+        // a lane selected as a scalar and by a swizzle is the same lane
+        (
+            "ne r0.y, r0.yyyy",
+            ne,
+            1,
+            scalar(0, 1),
+            lanes(0, 0, [1; 4]),
+            (1, 0),
+        ),
+        // the swizzles differ only in the lane the destination .xyz does not write
+        (
+            "ne r0.xyzx, r0.xyzw",
+            ne,
+            7,
+            lanes(0, 0, [0, 1, 2, 0]),
+            r0(),
+            (1, 0),
+        ),
+        // the same destination .xyzw writes that lane, a comparison of two values beside three tests
+        (
+            "ne r0.xyzx, r0.xyzw (.xyzw)",
+            ne,
+            15,
+            lanes(0, 0, [0, 1, 2, 0]),
+            r0(),
+            (1, 1),
+        ),
+        (
+            "eq r0.yzyy, r0.yyyy",
+            eq,
+            3,
+            lanes(0, 0, [1, 2, 1, 1]),
+            lanes(0, 0, [1; 4]),
+            (1, 1),
+        ),
+        // no written lane against itself, though the swizzles agree in the lanes .xy does not write
+        (
+            "ne r0.xyxx, r0.yxxx",
+            ne,
+            3,
+            lanes(0, 0, [0, 1, 0, 0]),
+            lanes(0, 0, [1, 0, 0, 0]),
+            (0, 1),
+        ),
+        (
+            "ne -r0, -r0",
+            ne,
+            15,
+            modified(r0(), 1),
+            modified(r0(), 1),
+            (1, 0),
+        ),
+        (
+            "ne |r0|, |r0|",
+            ne,
+            15,
+            modified(r0(), 2),
+            modified(r0(), 2),
+            (1, 0),
+        ),
+        ("ne r0, -r0", ne, 15, r0(), modified(r0(), 1), (0, 1)),
+        ("eq |r0|, r0", eq, 15, modified(r0(), 2), r0(), (0, 1)),
+        ("ne r0, r2", ne, 15, r0(), lanes(0, 2, xyzw), (0, 1)),
+        ("ne cb0[1], cb0[1]", ne, 15, row(1), row(1), (1, 0)),
+        ("ne cb0[0], cb0[1]", ne, 15, row(0), row(1), (0, 1)),
+        ("ne cb0[r0.x], cb0[r0.x]", ne, 15, row_at(0), row_at(0), (1, 0)),
+        ("ne cb0[r0.x], cb0[r0.y]", ne, 15, row_at(0), row_at(1), (0, 1)),
+        (
+            "ne l(1, 2, 3, 4), l(1, 2, 3, 4)",
+            ne,
+            15,
+            literal([1, 2, 3, 4]),
+            literal([1, 2, 3, 4]),
+            (1, 0),
+        ),
+        (
+            "ne l(1, 2, 3, 4), l(1, 2, 3, 5)",
+            ne,
+            15,
+            literal([1, 2, 3, 4]),
+            literal([1, 2, 3, 5]),
+            (0, 1),
+        ),
+        // an integer has no NaN: its comparison with itself is a comparison
+        ("ieq r0, r0", ieq, 15, r0(), r0(), (0, 1)),
+    ];
+    for (name, opcode, mask, first, second, expected) in cases {
+        let destination = [2 | mask << 4 | 1 << 20, 1];
+        let container = pixel_container(&[
+            // dcl_constantbuffer cb0[2], dcl_temps 3
+            instruction(89 | 0x800, &[2 | 15 << 4 | 8 << 12 | 2 << 20, 0, 2]),
+            instruction(104, &[3]),
+            instruction(opcode, &[&destination[..], &first, &second].concat()),
+            instruction(62, &[]),
+        ]);
+
+        let program = lift(&container).unwrap_or_else(|e| panic!("{name}: {e}"));
+        iridia_ir::validate(&program).unwrap_or_else(|p| panic!("{name}: {p:?}"));
+        let count =
+            |wanted: &dyn Fn(&Op) -> bool| program.entry.values.iter().filter(|v| wanted(&v.op)).count();
+        let tests = count(&|op| matches!(op, Op::Unary(Unary::IsNan, _)));
+        let comparisons = count(&|op| {
+            matches!(
+                op,
+                Op::Binary(Binary::FCmp(_) | Binary::UCmp(_) | Binary::SCmp(_), _, _)
+            )
+        });
+        assert_eq!((tests, comparisons), expected, "{name}: the IR lift");
+
+        let older = iridia_dxbc::lift(&container).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let [entry] = older.module.entry_points.as_slice() else {
+            panic!("{name}: {:?}", older.module.entry_points)
+        };
+        let count = |wanted: &[Bo]| {
+            entry
+                .function
+                .expressions
+                .iter()
+                .filter(|(_, e)| matches!(e, Expression::Binary { op, .. } if wanted.contains(op)))
+                .count()
+        };
+        // the instruction's own operator: a row named by a register is read behind a comparison of its own
+        let own = match opcode {
+            57 => Bo::NotEqual,
+            29 => Bo::GreaterEqual,
+            49 => Bo::Less,
+            _ => Bo::Equal,
+        };
+        assert_eq!(
+            (count(&[Bo::Greater]), count(&[own])),
+            expected,
+            "{name}: the older lift"
+        );
+    }
+}
